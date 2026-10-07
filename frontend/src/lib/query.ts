@@ -12,6 +12,8 @@ export type RangeSpec = { kind: "rel"; value: string } | { kind: "abs"; start: s
 
 export interface SearchState {
   q: string;
+  /** true: `q` is hunt query language and is sent as `text` instead of free text. */
+  lang: boolean;
   range: RangeSpec;
   filters: Filter[];
   sort: { field: string; order: "asc" | "desc" } | null;
@@ -21,7 +23,7 @@ export interface SearchState {
 }
 
 export const defaultState = (): SearchState => ({
-  q: "", range: { kind: "rel", value: "24h" }, filters: [], sort: null, offset: 0, limit: PAGE_SIZE, event: null,
+  q: "", lang: false, range: { kind: "rel", value: "24h" }, filters: [], sort: null, offset: 0, limit: PAGE_SIZE, event: null,
 });
 
 export function clampPaging(offset: number, limit: number): { offset: number; limit: number } {
@@ -58,7 +60,7 @@ export function toRequestBody(s: SearchState, aggregations: Aggregation[] = SEAR
     sort: s.sort ? [s.sort] : [],
     offset, limit, aggregations,
   };
-  if (s.q.trim()) body.q = s.q.trim();
+  if (s.q.trim()) body[s.lang ? "text" : "q"] = s.q.trim();
   return body;
 }
 
@@ -82,6 +84,7 @@ export function decodeFilter(s: string): Filter | null {
 export function stateToParams(s: SearchState): URLSearchParams {
   const p = new URLSearchParams();
   if (s.q) p.set("q", s.q);
+  if (s.lang) p.set("lang", "1");
   if (s.range.kind === "rel") { if (s.range.value !== "24h") p.set("range", s.range.value); }
   else { p.set("start", s.range.start); p.set("end", s.range.end); }
   s.filters.forEach((f) => p.append("f", encodeFilter(f)));
@@ -93,7 +96,8 @@ export function stateToParams(s: SearchState): URLSearchParams {
 
 export function paramsToState(p: URLSearchParams): SearchState {
   const st = defaultState();
-  st.q = (p.get("q") ?? "").slice(0, 512);
+  st.lang = p.get("lang") === "1";
+  st.q = (p.get("q") ?? "").slice(0, st.lang ? 2000 : 512);
   const start = p.get("start"), end = p.get("end");
   const range = p.get("range");
   if (start && end && !Number.isNaN(Date.parse(start)) && !Number.isNaN(Date.parse(end))) st.range = { kind: "abs", start, end };

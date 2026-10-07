@@ -4,7 +4,9 @@ import { usePathname, useRouter, useSearchParams } from "next/navigation";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { api, ApiError } from "@/lib/api";
 import type { Filter } from "@/lib/api-types";
-import { addFilter, clampPaging, MAX_WINDOW, paramsToState, RELATIVE_RANGES, stateToParams, toRequestBody, type SearchState } from "@/lib/query";
+import { addFilter, clampPaging, MAX_WINDOW, paramsToState, stateToParams, toRequestBody, type SearchState } from "@/lib/query";
+import { RangeControl } from "./range-control";
+import { QueryEditorHint } from "./query-hint";
 import { AggPanel } from "./agg-panel";
 import { EventDrawer } from "./event-drawer";
 import { FilterBuilder, FilterChips } from "./filter-builder";
@@ -19,6 +21,7 @@ export function EventsView() {
   const [draft, setDraft] = useState(state.q);
   const [nonce, setNonce] = useState(0);
   const [dense, setDense] = useState(true);
+  const [showHistory, setShowHistory] = useState(false);
   const searchRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => setDraft(state.q), [state.q]);
@@ -39,7 +42,7 @@ export function EventsView() {
 
   const fields = useQuery({ queryKey: ["fields"], queryFn: api.fields, staleTime: Infinity });
   // the body (with resolved "now") is computed once per applied state / explicit run
-  const key = JSON.stringify([state.q, state.range, state.filters, state.sort, state.offset, nonce]);
+  const key = JSON.stringify([state.q, state.lang, state.range, state.filters, state.sort, state.offset, nonce]);
   const search = useQuery({
     queryKey: ["events", key],
     queryFn: () => api.search(toRequestBody({ ...state, event: null })),
@@ -51,36 +54,34 @@ export function EventsView() {
   const data = search.data;
   const { offset, limit } = clampPaging(state.offset, state.limit);
   const canNext = data ? offset + limit < Math.min(data.total, MAX_WINDOW) : false;
-  const rangeKey = state.range.kind === "rel" ? state.range.value : "custom";
-  const toLocalInput = (iso: string) => iso.slice(0, 16);
+  const history = useQuery({ queryKey: ["history", "all"], queryFn: () => api.history(), enabled: showHistory });
 
   return (
     <div className="space-y-2">
       <form className="flex gap-1" onSubmit={(e) => { e.preventDefault(); run(); }} role="search">
-        <input ref={searchRef} className="input flex-1 font-mono" value={draft} onChange={(e) => setDraft(e.target.value)} maxLength={512}
-          aria-label="Search query" placeholder='Search events…  e.g. powershell AND "-enc" · NOT chrome · power*   (press / to focus)' />
-        <select aria-label="Time range" className="input" value={rangeKey}
-          onChange={(e) => e.target.value !== "custom" && update({ range: { kind: "rel", value: e.target.value } })}>
-          {Object.keys(RELATIVE_RANGES).map((r) => <option key={r} value={r}>Last {r}</option>)}
-          <option value="custom">Custom</option>
-        </select>
+        <input ref={searchRef} className="input flex-1 font-mono" value={draft} onChange={(e) => setDraft(e.target.value)} maxLength={state.lang ? 2000 : 512}
+          aria-label="Search query" placeholder={state.lang ? "process.name:powershell.exe -user.name:svc_*   (hunt query language)" : 'Search events…  e.g. powershell AND "-enc" · NOT chrome · power*   (press / to focus)'} />
+        <RangeControl value={state.range} onChange={(range) => update({ range })} />
         <button className="btn btn-primary" type="submit">Search</button>
       </form>
 
-      {state.range.kind === "abs" && (
-        <div className="flex items-center gap-1 text-xs">
-          <label>From <input type="datetime-local" className="input" value={toLocalInput(state.range.start)}
-            onChange={(e) => e.target.value && state.range.kind === "abs" && update({ range: { ...state.range, start: new Date(e.target.value + "Z").toISOString() } })} /></label>
-          <label>To <input type="datetime-local" className="input" value={toLocalInput(state.range.end)}
-            onChange={(e) => e.target.value && state.range.kind === "abs" && update({ range: { ...state.range, end: new Date(e.target.value + "Z").toISOString() } })} /></label>
-          <span className="text-muted">UTC</span>
-          <button className="btn" onClick={() => update({ range: { kind: "rel", value: "24h" } })}>Reset</button>
-        </div>
-      )}
-
       <div className="flex flex-wrap items-center gap-2">
         {fields.data && <FilterBuilder fields={fields.data.filter((f) => f.kind !== "date")} onAdd={addF} />}
+        <label className="text-xs flex items-center gap-1"><input type="checkbox" checked={state.lang} onChange={(e) => update({ lang: e.target.checked })} /> Query language</label>
         <label className="ml-auto text-xs flex items-center gap-1"><input type="checkbox" checked={dense} onChange={(e) => setDense(e.target.checked)} /> Dense</label>
+      </div>
+      {state.lang && <p className="text-xs text-muted">{QueryEditorHint}</p>}
+      <div className="text-xs">
+        <button className="btn py-0" onClick={() => setShowHistory((v) => !v)} aria-expanded={showHistory}>History</button>
+        {showHistory && (
+          <select aria-label="Query history" className="input ml-1 max-w-xl" value="" onChange={(e) => {
+            const h = history.data?.find((x) => x.id === e.target.value);
+            if (h) update({ q: h.query.text ?? h.query.q ?? "", lang: !!h.query.text, filters: h.query.filters ?? [] });
+          }}>
+            <option value="">{history.isLoading ? "loading…" : history.data?.length ? "Re-run a previous query…" : "No history yet"}</option>
+            {history.data?.map((h) => <option key={h.id} value={h.id}>{(h.query.text ?? h.query.q ?? "(all events)").slice(0, 80)} · {h.total} hits</option>)}
+          </select>
+        )}
       </div>
       <FilterChips filters={state.filters} onRemove={(i) => update({ filters: state.filters.filter((_, j) => j !== i) })} />
 

@@ -1,6 +1,7 @@
 import type {
   EventDetail, EventQueryBody, FieldInfo, MemberOut, ReadyResponse, SearchResult, TenantOut, TokenResponse,
-  UserCreate, ApiErrorBody,
+  UserCreate, ApiErrorBody, Finding, FindingCreate, HistoryEntry, Hunt, HuntCreate, HuntUpdate, Note, ParsedQuery,
+  SavedQuery, Timeline, TimelineScope,
 } from "./api-types";
 
 const CSRF = { "X-Requested-With": "threat-hunt" };
@@ -29,11 +30,19 @@ export const setAccessToken = (t: string | null): void => { accessToken = t; };
 export const getAccessToken = (): string | null => accessToken;
 export const setSessionLostHandler = (fn: (() => void) | null): void => { onSessionLost = fn; };
 
+/** 422 validation errors carry per-field `details`; surface their messages (e.g. `query text: unknown field`). */
+export function errorMessage(e: ApiErrorBody["error"] | undefined, status: number): string {
+  const details = Array.isArray(e?.details) ? (e?.details as Array<{ msg?: string }>) : [];
+  const msgs = details.map((d) => (d.msg ?? "").replace(/^Value error, /, "")).filter(Boolean);
+  if (msgs.length) return msgs.slice(0, 3).join("; ");
+  return e?.message ?? `Request failed (${status})`;
+}
+
 async function parseError(res: Response): Promise<ApiError> {
   let body: Partial<ApiErrorBody> | null = null;
   try { body = (await res.json()) as ApiErrorBody; } catch { /* non-JSON error */ }
   const e = body?.error;
-  return new ApiError(res.status, e?.code ?? "http_error", e?.message ?? `Request failed (${res.status})`, e?.request_id);
+  return new ApiError(res.status, e?.code ?? "http_error", errorMessage(e, res.status), e?.request_id);
 }
 
 /** Single-flight refresh using the httpOnly cookie. Resolves null if the session cannot be restored. */
@@ -77,6 +86,23 @@ export async function request<T>(path: string, opts: ReqOpts = {}): Promise<T> {
   return (await res.json()) as T;
 }
 
+/** POST that returns the response body as a Blob (exports). Mirrors `request` auth/refresh handling. */
+export async function requestBlob(path: string, body: unknown): Promise<Blob> {
+  const send = () => fetch(path, {
+    method: "POST", credentials: "same-origin",
+    headers: { "Content-Type": "application/json", ...(accessToken ? { Authorization: `Bearer ${accessToken}` } : {}) },
+    body: JSON.stringify(body),
+  });
+  let res = await send();
+  if (res.status === 401 && (await refreshSession())) res = await send();
+  if (res.status === 401) { accessToken = null; onSessionLost?.(); }
+  if (!res.ok) throw await parseError(res);
+  return res.blob();
+}
+
+const J = (body: unknown) => ({ method: "POST", body });
+const enc = encodeURIComponent;
+
 export const api = {
   login: async (email: string, password: string): Promise<TokenResponse> => {
     const tr = await request<TokenResponse>("/api/v1/auth/login", { method: "POST", body: { email, password }, auth: false });
@@ -94,6 +120,29 @@ export const api = {
   fields: () => request<FieldInfo[]>("/api/v1/events/fields"),
   search: (body: EventQueryBody) => request<SearchResult>("/api/v1/events/search", { method: "POST", body }),
   getEvent: (id: string) => request<EventDetail>(`/api/v1/events/${encodeURIComponent(id)}`),
+  listHunts: () => request<Hunt[]>("/api/v1/hunts"),
+  getHunt: (id: string) => request<Hunt>(`/api/v1/hunts/${enc(id)}`),
+  createHunt: (b: HuntCreate) => request<Hunt>("/api/v1/hunts", J(b)),
+  updateHunt: (id: string, b: HuntUpdate) => request<Hunt>(`/api/v1/hunts/${enc(id)}`, { method: "PATCH", body: b }),
+  deleteHunt: (id: string) => request<void>(`/api/v1/hunts/${enc(id)}`, { method: "DELETE" }),
+  runHunt: (id: string, query: EventQueryBody) => request<SearchResult>(`/api/v1/hunts/${enc(id)}/run`, J({ query })),
+  listFindings: (id: string) => request<Finding[]>(`/api/v1/hunts/${enc(id)}/findings`),
+  addFinding: (id: string, b: FindingCreate) => request<Finding>(`/api/v1/hunts/${enc(id)}/findings`, J(b)),
+  deleteFinding: (id: string, fid: string) => request<void>(`/api/v1/hunts/${enc(id)}/findings/${enc(fid)}`, { method: "DELETE" }),
+  listNotes: (id: string) => request<Note[]>(`/api/v1/hunts/${enc(id)}/notes`),
+  addNote: (id: string, body: string) => request<Note>(`/api/v1/hunts/${enc(id)}/notes`, J({ body })),
+  listSavedQueries: (huntId?: string) => request<SavedQuery[]>(`/api/v1/saved-queries${huntId ? `?hunt_id=${enc(huntId)}` : ""}`),
+  saveQuery: (b: { name: string; description?: string; hunt_id?: string; query: Partial<EventQueryBody> }) =>
+    request<SavedQuery>("/api/v1/saved-queries", J(b)),
+  deleteSavedQuery: (id: string) => request<void>(`/api/v1/saved-queries/${enc(id)}`, { method: "DELETE" }),
+  history: (huntId?: string) => request<HistoryEntry[]>(`/api/v1/query-history${huntId ? `?hunt_id=${enc(huntId)}` : ""}`),
+  parseQuery: (text: string) => request<ParsedQuery>("/api/v1/queries/parse", J({ text })),
+  exportEvents: (query: Partial<EventQueryBody>, format: "csv" | "json", maxRows: number) =>
+    requestBlob("/api/v1/events/export", { query, format, max_rows: maxRows }),
+  timeline: (query: Partial<EventQueryBody>, collapse: boolean, limit = 500) =>
+    request<Timeline>("/api/v1/timeline", J({ query, collapse, limit })),
+  timelineAround: (event_id: string, scope: TimelineScope, window_minutes: number, collapse: boolean) =>
+    request<Timeline>("/api/v1/timeline/around", J({ event_id, scope, window_minutes, collapse })),
   listUsers: () => request<MemberOut[]>("/api/v1/users"),
   createUser: (u: UserCreate) => request<MemberOut>("/api/v1/users", { method: "POST", body: u }),
   currentTenant: () => request<TenantOut>("/api/v1/tenants/current"),

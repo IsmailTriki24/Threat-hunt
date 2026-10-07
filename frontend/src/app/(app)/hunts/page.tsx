@@ -1,5 +1,10 @@
-import { Placeholder } from "@/components/placeholder";
+import { HuntsList } from "@/components/hunts-list";
 
-export default function Page() {
-  return <Placeholder title="Hunts" milestone="Milestone 2" summary="Hypotheses, saved queries, search history and result pivoting." />;
+export default function HuntsPage() {
+  return (
+    <section>
+      <h1 className="text-base font-semibold mb-2">Hunts</h1>
+      <HuntsList />
+    </section>
+  );
 }

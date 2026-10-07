@@ -5,6 +5,7 @@ export interface Filter {
   field: string;
   op: Op;
   value?: string | number | boolean | Array<string | number> | null;
+  negate?: boolean;
 }
 
 export interface TenantRef { id: string; slug: string; name: string }
@@ -37,6 +38,8 @@ export interface Aggregation {
 
 export interface EventQueryBody {
   q?: string;
+  /** Hunt query language source; parsed and validated server-side. */
+  text?: string;
   time_range: TimeRangeBody;
   filters: Filter[];
   sort: Array<{ field: string; order: "asc" | "desc" }>;
@@ -106,3 +109,44 @@ export interface ReadyResponse {
 }
 
 export interface ApiErrorBody { error: { code: string; message: string; request_id?: string | null; details?: unknown } }
+
+// ---- hunts (milestone 2) -------------------------------------------------------------
+export type HuntStatus = "DRAFT" | "ACTIVE" | "COMPLETED" | "ARCHIVED";
+export type FindingSeverity = "INFO" | "LOW" | "MEDIUM" | "HIGH" | "CRITICAL";
+
+export interface Hunt {
+  id: string; title: string; hypothesis: string; status: HuntStatus;
+  time_start: string | null; time_end: string | null; data_sources: string[]; conclusion: string;
+  created_by: string | null; created_at: string; updated_at: string; finding_count: number; query_count: number;
+}
+export interface HuntCreate {
+  title: string; hypothesis?: string; status?: HuntStatus; time_start?: string; time_end?: string; data_sources?: string[];
+}
+export type HuntUpdate = Partial<Pick<Hunt, "title" | "hypothesis" | "status" | "conclusion" | "data_sources">> & {
+  time_start?: string | null; time_end?: string | null;
+};
+export interface SavedQuery {
+  id: string; name: string; description: string; hunt_id: string | null; query: Partial<EventQueryBody>;
+  created_by: string | null; created_at: string;
+}
+export interface HistoryEntry {
+  id: string; hunt_id: string | null; query: Partial<EventQueryBody>; total: number; took_ms: number; executed_at: string;
+}
+export interface Evidence { id: string; timestamp: string; summary: string; host?: string | null }
+export interface Finding {
+  id: string; hunt_id: string; title: string; description: string; severity: FindingSeverity;
+  evidence: Evidence[]; created_by: string | null; created_at: string;
+}
+export interface FindingCreate { title: string; description?: string; severity: FindingSeverity; event_ids: string[] }
+export interface Note { id: string; hunt_id: string; body: string; author_id: string | null; created_at: string }
+export interface ParsedQuery { q: string | null; filters: Filter[] }
+
+export interface Periodicity { median_interval_s: number; jitter_pct: number }
+export interface TimelineEntry {
+  id: string; timestamp: string; end_timestamp: string | null; count: number; event_type: string; title: string;
+  severity: number; host: string | null; user: string | null; process: string | null; pid: number | null;
+  destination: string | null; parent_event_id: string | null; process_event_id: string | null;
+  event_ids: string[]; periodicity: Periodicity | null;
+}
+export interface Timeline { entries: TimelineEntry[]; total_events: number; truncated: boolean }
+export type TimelineScope = "host" | "user" | "host_user";

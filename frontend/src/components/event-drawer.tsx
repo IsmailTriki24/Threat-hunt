@@ -2,7 +2,7 @@
 import { useQuery } from "@tanstack/react-query";
 import { useState } from "react";
 import { api, ApiError } from "@/lib/api";
-import type { EventDoc, Filter } from "@/lib/api-types";
+import type { EventDoc, Filter, TimelineScope } from "@/lib/api-types";
 import { fmtTime } from "@/lib/query";
 import { SeverityBadge } from "./results-table";
 
@@ -27,7 +27,15 @@ function sections(e: EventDoc): Array<[string, Row[]]> {
   ];
 }
 
-export function EventDrawer({ id, onClose, onPivot }: { id: string; onClose: () => void; onPivot: (f: Filter) => void }) {
+export function EventDrawer({ id, onClose, onPivot, onPivotQuery, onTimeline }: {
+  id: string; onClose: () => void; onPivot: (f: Filter) => void;
+  /** Hunt workspace: append `field:value` to the query editor. */
+  onPivotQuery?: (field: string, value: string | number) => void;
+  /** Open an investigation timeline around this event. */
+  onTimeline?: (eventId: string, scope: TimelineScope, windowMinutes: number) => void;
+}) {
+  const [scope, setScope] = useState<TimelineScope>("host");
+  const [win, setWin] = useState(30);
   const q = useQuery({ queryKey: ["event", id], queryFn: () => api.getEvent(id) });
   const [showRaw, setShowRaw] = useState(false);
 
@@ -47,11 +55,31 @@ export function EventDrawer({ id, onClose, onPivot }: { id: string; onClose: () 
               <h3 className="text-xs text-muted uppercase mb-1">Pivot</h3>
               <div className="flex flex-wrap gap-1">
                 {q.data.pivots.map((p) => (
-                  <button key={`${p.field}-${p.value}`} className="btn text-xs" title={`Filter ${p.field} = ${p.value}`}
-                    onClick={() => onPivot({ field: p.field, op: "eq", value: String(p.value) })}>
-                    {p.label}: <span className="font-mono">{String(p.value).slice(0, 40)}</span>
-                  </button>
+                  <span key={`${p.field}-${p.value}`} className="inline-flex">
+                    <button className="btn text-xs" title={`Filter ${p.field} = ${p.value}`}
+                      onClick={() => onPivot({ field: p.field, op: "eq", value: String(p.value) })}>
+                      {p.label}: <span className="font-mono">{String(p.value).slice(0, 40)}</span>
+                    </button>
+                    {onPivotQuery && (
+                      <button className="btn text-xs" aria-label={`Pivot into hunt query: ${p.field}`} title={`Append ${p.field}:${p.value} to the hunt query`}
+                        onClick={() => onPivotQuery(p.field, p.value)}>+query</button>
+                    )}
+                  </span>
                 ))}
+              </div>
+            </section>
+          )}
+          {onTimeline && (
+            <section>
+              <h3 className="text-xs text-muted uppercase mb-1">Timeline</h3>
+              <div className="flex items-center gap-1 text-xs">
+                <select aria-label="Timeline scope" className="input" value={scope} onChange={(e) => setScope(e.target.value as TimelineScope)}>
+                  <option value="host">Host</option><option value="user">User</option><option value="host_user">Host + user</option>
+                </select>
+                <select aria-label="Timeline window" className="input" value={win} onChange={(e) => setWin(Number(e.target.value))}>
+                  {[5, 15, 30, 60, 240, 1440].map((m) => <option key={m} value={m}>±{m >= 60 ? `${m / 60}h` : `${m}m`}</option>)}
+                </select>
+                <button className="btn" onClick={() => onTimeline(id, scope, win)}>Timeline around this event</button>
               </div>
             </section>
           )}
