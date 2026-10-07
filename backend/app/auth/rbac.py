@@ -30,6 +30,11 @@ class Permission(StrEnum):
     ASSETS_WRITE = "assets:write"
     DATASOURCES_READ = "datasources:read"
     DATASOURCES_MANAGE = "datasources:manage"
+    INTEL_READ = "intel:read"
+    INTEL_WRITE = "intel:write"
+    INTEL_MANAGE = "intel:manage"
+    MITRE_READ = "mitre:read"
+    MITRE_WRITE = "mitre:write"
     TENANTS_MANAGE = "tenants:manage"  # platform-wide: create/disable tenants
 
 
@@ -42,11 +47,22 @@ _ANALYST = {
     Permission.ASSETS_READ,
     Permission.ASSETS_WRITE,
     Permission.DATASOURCES_READ,
+    Permission.INTEL_READ,
+    Permission.INTEL_WRITE,
+    Permission.MITRE_READ,
+    Permission.MITRE_WRITE,
 }
 
 ROLE_PERMISSIONS: dict[Role, frozenset[Permission]] = {
     Role.VIEWER: frozenset(
-        {Permission.EVENTS_READ, Permission.HUNTS_READ, Permission.CASES_READ, Permission.ASSETS_READ}
+        {
+            Permission.EVENTS_READ,
+            Permission.HUNTS_READ,
+            Permission.CASES_READ,
+            Permission.ASSETS_READ,
+            Permission.INTEL_READ,
+            Permission.MITRE_READ,
+        }
     ),
     Role.SOC_ANALYST: frozenset(_ANALYST),
     Role.THREAT_HUNTER: frozenset(_ANALYST | {Permission.HUNTS_DELETE}),
@@ -67,6 +83,11 @@ ROLE_PERMISSIONS: dict[Role, frozenset[Permission]] = {
             Permission.ASSETS_WRITE,
             Permission.DATASOURCES_READ,
             Permission.DATASOURCES_MANAGE,
+            Permission.INTEL_READ,
+            Permission.INTEL_WRITE,
+            Permission.INTEL_MANAGE,
+            Permission.MITRE_READ,
+            Permission.MITRE_WRITE,
         }
     ),
     Role.SUPER_ADMIN: frozenset(Permission),

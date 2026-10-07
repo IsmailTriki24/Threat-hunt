@@ -8,7 +8,9 @@ from app.datasources.router import ingest_router
 from app.datasources.router import router as datasources_router
 from app.events.router import router as events_router
 from app.hunts.router import router as hunts_router
+from app.intel.router import router as intel_router
 from app.investigations.router import router as timeline_router
+from app.mitre.router import router as mitre_router
 from app.tenants.router import router as tenants_router
 from app.users.router import router as users_router
 
@@ -25,5 +27,7 @@ for r in (
     audit_router,
     datasources_router,
     ingest_router,
+    intel_router,
+    mitre_router,
 ):
     api_router.include_router(r)

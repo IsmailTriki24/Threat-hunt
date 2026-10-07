@@ -33,3 +33,15 @@ __all__ += [
     "CaseReport",
     "DataSource",
 ]
+from app.intel.models import IntelEntity, IntelObservation, IntelProvider, IntelRelation  # noqa: E402
+from app.mitre.models import MitreMapping, MitreTactic, MitreTechnique  # noqa: E402
+
+__all__ += [
+    "IntelEntity",
+    "IntelObservation",
+    "IntelProvider",
+    "IntelRelation",
+    "MitreMapping",
+    "MitreTactic",
+    "MitreTechnique",
+]
