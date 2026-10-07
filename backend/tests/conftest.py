@@ -28,14 +28,14 @@ def _dotenv() -> dict[str, str]:
 
 _env = {**_dotenv(), **os.environ}
 _pg = f"{_env.get('POSTGRES_USER', 'hunt')}:{_env.get('POSTGRES_PASSWORD', 'hunt')}"
-TEST_DB = "hunt_test"
+TEST_DB = _env.get("TEST_DB_NAME", "hunt_test")  # override to run several suites concurrently
 ADMIN_DSN = f"postgresql://{_pg}@{_env.get('PG_HOST', 'localhost')}:{_env.get('POSTGRES_PORT', '5432')}/postgres"
 os.environ.update(
     APP_ENV="test",
     DATABASE_URL=f"postgresql+asyncpg://{_pg}@{_env.get('PG_HOST', 'localhost')}:{_env.get('POSTGRES_PORT', '5432')}/{TEST_DB}",
-    REDIS_URL=f"redis://:{_env.get('REDIS_PASSWORD', '')}@localhost:{_env.get('REDIS_PORT', '6379')}/15",
+    REDIS_URL=f"redis://:{_env.get('REDIS_PASSWORD', '')}@localhost:{_env.get('REDIS_PORT', '6379')}/{_env.get('TEST_REDIS_DB', '15')}",
     OPENSEARCH_URL=f"http://localhost:{_env.get('OPENSEARCH_PORT', '9200')}",
-    INDEX_PREFIX="test-",
+    INDEX_PREFIX=_env.get("TEST_INDEX_PREFIX", "test-"),
     JWT_SECRET="test-secret-test-secret-test-secret-0123456789",
     LOG_LEVEL="WARNING",
     SEED_DEMO_DATA="false",
@@ -73,8 +73,8 @@ async def app() -> AsyncIterator[Any]:
     async with application.router.lifespan_context(application):
         await application.state.search.ensure_schema()
         yield application
-        await application.state.opensearch.indices.delete(index="test-*")
-        await application.state.opensearch.indices.delete_index_template(name="test-telemetry")
+        await application.state.opensearch.indices.delete(index=f"{get_settings().index_prefix}*")
+        await application.state.opensearch.indices.delete_index_template(name=f"{get_settings().index_prefix}telemetry")
 
 
 @pytest_asyncio.fixture

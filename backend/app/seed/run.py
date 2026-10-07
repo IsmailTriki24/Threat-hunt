@@ -128,4 +128,42 @@ async def _seed_case(
             )
         )
         del raw  # demo source's key is intentionally unrecoverable; rotate it in the UI to obtain one
+        from app.cases.models import CaseEvidence
+        from app.mitre.models import MitreMapping, MitreTechnique
+        from app.mitre.suggest import suggest
+
+        snaps = [
+            e
+            for (e,) in (
+                await session.execute(select(CaseEvidence.snapshot).where(CaseEvidence.case_id == case.id))
+            ).all()
+        ]
+        known = set((await session.execute(select(MitreTechnique.id))).scalars())  # empty if reference data not loaded
+        for sug in suggest(snaps):
+            if sug.confidence in ("MEDIUM", "HIGH") and sug.technique_id in known:
+                session.add(
+                    MitreMapping(
+                        tenant_id=tenant_id,
+                        technique_id=sug.technique_id,
+                        object_type="case",
+                        object_id=case.id,
+                        confidence=sug.confidence,
+                        reasoning=" | ".join(sug.reasoning)[:2000],
+                        evidence_event_ids=sug.event_ids[:100],
+                        source="suggestion",
+                        created_by=analyst.id,
+                    )
+                )
+
+        from app.intel import service as intel_service
+
+        for type_, value, verdict, conf, tags in (
+            ("ip", "203.0.113.45", "malicious", 90, ["c2", "demo"]),
+            ("domain", "cdn-update-check.example", "malicious", 85, ["c2", "demo"]),
+            ("ip", "198.51.100.23", "suspicious", 60, ["password-spray", "demo"]),
+        ):
+            e = await intel_service.upsert_entity(session, tenant_id, type_, value, source="manual", user_id=analyst.id)
+            e.watch_verdict, e.watch_confidence, e.tags = verdict, conf, tags
+            e.notes = "Seeded demo indicator (synthetic)."
+            await intel_service.rescore(session, e)
         await session.commit()

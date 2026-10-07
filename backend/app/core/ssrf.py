@@ -112,6 +112,8 @@ async def fetch(
     *,
     headers: dict[str, str] | None = None,
     params: dict[str, Any] | None = None,
+    json_body: Any = None,
+    form: dict[str, str] | None = None,
     timeout_s: float = 15.0,
     transport: httpx.AsyncBaseTransport | None = None,
     resolver: Resolver = default_resolver,
@@ -120,7 +122,7 @@ async def fetch(
     safe = SafeTransport(transport, resolver)
     async with httpx.AsyncClient(transport=safe, timeout=timeout_s, follow_redirects=False) as client:
         for _ in range(MAX_REDIRECTS + 1):
-            req = client.build_request(method, url, headers=headers, params=params)
+            req = client.build_request(method, url, headers=headers, params=params, json=json_body, data=form)
             # Don't leak credentials across hosts on redirect.
             resp = await client.send(req, stream=True)
             try:
