@@ -34,7 +34,7 @@ class MitreTechnique(Base):
 
 
 class MitreMapping(Base):
-    """A tenant's claim that an object (hunt, case, finding, detection) exhibits a technique — with reasoning and evidence."""
+    """A tenant claim that an object (hunt/case/finding/detection) exhibits a technique, with reasoning and evidence."""
 
     __tablename__ = "mitre_mappings"
     __table_args__ = (
