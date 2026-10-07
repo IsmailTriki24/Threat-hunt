@@ -4,7 +4,8 @@
 Each provider contributes at most one signal: (verdict, confidence 0-100) weighted by how much we trust that source.
 
   strength_i      = weight_i * confidence_i / 100
-  malicious       -> p_i = strength_i              suspicious -> p_i = 0.5 * strength_i
+  malicious       -> p_i = strength_i              suspicious -> p_i = 0.5 * strength_i (full strength for an explicit
+                                                                     watch-list judgement: the analyst already weighed it)
   score           = 100 * (1 - prod(1 - p_i))      (independent corroboration raises the score; one weak source cannot reach 100)
   benign dampener = score * (1 - 0.6 * max(benign strengths)); a watch-list "benign" with confidence >= 80 caps the score at 10
   verdict         = malicious if score >= 70, suspicious if score >= 35,
@@ -46,7 +47,13 @@ def score(signals: list[Signal]) -> tuple[int, str, list[dict[str, Any]]]:
     for s in signals:
         w = WEIGHTS.get(s.provider, 0.5)
         strength = w * max(0, min(100, s.confidence)) / 100
-        p = strength if s.verdict == "malicious" else 0.5 * strength if s.verdict == "suspicious" else 0.0
+        p = (
+            strength
+            if s.verdict == "malicious" or (s.verdict == "suspicious" and s.provider == "watchlist")
+            else 0.5 * strength
+            if s.verdict == "suspicious"
+            else 0.0
+        )
         if s.verdict == "benign":
             max_benign = max(max_benign, strength)
             watch_benign_hard |= s.provider == "watchlist" and s.confidence >= 80

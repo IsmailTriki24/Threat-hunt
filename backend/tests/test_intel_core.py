@@ -150,3 +150,8 @@ def test_stix_parse_filters_expired_invalid_and_builds_relations():
     assert p.named == [("malware--1", "malware", "emotet")]
     assert p.relations == [("indicator--1", "malware--1", "indicates")]
     assert p.skipped >= 4
+
+
+def test_explicit_watchlist_suspicious_is_not_halved():
+    assert score([Signal("watchlist", "suspicious", 60)])[1] == "suspicious"
+    assert score([Signal("otx", "suspicious", 60)])[1] == "unknown"
