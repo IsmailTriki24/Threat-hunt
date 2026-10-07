@@ -8,7 +8,9 @@ import { addFilter, clampPaging, MAX_WINDOW, paramsToState, stateToParams, toReq
 import { RangeControl } from "./range-control";
 import { QueryEditorHint } from "./query-hint";
 import { AggPanel } from "./agg-panel";
+import { AddToCaseDialog } from "./add-to-case-dialog";
 import { EventDrawer } from "./event-drawer";
+import { useAuth } from "@/lib/auth";
 import { FilterBuilder, FilterChips } from "./filter-builder";
 import { Histogram } from "./histogram";
 import { ResultsTable } from "./results-table";
@@ -22,6 +24,8 @@ export function EventsView() {
   const [nonce, setNonce] = useState(0);
   const [dense, setDense] = useState(true);
   const [showHistory, setShowHistory] = useState(false);
+  const { can } = useAuth();
+  const [caseEvent, setCaseEvent] = useState<string | null>(null);
   const searchRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => setDraft(state.q), [state.q]);
@@ -122,8 +126,10 @@ export function EventsView() {
 
       {state.event && (
         <EventDrawer id={state.event} onClose={() => update({ event: null }, false)}
-          onPivot={(f) => update({ filters: addFilter(state.filters, f), event: null })} />
+          onPivot={(f) => update({ filters: addFilter(state.filters, f), event: null })}
+          onAddToCase={can("cases:write") ? setCaseEvent : undefined} />
       )}
+      {caseEvent && <AddToCaseDialog eventIds={[caseEvent]} onClose={() => setCaseEvent(null)} />}
     </div>
   );
 }

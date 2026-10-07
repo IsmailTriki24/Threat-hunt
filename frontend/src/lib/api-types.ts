@@ -150,3 +150,75 @@ export interface TimelineEntry {
 }
 export interface Timeline { entries: TimelineEntry[]; total_events: number; truncated: boolean }
 export type TimelineScope = "host" | "user" | "host_user";
+
+// ---- cases, assets, data sources, audit (milestone 3) ------------------------------------
+export type CaseSeverity = "INFO" | "LOW" | "MEDIUM" | "HIGH" | "CRITICAL";
+export type CasePriority = "P1" | "P2" | "P3" | "P4";
+export type CaseStatus = "OPEN" | "INVESTIGATING" | "CONTAINED" | "RESOLVED" | "FALSE_POSITIVE" | "CLOSED";
+export const CASE_STATUSES: CaseStatus[] = ["OPEN", "INVESTIGATING", "CONTAINED", "RESOLVED", "FALSE_POSITIVE", "CLOSED"];
+export const CASE_SEVERITIES: CaseSeverity[] = ["INFO", "LOW", "MEDIUM", "HIGH", "CRITICAL"];
+export const CASE_PRIORITIES: CasePriority[] = ["P1", "P2", "P3", "P4"];
+
+export interface PersonRef { id: string; email: string; full_name: string }
+export interface CaseOut {
+  id: string; case_id: string; number: number; title: string; description: string; severity: CaseSeverity;
+  priority: CasePriority; status: CaseStatus; resolution: string; assignee: PersonRef | null; hunt_id: string | null;
+  created_by: string | null; created_at: string; updated_at: string; closed_at: string | null;
+  evidence_count: number; ioc_count: number; asset_count: number; allowed_transitions: CaseStatus[];
+}
+export interface CaseCreate {
+  title: string; description?: string; severity?: CaseSeverity; priority?: CasePriority; assignee_id?: string | null;
+  hunt_id?: string; finding_id?: string; event_ids?: string[];
+}
+export interface CaseUpdate {
+  title?: string; description?: string; severity?: CaseSeverity; priority?: CasePriority; assignee_id?: string; unassign?: boolean;
+}
+export interface CaseEvidence {
+  id: string; event_id: string; comment: string; snapshot: EventDoc; summary: string; added_by: string | null; created_at: string;
+}
+export type IocType = "ip" | "domain" | "url" | "sha256" | "sha1" | "md5" | "email";
+export const IOC_TYPES: IocType[] = ["ip", "domain", "url", "sha256", "sha1", "md5", "email"];
+export interface CaseIoc { id: string; type: IocType; value: string; source: string; occurrences: number; context: string; created_at: string }
+export interface CaseActivity {
+  id: string; kind: string; body: string; details: Record<string, unknown>; actor_id: string | null; actor_email: string | null; created_at: string;
+}
+export interface CaseReport { id: string; version: number; content: string; created_by: string | null; created_at: string }
+export interface CaseAssetRef { id: string; type: string; key: string; display_name: string; criticality: string; last_seen: string | null }
+export interface AuditRow {
+  id: string; created_at: string; action: string; outcome: string; actor: string | null; actor_id?: string | null;
+  resource_type?: string | null; resource_id?: string | null; ip: string | null; request_id?: string | null; details: Record<string, unknown>;
+}
+
+export type AssetType = "host" | "server" | "user" | "ip" | "domain" | "application" | "cloud";
+export const ASSET_TYPES: AssetType[] = ["host", "server", "user", "ip", "domain", "application", "cloud"];
+export type Criticality = "LOW" | "MEDIUM" | "HIGH" | "CRITICAL";
+export const CRITICALITIES: Criticality[] = ["LOW", "MEDIUM", "HIGH", "CRITICAL"];
+export interface Asset {
+  id: string; type: AssetType; key: string; display_name: string; criticality: Criticality; owner: string; tags: string[];
+  attributes: Record<string, unknown>; event_count: number; first_seen: string | null; last_seen: string | null; created_at: string;
+}
+export interface AssetCreate {
+  type: AssetType; key: string; display_name?: string; criticality?: Criticality; owner?: string; tags?: string[];
+}
+export interface AssetUpdate { display_name?: string; criticality?: Criticality; owner?: string; tags?: string[] }
+export interface AssetEvents { total: number; hits: EventDoc[] }
+export type AssetRelated = Record<string, Array<{ key: string | number; count: number }>>;
+export interface AssetCaseRef { id: string; number: number; title: string; status: string; severity: string }
+
+export interface ConnectorInfo { type: string; display_name: string; supports_collect: boolean; config_schema: JsonSchema }
+export interface JsonSchema {
+  type?: string; title?: string; description?: string; properties?: Record<string, JsonSchemaProp>; required?: string[];
+  $defs?: Record<string, JsonSchema>;
+}
+export interface JsonSchemaProp {
+  type?: string; title?: string; description?: string; default?: unknown; enum?: unknown[]; format?: string; pattern?: string;
+  anyOf?: JsonSchemaProp[]; $ref?: string; minimum?: number; maximum?: number; exclusiveMinimum?: number;
+}
+export interface DataSource {
+  id: string; name: string; connector_type: string; config: Record<string, unknown>; has_secrets: boolean; secret_keys: string[];
+  enabled: boolean; supports_collect: boolean; health_status: string; health_detail: string; health_checked_at: string | null;
+  last_ingest_at: string | null; events_total: number; created_at: string; ingest_key?: string | null;
+}
+export interface DataSourceCreate {
+  name: string; connector_type: string; config: Record<string, unknown>; secrets: Record<string, string>; enabled: boolean;
+}

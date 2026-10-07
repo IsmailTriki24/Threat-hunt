@@ -1,12 +1,14 @@
 "use client";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { useRouter } from "next/navigation";
 import { useEffect, useMemo, useState, type FormEvent } from "react";
 import { api, ApiError } from "@/lib/api";
-import type { EventQueryBody, Filter, FindingSeverity, Hunt, HuntStatus, SavedQuery, TimelineScope } from "@/lib/api-types";
+import type { EventQueryBody, Filter, Finding, FindingSeverity, Hunt, HuntStatus, SavedQuery, TimelineScope } from "@/lib/api-types";
 import { useAuth } from "@/lib/auth";
 import { appendPivot, downloadBlob } from "@/lib/hunt-query";
 import { addFilter, clampPaging, fmtTime, MAX_WINDOW, resolveRange, SEARCH_AGGS, type RangeSpec } from "@/lib/query";
 import { AggPanel } from "./agg-panel";
+import { AddToCaseDialog } from "./add-to-case-dialog";
 import { EventDrawer } from "./event-drawer";
 import { FilterBuilder, FilterChips } from "./filter-builder";
 import { STATUSES } from "./hunts-list";
@@ -48,6 +50,7 @@ export function HuntWorkspace({ id }: { id: string }) {
 
 function Workspace({ hunt }: { hunt: Hunt }) {
   const { can } = useAuth();
+  const router = useRouter();
   const qc = useQueryClient();
   const canWrite = can("hunts:write");
   const huntId = hunt.id;
@@ -114,6 +117,11 @@ function Workspace({ hunt }: { hunt: Hunt }) {
     if (r) setRange(r);
   };
 
+  const [caseEvents, setCaseEvents] = useState<string[] | null>(null);
+  const promote = useMutation({
+    mutationFn: (f: Finding) => api.createCase({ title: f.title, description: f.description, severity: f.severity, finding_id: f.id }),
+    onSuccess: (c) => { void qc.invalidateQueries({ queryKey: ["cases"] }); router.push(`/cases/${c.id}`); },
+  });
   // ---- findings / notes ----
   const findings = useQuery({ queryKey: ["findings", huntId], queryFn: () => api.listFindings(huntId) });
   const notes = useQuery({ queryKey: ["notes", huntId], queryFn: () => api.listNotes(huntId) });
@@ -258,6 +266,7 @@ function Workspace({ hunt }: { hunt: Hunt }) {
                     <span className="ml-auto flex items-center gap-1">
                       {selected.size > 0 && <span>{selected.size} selected</span>}
                       <button className="btn" disabled={!canWrite || selected.size === 0} onClick={() => setShowFinding((s) => !s)}>Add finding</button>
+                      <button className="btn" disabled={!can("cases:write") || selected.size === 0 || selected.size > 100} onClick={() => setCaseEvents([...selected])}>Add to case…</button>
                     </span>
                   </div>
                   {showFinding && (
@@ -313,6 +322,7 @@ function Workspace({ hunt }: { hunt: Hunt }) {
                     <div className="flex items-center gap-1">
                       <span className="text-xs border border-line px-1 rounded-sm">{f.severity}</span>
                       <span className="font-medium flex-1 truncate">{f.title}</span>
+                      {can("cases:write") && <button className="text-muted hover:text-accent text-xs" aria-label={`Promote finding ${f.title} to case`} disabled={promote.isPending} onClick={() => promote.mutate(f)}>→ case</button>}
                       {canWrite && <button className="text-muted hover:text-red-400" aria-label={`Delete finding ${f.title}`} onClick={() => delFinding.mutate(f.id)}>×</button>}
                     </div>
                     {f.description && <p className="text-xs whitespace-pre-wrap">{f.description}</p>}
@@ -356,8 +366,10 @@ function Workspace({ hunt }: { hunt: Hunt }) {
       {openEvent && (
         <EventDrawer id={openEvent} onClose={() => setOpenEvent(null)}
           onPivot={(f) => { setFilters((fs) => addFilter(fs, f)); setOpenEvent(null); }}
-          onPivotQuery={pivotToText} onTimeline={openTimelineAround} />
+          onPivotQuery={pivotToText} onTimeline={openTimelineAround}
+          onAddToCase={can("cases:write") ? (eid) => setCaseEvents([eid]) : undefined} />
       )}
+      {caseEvents && <AddToCaseDialog eventIds={caseEvents} onClose={() => setCaseEvents(null)} />}
     </div>
   );
 }

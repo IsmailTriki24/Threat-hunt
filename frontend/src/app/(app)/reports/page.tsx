@@ -1,5 +1,10 @@
-import { Placeholder } from "@/components/placeholder";
+import { ReportsIndex } from "@/components/reports-view";
 
 export default function Page() {
-  return <Placeholder title="Reports" milestone="Milestone 3" summary="Case and hunt reports." />;
+  return (
+    <section className="space-y-2">
+      <h1 className="text-base font-semibold">Reports</h1>
+      <ReportsIndex />
+    </section>
+  );
 }

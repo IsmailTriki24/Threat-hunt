@@ -2,6 +2,7 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useState, type FormEvent } from "react";
 import { api, ApiError } from "@/lib/api";
+import { AuditView } from "@/components/audit-view";
 import { useAuth } from "@/lib/auth";
 
 const ROLES = ["TENANT_ADMIN", "SOC_ANALYST", "THREAT_HUNTER", "INCIDENT_RESPONDER", "VIEWER"];
@@ -17,10 +18,19 @@ export default function Settings() {
     onSuccess: () => { setForm({ email: "", full_name: "", password: "", role: "SOC_ANALYST" }); void qc.invalidateQueries({ queryKey: ["users"] }); },
   });
   const submit = (e: FormEvent) => { e.preventDefault(); create.mutate(); };
+  const [tab, setTab] = useState<"general" | "audit">("general");
 
   return (
     <section className="space-y-3 max-w-4xl">
       <h1 className="text-base font-semibold">Settings</h1>
+      <div role="tablist" className="flex gap-0.5 border-b border-line">
+        {([["general", "General"], ...(can("audit:read") ? [["audit", "Audit trail"]] : [])] as Array<["general" | "audit", string]>).map(([t, label]) => (
+          <button key={t} role="tab" aria-selected={tab === t} onClick={() => setTab(t)}
+            className={`px-3 py-1 border-b-2 ${tab === t ? "border-accent text-accent" : "border-transparent text-muted hover:text-[#c9d1d9]"}`}>{label}</button>
+        ))}
+      </div>
+      {tab === "audit" && can("audit:read") && <div className="max-w-none"><AuditView /></div>}
+      {tab === "general" && <>
       <div className="panel p-3">
         <h2 className="text-xs text-muted uppercase mb-1">Current tenant</h2>
         {tenant.error && <p className="text-red-400">{tenant.error instanceof ApiError ? tenant.error.friendly : "Failed to load"}</p>}
@@ -48,6 +58,7 @@ export default function Settings() {
           <button className="btn btn-primary col-span-2" disabled={create.isPending}>Create</button>
         </form>
       )}
+      </>}
     </section>
   );
 }

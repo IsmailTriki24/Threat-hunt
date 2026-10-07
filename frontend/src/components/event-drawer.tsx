@@ -27,8 +27,12 @@ function sections(e: EventDoc): Array<[string, Row[]]> {
   ];
 }
 
-export function EventDrawer({ id, onClose, onPivot, onPivotQuery, onTimeline }: {
+export function EventDrawer({ id, onClose, onPivot, onPivotQuery, onTimeline, onAddToCase, snapshot }: {
   id: string; onClose: () => void; onPivot: (f: Filter) => void;
+  /** Show the stored event (e.g. case evidence snapshot) instead of fetching live telemetry. */
+  snapshot?: EventDoc;
+  /** Offer “Add to case…” for this event. */
+  onAddToCase?: (eventId: string) => void;
   /** Hunt workspace: append `field:value` to the query editor. */
   onPivotQuery?: (field: string, value: string | number) => void;
   /** Open an investigation timeline around this event. */
@@ -36,14 +40,16 @@ export function EventDrawer({ id, onClose, onPivot, onPivotQuery, onTimeline }: 
 }) {
   const [scope, setScope] = useState<TimelineScope>("host");
   const [win, setWin] = useState(30);
-  const q = useQuery({ queryKey: ["event", id], queryFn: () => api.getEvent(id) });
+  const live = useQuery({ queryKey: ["event", id], queryFn: () => api.getEvent(id), enabled: !snapshot });
+  const q = snapshot ? { isLoading: false, error: null, data: { event: snapshot, pivots: [] } } : live;
   const [showRaw, setShowRaw] = useState(false);
 
   return (
     <aside className="panel fixed right-0 top-9 bottom-0 w-[34rem] max-w-full overflow-y-auto p-3 z-10 shadow-xl" aria-label="Event detail">
       <div className="flex items-center mb-2">
         <h2 className="font-semibold">Event detail</h2>
-        <button className="btn ml-auto" onClick={onClose} aria-label="Close detail">Close</button>
+        {onAddToCase && <button className="btn ml-auto" onClick={() => onAddToCase(id)}>Add to case…</button>}
+        <button className={`btn ${onAddToCase ? "ml-1" : "ml-auto"}`} onClick={onClose} aria-label="Close detail">Close</button>
       </div>
       {q.isLoading && <p className="text-muted">Loading…</p>}
       {q.error && <p role="alert" className="text-red-400">{q.error instanceof ApiError ? q.error.friendly : "Failed to load event"}</p>}

@@ -2,6 +2,8 @@ import type {
   EventDetail, EventQueryBody, FieldInfo, MemberOut, ReadyResponse, SearchResult, TenantOut, TokenResponse,
   UserCreate, ApiErrorBody, Finding, FindingCreate, HistoryEntry, Hunt, HuntCreate, HuntUpdate, Note, ParsedQuery,
   SavedQuery, Timeline, TimelineScope,
+  Asset, AssetCaseRef, AssetCreate, AssetEvents, AssetRelated, AssetUpdate, AuditRow, CaseActivity, CaseAssetRef, CaseCreate,
+  CaseEvidence, CaseIoc, CaseOut, CaseReport, CaseUpdate, ConnectorInfo, DataSource, DataSourceCreate, IocType,
 } from "./api-types";
 
 const CSRF = { "X-Requested-With": "threat-hunt" };
@@ -143,6 +145,51 @@ export const api = {
     request<Timeline>("/api/v1/timeline", J({ query, collapse, limit })),
   timelineAround: (event_id: string, scope: TimelineScope, window_minutes: number, collapse: boolean) =>
     request<Timeline>("/api/v1/timeline/around", J({ event_id, scope, window_minutes, collapse })),
+  // cases
+  listCases: (qs = "") => request<CaseOut[]>(`/api/v1/cases${qs}`),
+  getCase: (id: string) => request<CaseOut>(`/api/v1/cases/${enc(id)}`),
+  createCase: (b: CaseCreate) => request<CaseOut>("/api/v1/cases", J(b)),
+  updateCase: (id: string, b: CaseUpdate) => request<CaseOut>(`/api/v1/cases/${enc(id)}`, { method: "PATCH", body: b }),
+  transitionCase: (id: string, status: string, comment: string) =>
+    request<CaseOut>(`/api/v1/cases/${enc(id)}/transition`, J({ status, comment })),
+  caseActivity: (id: string) => request<CaseActivity[]>(`/api/v1/cases/${enc(id)}/activity`),
+  addCaseNote: (id: string, body: string) => request<CaseActivity>(`/api/v1/cases/${enc(id)}/notes`, J({ body })),
+  caseEvidence: (id: string) => request<CaseEvidence[]>(`/api/v1/cases/${enc(id)}/evidence`),
+  addCaseEvidence: (id: string, event_ids: string[], comment = "") =>
+    request<CaseEvidence[]>(`/api/v1/cases/${enc(id)}/evidence`, J({ event_ids, comment })),
+  removeCaseEvidence: (id: string, eid: string) => request<void>(`/api/v1/cases/${enc(id)}/evidence/${enc(eid)}`, { method: "DELETE" }),
+  caseIocs: (id: string) => request<CaseIoc[]>(`/api/v1/cases/${enc(id)}/iocs`),
+  addCaseIoc: (id: string, type: IocType, value: string) => request<CaseIoc>(`/api/v1/cases/${enc(id)}/iocs`, J({ type, value })),
+  removeCaseIoc: (id: string, iid: string) => request<void>(`/api/v1/cases/${enc(id)}/iocs/${enc(iid)}`, { method: "DELETE" }),
+  extractCaseIocs: (id: string) => request<{ extracted: number }>(`/api/v1/cases/${enc(id)}/iocs/extract`, { method: "POST" }),
+  caseAssets: (id: string) => request<CaseAssetRef[]>(`/api/v1/cases/${enc(id)}/assets`),
+  linkCaseAsset: (id: string, asset_id: string) => request<{ status: string }>(`/api/v1/cases/${enc(id)}/assets`, J({ asset_id })),
+  unlinkCaseAsset: (id: string, aid: string) => request<void>(`/api/v1/cases/${enc(id)}/assets/${enc(aid)}`, { method: "DELETE" }),
+  caseTimeline: (id: string, collapse: boolean) => request<Timeline>(`/api/v1/cases/${enc(id)}/timeline?collapse=${collapse}`),
+  caseReports: (id: string) => request<CaseReport[]>(`/api/v1/cases/${enc(id)}/reports`),
+  generateReport: (id: string) => request<CaseReport>(`/api/v1/cases/${enc(id)}/reports`, { method: "POST" }),
+  caseAudit: (id: string) => request<AuditRow[]>(`/api/v1/cases/${enc(id)}/audit`),
+  // assets
+  listAssets: (qs = "") => request<Asset[]>(`/api/v1/assets${qs}`),
+  getAsset: (id: string) => request<Asset>(`/api/v1/assets/${enc(id)}`),
+  createAsset: (b: AssetCreate) => request<Asset>("/api/v1/assets", J(b)),
+  updateAsset: (id: string, b: AssetUpdate) => request<Asset>(`/api/v1/assets/${enc(id)}`, { method: "PATCH", body: b }),
+  discoverAssets: (days: number) => request<{ created: number; updated: number }>("/api/v1/assets/discover", J({ days })),
+  assetEvents: (id: string, days = 7, limit = 50) => request<AssetEvents>(`/api/v1/assets/${enc(id)}/events?days=${days}&limit=${limit}`),
+  assetRelated: (id: string, days = 7) => request<AssetRelated>(`/api/v1/assets/${enc(id)}/related?days=${days}`),
+  assetCases: (id: string) => request<AssetCaseRef[]>(`/api/v1/assets/${enc(id)}/cases`),
+  // data sources
+  connectors: () => request<ConnectorInfo[]>("/api/v1/data-sources/connectors"),
+  listDataSources: () => request<DataSource[]>("/api/v1/data-sources"),
+  createDataSource: (b: DataSourceCreate) => request<DataSource>("/api/v1/data-sources", J(b)),
+  updateDataSource: (id: string, b: { enabled?: boolean; name?: string }) =>
+    request<DataSource>(`/api/v1/data-sources/${enc(id)}`, { method: "PATCH", body: b }),
+  deleteDataSource: (id: string) => request<void>(`/api/v1/data-sources/${enc(id)}`, { method: "DELETE" }),
+  rotateKey: (id: string) => request<DataSource>(`/api/v1/data-sources/${enc(id)}/rotate-key`, { method: "POST" }),
+  testDataSource: (id: string) => request<{ ok: boolean; detail: string }>(`/api/v1/data-sources/${enc(id)}/test`, { method: "POST" }),
+  collectDataSource: (id: string) => request<{ accepted: number }>(`/api/v1/data-sources/${enc(id)}/collect`, { method: "POST" }),
+  // audit
+  audit: (qs = "") => request<AuditRow[]>(`/api/v1/audit${qs}`),
   listUsers: () => request<MemberOut[]>("/api/v1/users"),
   createUser: (u: UserCreate) => request<MemberOut>("/api/v1/users", { method: "POST", body: u }),
   currentTenant: () => request<TenantOut>("/api/v1/tenants/current"),

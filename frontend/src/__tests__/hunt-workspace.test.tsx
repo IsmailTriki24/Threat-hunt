@@ -4,6 +4,7 @@ import { HuntWorkspace } from "@/components/hunt-workspace";
 import { mockFetch, renderWithQuery } from "./helpers";
 
 let perms = ["hunts:read", "hunts:write"];
+vi.mock("next/navigation", () => ({ useRouter: () => ({ push: vi.fn() }) }));
 vi.mock("@/lib/auth", () => ({ useAuth: () => ({ can: (p: string) => perms.includes(p) }) }));
 
 const ID1 = "a".repeat(32), ID2 = "b".repeat(32);
@@ -118,4 +119,33 @@ it("unknown hunt id → not found", async () => {
   mockFetch({ "GET /api/v1/hunts/zzz": () => ({ __status: 404, body: { error: { code: "not_found", message: "Hunt not found" } } }) });
   renderWithQuery(<HuntWorkspace id="zzz" />);
   expect(await screen.findByRole("alert")).toHaveTextContent("Hunt not found");
+});
+
+it("promotes a finding to a case and adds selected rows to a case (cases:write only)", async () => {
+  perms = ["hunts:read", "hunts:write", "cases:write"];
+  const finding = { id: "f1", hunt_id: "h1", title: "PS from Word", description: "d", severity: "HIGH", evidence: [], created_by: null, created_at: "2026-03-01T10:00:00Z" };
+  const m = routes({
+    "GET /api/v1/hunts/h1/findings": () => [finding],
+    "POST /api/v1/cases": () => ({ id: "c1", case_id: "CASE-0001" }),
+    "GET /api/v1/cases": () => [],
+  });
+  renderWithQuery(<HuntWorkspace id="h1" />);
+  const user = userEvent.setup();
+  await runQuery(user);
+  await user.click(screen.getByRole("button", { name: "Promote finding PS from Word to case" }));
+  await waitFor(() => expect(m.bodiesFor("POST /api/v1/cases")).toEqual([{ title: "PS from Word", description: "d", severity: "HIGH", finding_id: "f1" }]));
+  expect(screen.getByRole("button", { name: "Add to case…" })).toBeDisabled(); // nothing selected yet
+  await user.click(screen.getByLabelText(`Select event ${ID1.slice(0, 8)}`));
+  expect(screen.getByRole("button", { name: "Add to case…" })).toBeEnabled();
+  await user.click(screen.getByRole("button", { name: "Add to case…" }));
+  expect(await screen.findByRole("dialog", { name: "Add to case" })).toHaveTextContent("1 event selected");
+});
+
+it("without cases:write the case actions are disabled/hidden", async () => {
+  perms = ["hunts:read", "hunts:write"];
+  routes({ "GET /api/v1/hunts/h1/findings": () => [{ id: "f1", hunt_id: "h1", title: "T", description: "", severity: "LOW", evidence: [], created_by: null, created_at: "2026-03-01T10:00:00Z" }] });
+  renderWithQuery(<HuntWorkspace id="h1" />);
+  await runQuery(userEvent.setup());
+  expect(screen.queryByRole("button", { name: /Promote finding/ })).toBeNull();
+  expect(screen.getByRole("button", { name: "Add to case…" })).toBeDisabled();
 });

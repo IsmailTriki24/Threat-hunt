@@ -5,7 +5,9 @@ import type { RangeSpec } from "@/lib/query";
 import { resolveRange } from "@/lib/query";
 import type { TimelineScope } from "@/lib/api-types";
 import { appendPivot } from "@/lib/hunt-query";
+import { AddToCaseDialog } from "./add-to-case-dialog";
 import { EventDrawer } from "./event-drawer";
+import { useAuth } from "@/lib/auth";
 import { QueryEditor } from "./query-editor";
 import { RangeControl } from "./range-control";
 import { TimelinePanel, type TimelineSource } from "./timeline-view";
@@ -22,6 +24,8 @@ export function InvestigationView() {
   const [source, setSource] = useState<TimelineSource | null>(
     ev && ID.test(ev) ? { kind: "around", eventId: ev, scope: (sp.get("scope") as TimelineScope) || "host", windowMinutes: 30 } : null);
   const [open, setOpen] = useState<string | null>(null);
+  const { can } = useAuth();
+  const [caseEvent, setCaseEvent] = useState<string | null>(null);
 
   const build = () => setSource({ kind: "query", query: { text: text.trim() || undefined, time_range: resolveRange(range), filters: [], sort: [], offset: 0, limit: 50, aggregations: [] } });
 
@@ -37,8 +41,10 @@ export function InvestigationView() {
       <TimelinePanel source={source} onOpen={setOpen} />
       {open && (
         <EventDrawer id={open} onClose={() => setOpen(null)} onPivot={(f) => { setText((t) => appendPivot(t, f.field, String(f.value))); setOpen(null); }}
+          onAddToCase={can("cases:write") ? setCaseEvent : undefined}
           onTimeline={(eventId, scope, windowMinutes) => { setSource({ kind: "around", eventId, scope, windowMinutes }); setOpen(null); }} />
       )}
+      {caseEvent && <AddToCaseDialog eventIds={[caseEvent]} onClose={() => setCaseEvent(null)} />}
     </div>
   );
 }

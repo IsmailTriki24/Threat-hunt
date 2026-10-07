@@ -1,5 +1,10 @@
-import { Placeholder } from "@/components/placeholder";
+import { DataSourcesView } from "@/components/data-sources-view";
 
 export default function Page() {
-  return <Placeholder title="Data Sources" milestone="Milestone 3" summary="Connector configuration and health (Wazuh, Sysmon, Zeek, Suricata, REST)." />;
+  return (
+    <section className="space-y-2">
+      <h1 className="text-base font-semibold">Data Sources</h1>
+      <DataSourcesView />
+    </section>
+  );
 }
