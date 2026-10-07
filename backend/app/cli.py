@@ -45,6 +45,12 @@ async def _with_backend(action: Action) -> None:
 async def _init(settings: Settings, sessionmaker: async_sessionmaker[AsyncSession], backend: OpenSearchBackend) -> None:
     await backend.ensure_schema()
     log.info("opensearch index template ensured")
+    from app.mitre.loader import load_builtin
+
+    async with sessionmaker() as session:
+        tactics, techniques = await load_builtin(session)
+        await session.commit()
+    log.info("mitre reference data loaded", extra={"tactics": tactics, "techniques": techniques})
     if settings.seed_demo_data:
         from app.seed.run import seed_demo
 
@@ -62,12 +68,26 @@ async def _create_superadmin(sessionmaker: async_sessionmaker[AsyncSession], ema
         await session.commit()
 
 
+async def _mitre_load(sessionmaker: async_sessionmaker[AsyncSession], file: str | None) -> None:
+    from app.mitre.loader import import_stix_bundle, load_builtin
+
+    async with sessionmaker() as session:
+        if file:
+            tactics, techniques = await import_stix_bundle(session, await asyncio.to_thread(Path(file).read_bytes))
+        else:
+            tactics, techniques = await load_builtin(session)
+        await session.commit()
+    log.info("mitre reference data loaded", extra={"tactics": tactics, "techniques": techniques})
+
+
 def main() -> None:
     configure_logging(get_settings().log_level)
     parser = argparse.ArgumentParser(prog="app.cli")
     sub = parser.add_subparsers(dest="cmd", required=True)
     sub.add_parser("init", help="run migrations, provision OpenSearch, optionally seed demo data")
     sub.add_parser("migrate", help="run database migrations only")
+    ml = sub.add_parser("mitre-load", help="load ATT&CK reference data (built-in subset, or a STIX bundle file)")
+    ml.add_argument("--file", help="path to an official enterprise-attack STIX bundle (JSON)")
     sa = sub.add_parser("create-superadmin", help="create a platform super admin")
     sa.add_argument("email")
     args = parser.parse_args()
@@ -77,6 +97,8 @@ def main() -> None:
     elif args.cmd == "init":
         migrate()
         asyncio.run(_with_backend(_init))
+    elif args.cmd == "mitre-load":
+        asyncio.run(_with_backend(lambda s, sm, b: _mitre_load(sm, args.file)))
     elif args.cmd == "create-superadmin":
         password = getpass.getpass("Password (min 12 chars): ")
         if len(password) < get_settings().password_min_length:

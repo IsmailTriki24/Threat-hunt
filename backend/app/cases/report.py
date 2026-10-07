@@ -28,6 +28,7 @@ def build_markdown(
     activity: list[dict[str, Any]],
     generated_at: datetime,
     generated_by: str,
+    techniques: list[dict[str, Any]] | None = None,
 ) -> str:
     L: list[str] = [f"# {case.case_id} — {_cell(case.title)}", ""]
     L += [
@@ -63,6 +64,22 @@ def build_markdown(
         ]
         if iocs
         else ["_None recorded._"]
+    )
+    L += ["", "## MITRE ATT&CK techniques", ""]
+    L += (
+        [
+            "| Technique | Name | Confidence | Evidence events | Reasoning |",
+            "|---|---|---|---|---|",
+            *[
+                (
+                    f"| {_cell(t['technique_id'])} | {_cell(t['name'])} | {t['confidence']} | "
+                    f"{t['evidence_count']} | {_cell(t['reasoning'])} |"
+                )
+                for t in techniques
+            ],
+        ]
+        if techniques
+        else ["_No techniques mapped._"]
     )
     L += ["", "## Evidence", ""]
     L += (

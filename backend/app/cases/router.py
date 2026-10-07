@@ -570,6 +570,28 @@ async def generate_report(
         }
         for e in await list_evidence(case_id, principal, session)
     ]
+    from app.mitre.models import MitreMapping, MitreTechnique
+
+    mapped = await session.execute(
+        select(MitreMapping, MitreTechnique.name)
+        .join(MitreTechnique, MitreTechnique.id == MitreMapping.technique_id)
+        .where(
+            MitreMapping.tenant_id == principal.tid,
+            MitreMapping.object_type == "case",
+            MitreMapping.object_id == case.id,
+        )
+        .order_by(MitreMapping.technique_id)
+    )
+    techniques = [
+        {
+            "technique_id": m.technique_id,
+            "name": name,
+            "confidence": m.confidence,
+            "reasoning": m.reasoning,
+            "evidence_count": len(m.evidence_event_ids or []),
+        }
+        for m, name in mapped.all()
+    ]
     journal = [a.model_dump() for a in await _activity(session, case)]
     tl = await _case_timeline(session, _backend(request), case)
     content = report_builder.build_markdown(
@@ -581,6 +603,7 @@ async def generate_report(
         activity=journal,
         generated_at=datetime.now(UTC),
         generated_by=principal.email,
+        techniques=techniques,
     )
     version = (
         int(
