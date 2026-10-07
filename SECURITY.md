@@ -14,6 +14,7 @@ Report vulnerabilities privately to the maintainers; do not open public issues f
 | Input limits | body-size cap (incl. chunked), batch caps, field length caps, `raw` ≤ 64 KiB, window/size caps |
 | XSS | JSON-only API with `CSP: default-src 'none'`; frontend renders values as text only (no `dangerouslySetInnerHTML`) |
 | Outbound HTTP | `core/ssrf.py`: public-address-only, IP pinning, re-validated redirects, port allow-list, size cap |
+| Enrichment data | provider responses are untrusted: allow-listed fields, length/size caps, stored and rendered as text; reputation cached per tenant |
 | Secrets at rest | data-source secrets Fernet-encrypted; ingest keys stored as SHA-256 only |
 | Exports | capped, rate-limited, audited; CSV formula-injection neutralised |
 | Errors | generic 500s with request id; validation errors strip echoed input |

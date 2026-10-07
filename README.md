@@ -1,9 +1,9 @@
 # Threat Hunting & Investigation Platform
 
 Multi-tenant SOC/CERT platform: **hypothesis → hunt → query → evidence → investigation → enrichment → ATT&CK → detection → case**.
-Milestones 1–3 are implemented (foundation, hunting, investigation: cases with evidence/IOCs/assets/timeline/reports, asset inventory, data sources with ingest keys, audit trail): auth, tenants, RBAC, canonical event model, ingestion, OpenSearch-backed
+Milestones 1–4 are implemented (foundation, hunting, investigation, threat intelligence + MITRE ATT&CK): auth, tenants, RBAC, canonical event model, ingestion, OpenSearch-backed
 event search with aggregations, event investigation (pivots, raw view), audit trail, health/metrics, seed data, tests.
-See [ARCHITECTURE.md](ARCHITECTURE.md) for the roadmap (threat intel, detections and AI hunting are *not built yet*).
+See [ARCHITECTURE.md](ARCHITECTURE.md) for the roadmap (detections and AI hunting are *not built yet*).
 
 ## Quick start
 ```bash
@@ -56,6 +56,9 @@ Backend tests run against real PostgreSQL (database `hunt_test`, recreated per r
 ## Layout
 `backend/` FastAPI app, Alembic migrations, tests · `frontend/` Next.js + Tailwind + TanStack Query · `docs/adr/` decisions ·
 `SECURITY.md` controls & known gaps · `CONTRIBUTING.md`.
+
+## Threat intelligence
+Lookups work with **no API keys** (local heuristics + your own watch-list). Add ThreatFox/URLhaus (abuse.ch Auth-Key), OTX, VirusTotal or MISP credentials under *Threat Intelligence → Providers* (tenant admin). Import STIX bundles or pull a TAXII 2.1 collection into the watch-list. Load the full ATT&CK matrix with `python -m app.cli mitre-load --file enterprise-attack.json` (the curated subset loads on `init`).
 
 ## Notes
 * Requires ~1 GB free RAM for OpenSearch (heap set by `OPENSEARCH_JAVA_OPTS`). Dev compose disables OpenSearch disk watermarks.

@@ -1,6 +1,6 @@
 # Architecture
 
-> Status: **Milestones 1 (foundation), 2 (hunting) and 3 (investigation) implemented.** Sections marked *(planned)* are designed for but not yet built.
+> Status: **Milestones 1 (foundation), 2 (hunting), 3 (investigation) and 4 (threat intel + ATT&CK) implemented.** Sections marked *(planned)* are designed for but not yet built.
 
 ## 1. Goals
 A SOC/CERT threat-hunting and investigation platform that evolves from manual hunting → assisted → AI-assisted →
@@ -31,12 +31,14 @@ and, later, the AI planner use), and **connectors** (all integrations behind one
 | `assets/` | asset inventory, discovery from telemetry, telemetry-derived relationships |
 | `datasources/` | persisted connector instances, encrypted secrets, ingest keys, pull collection |
 | `audit/` | audit trail (write + read API) |
+| `intel/` | tenant-private IOC entities, provider adapters, explainable scoring, STIX/TAXII, sightings |
+| `mitre/` | ATT&CK reference data, evidence-backed suggestion rules, mappings, technique risk summaries |
 | `connectors/` | `Connector` interface, registry, `canonical`, `generic_json`, `sysmon` |
 | `workers/` | arq worker: heartbeat, per-tenant retention |
 | `seed/` | deterministic synthetic telemetry (phishing → PowerShell → C2 → persistence → LSASS dump → lateral movement) |
 | `api/` | `/health`, `/ready`, `/metrics`, router assembly |
 
-Planned packages (same conventions): `intelligence/`, `detections/`, `mitre/`, `ai/`.
+Planned packages (same conventions): `detections/`, `mitre/`, `ai/`.
 
 ## 4. Request lifecycle & authorisation
 1. Middleware: body-size cap (streamed bodies counted), request id, security headers, metrics, structured access log.
