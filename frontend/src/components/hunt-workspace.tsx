@@ -5,6 +5,7 @@ import { useEffect, useMemo, useState, type FormEvent } from "react";
 import { api, ApiError } from "@/lib/api";
 import type { EventQueryBody, Filter, Finding, FindingSeverity, Hunt, HuntStatus, SavedQuery, TimelineScope } from "@/lib/api-types";
 import { useAuth } from "@/lib/auth";
+import { MitrePanel, ObjectTechniqueChips } from "./mitre-panel";
 import { appendPivot, downloadBlob } from "@/lib/hunt-query";
 import { addFilter, clampPaging, fmtTime, MAX_WINDOW, resolveRange, SEARCH_AGGS, type RangeSpec } from "@/lib/query";
 import { AggPanel } from "./agg-panel";
@@ -71,7 +72,7 @@ function Workspace({ hunt }: { hunt: Hunt }) {
   const [filters, setFilters] = useState<Filter[]>([]);
   const [sort, setSort] = useState<{ field: string; order: "asc" | "desc" } | null>(null);
   const [applied, setApplied] = useState<EventQueryBody | null>(null);
-  const [tab, setTab] = useState<"results" | "timeline">("results");
+  const [tab, setTab] = useState<"results" | "timeline" | "mitre">("results");
   const [tlSource, setTlSource] = useState<TimelineSource | null>(null);
   const [openEvent, setOpenEvent] = useState<string | null>(null);
   const [selected, setSelected] = useState<Set<string>>(new Set());
@@ -186,6 +187,7 @@ function Workspace({ hunt }: { hunt: Hunt }) {
           placeholder="Hypothesis" onChange={(e) => setHyp(e.target.value)}
           onBlur={() => canWrite && hyp !== hunt.hypothesis && update.mutate({ hypothesis: hyp })} />
         {update.error && <p role="alert" className="text-red-400 text-xs">{errMsg(update.error, "Save failed")}</p>}
+        <ObjectTechniqueChips objectType="hunt" objectId={huntId} />
       </div>
 
       <div className="flex gap-3 items-start">
@@ -248,9 +250,9 @@ function Workspace({ hunt }: { hunt: Hunt }) {
           )}
 
           <div role="tablist" className="flex gap-1 border-b border-line">
-            {(["results", "timeline"] as const).map((t) => (
+            {(["results", "timeline", ...(can("mitre:read") ? (["mitre"] as const) : [])] as const).map((t) => (
               <button key={t} role="tab" aria-selected={tab === t} onClick={() => setTab(t)}
-                className={`px-3 py-1 capitalize ${tab === t ? "text-accent border-b-2 border-accent" : "text-muted"}`}>{t}</button>
+                className={`px-3 py-1 capitalize ${tab === t ? "text-accent border-b-2 border-accent" : "text-muted"}`}>{t === "mitre" ? "MITRE ATT&CK" : t}</button>
             ))}
           </div>
 
@@ -307,6 +309,10 @@ function Workspace({ hunt }: { hunt: Hunt }) {
                 </>
               )}
             </div>
+          )}
+          {tab === "mitre" && (
+            <MitrePanel source={{ hunt_id: huntId }} mutable={canWrite}
+              targets={[{ type: "hunt", id: huntId, label: "This hunt" }, ...(findings.data ?? []).map((f) => ({ type: "finding" as const, id: f.id, label: `Finding: ${f.title}` }))]} />
           )}
           {tab === "timeline" && <TimelinePanel source={tlSource} onOpen={setOpenEvent} />}
         </div>

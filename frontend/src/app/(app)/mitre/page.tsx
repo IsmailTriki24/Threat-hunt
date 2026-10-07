@@ -1,5 +1,5 @@
-import { Placeholder } from "@/components/placeholder";
+import { MatrixView } from "@/components/mitre-views";
 
 export default function Page() {
-  return <Placeholder title="MITRE ATT&CK" milestone="Milestone 4" summary="Technique mapping with evidence and reasoning." />;
+  return <MatrixView />;
 }

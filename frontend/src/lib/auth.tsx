@@ -43,6 +43,11 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   return <Ctx.Provider value={value}>{children}</Ctx.Provider>;
 }
 
+/** Like useAuth but returns null outside an AuthProvider (for widely reused components). */
+export function useOptionalAuth(): AuthState | null {
+  return useContext(Ctx);
+}
+
 export function useAuth(): AuthState {
   const v = useContext(Ctx);
   if (!v) throw new Error("useAuth outside AuthProvider");

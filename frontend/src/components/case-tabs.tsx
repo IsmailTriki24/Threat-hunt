@@ -3,12 +3,17 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import Link from "next/link";
 import { useState, type FormEvent } from "react";
 import { api } from "@/lib/api";
+import { useAuth } from "@/lib/auth";
+import { enrichSummary } from "@/lib/intel";
 import { IOC_TYPES, type CaseOut, type IocType } from "@/lib/api-types";
 import { defang, describeActivity, mergeJournal } from "@/lib/cases";
 import { downloadBlob } from "@/lib/hunt-query";
 import { fmtTime } from "@/lib/query";
 import { ErrorLine, CopyButton, LevelBadge } from "./badges";
 import { EventDrawer } from "./event-drawer";
+import { IntelOpenButton } from "./intel-action";
+import { ScoreBar, VerdictBadge } from "./intel-bits";
+import { CaseTechniqueChips } from "./mitre-panel";
 import { TimelineList } from "./timeline-view";
 
 const invalidate = (qc: ReturnType<typeof useQueryClient>, id: string, ...keys: string[]) => {
@@ -24,6 +29,7 @@ export function OverviewTab({ c }: { c: CaseOut }) {
         <p className="whitespace-pre-wrap">{c.description || <span className="text-muted">No description.</span>}</p>
         {c.resolution && (<><h2 className="text-xs text-muted uppercase">Resolution</h2><p className="whitespace-pre-wrap">{c.resolution}</p></>)}
         {c.hunt_id && <p className="text-xs"><Link className="text-accent hover:underline" href={`/hunts/${c.hunt_id}`}>Originating hunt →</Link></p>}
+        <CaseTechniqueChips caseId={c.id} />
       </section>
       <section className="panel p-3">
         <h2 className="text-xs text-muted uppercase mb-1">Summary</h2>
@@ -141,6 +147,14 @@ export function IocsTab({ caseId, mutable }: { caseId: string; mutable: boolean 
   const add = useMutation({ mutationFn: () => api.addCaseIoc(caseId, type, value.trim()), onSuccess: () => { setValue(""); refresh(); } });
   const remove = useMutation({ mutationFn: (id: string) => api.removeCaseIoc(caseId, id), onSuccess: refresh });
   const extract = useMutation({ mutationFn: () => api.extractCaseIocs(caseId), onSuccess: refresh });
+  const { can } = useAuth();
+  const verdicts = useQuery({
+    queryKey: ["case-ioc-verdicts", caseId, (iocs.data ?? []).map((i) => i.id).join(",")],
+    queryFn: () => api.lookupBatch((iocs.data ?? []).slice(0, 100).map((i) => ({ type: i.type, value: i.value }))),
+    enabled: can("intel:read") && (iocs.data?.length ?? 0) > 0,
+  });
+  const verdictOf = (type: string, value: string) => verdicts.data?.find((v) => v.type === type && v.value === value);
+  const enrich = useMutation({ mutationFn: () => api.enrichCase(caseId), onSuccess: () => { void verdicts.refetch(); void qc.invalidateQueries({ queryKey: ["case-activity", caseId] }); } });
   const submit = (e: FormEvent) => { e.preventDefault(); if (value.trim()) add.mutate(); };
 
   return (
@@ -152,12 +166,14 @@ export function IocsTab({ caseId, mutable }: { caseId: string; mutable: boolean 
           <button className="btn" type="submit" disabled={!mutable || !value.trim() || add.isPending}>Add IOC</button>
         </form>
         <button className="btn" disabled={!mutable || extract.isPending} onClick={() => extract.mutate()}>Re-extract from evidence</button>
+        <button className="btn" disabled={!can("intel:write") || enrich.isPending || !(iocs.data?.length)} onClick={() => enrich.mutate()} title={can("intel:write") ? "Query configured providers for every IOC" : "Requires intel:write"}>{enrich.isPending ? "Enriching…" : "Enrich IOCs"}</button>
         <label className="ml-auto flex items-center gap-1"><input type="checkbox" checked={defanged} onChange={(e) => setDefanged(e.target.checked)} /> Defang display</label>
       </div>
-      <ErrorLine error={add.error ?? remove.error ?? extract.error} fallback="IOC change failed" />
+      <ErrorLine error={add.error ?? remove.error ?? extract.error ?? enrich.error} fallback="IOC change failed" />
+      {enrich.data && <p role="status" className="text-xs panel p-1.5">Enrichment finished: {enrichSummary(enrich.data)}.</p>}
       {iocs.data && (iocs.data.length === 0 ? <p className="panel p-3 text-muted">No indicators yet. Attach evidence or add one manually.</p> : (
         <table className="w-full">
-          <thead><tr>{["Type", "Value", "Source", "Seen", "Context", ""].map((h) => <th key={h} className="th" scope="col">{h}</th>)}</tr></thead>
+          <thead><tr>{["Type", "Value", "Intel", "Source", "Seen", "Context", ""].map((h) => <th key={h} className="th" scope="col">{h}</th>)}</tr></thead>
           <tbody>
             {iocs.data.map((i) => {
               const shown = defanged ? defang(i.type, i.value) : i.value;
@@ -165,6 +181,16 @@ export function IocsTab({ caseId, mutable }: { caseId: string; mutable: boolean 
                 <tr key={i.id} className="hover:bg-bg">
                   <td className="td">{i.type}</td>
                   <td className="td font-mono break-all">{shown} <CopyButton text={shown} /></td>
+                  <td className="td whitespace-nowrap">
+                    {(() => {
+                      const v = verdictOf(i.type, i.value);
+                      return v?.entity_id ? (
+                        <Link href={`/threat-intel/${v.entity_id}`} className="inline-flex items-center gap-1" aria-label={`Intel for ${i.value}`}>
+                          <VerdictBadge verdict={v.verdict} />{v.score !== null && <ScoreBar score={v.score} />}
+                        </Link>
+                      ) : can("intel:write") ? <IntelOpenButton type={i.type} value={i.value} label="Look up" /> : <span className="text-muted text-xs">—</span>;
+                    })()}
+                  </td>
                   <td className="td">{i.source}</td>
                   <td className="td tabular-nums">{i.occurrences}</td>
                   <td className="td text-muted">{i.context}</td>

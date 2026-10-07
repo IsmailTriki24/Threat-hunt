@@ -7,6 +7,8 @@ import { api, ApiError } from "@/lib/api";
 import type { HuntCreate, HuntStatus } from "@/lib/api-types";
 import { fmtTime } from "@/lib/query";
 import { useAuth } from "@/lib/auth";
+import type { MitreMapping } from "@/lib/api-types";
+import { TechniqueChips } from "./mitre-panel";
 
 export const STATUSES: HuntStatus[] = ["DRAFT", "ACTIVE", "COMPLETED", "ARCHIVED"];
 
@@ -76,6 +78,9 @@ export function HuntsList() {
   const [filter, setFilter] = useState<HuntStatus | "ALL">("ALL");
   const [showNew, setShowNew] = useState(false);
   const hunts = useQuery({ queryKey: ["hunts"], queryFn: api.listHunts });
+  const maps = useQuery({ queryKey: ["mitre-mappings", "hunts"], queryFn: () => api.mitreMappings("?object_type=hunt"), enabled: can("mitre:read") });
+  const byHunt = new Map<string, MitreMapping[]>();
+  for (const m of maps.data ?? []) byHunt.set(m.object_id, [...(byHunt.get(m.object_id) ?? []), m]);
   const del = useMutation({
     mutationFn: (id: string) => api.deleteHunt(id),
     onSuccess: () => qc.invalidateQueries({ queryKey: ["hunts"] }),
@@ -100,7 +105,7 @@ export function HuntsList() {
       {hunts.data && (rows.length === 0 ? <p className="panel p-3 text-muted">No hunts{filter !== "ALL" ? ` with status ${filter}` : " yet"}.</p> : (
         <table className="w-full">
           <thead><tr>
-            {["Title", "Status", "Hypothesis", "Findings", "Queries", "Updated", ""].map((h) => <th key={h} className="th" scope="col">{h}</th>)}
+            {["Title", "Status", "Hypothesis", "ATT&CK", "Findings", "Queries", "Updated", ""].map((h) => <th key={h} className="th" scope="col">{h}</th>)}
           </tr></thead>
           <tbody>
             {rows.map((h) => (
@@ -108,6 +113,7 @@ export function HuntsList() {
                 <td className="td"><Link className="text-accent hover:underline" href={`/hunts/${h.id}`}>{h.title}</Link></td>
                 <td className="td">{h.status}</td>
                 <td className="td max-w-[28rem] truncate text-muted" title={h.hypothesis}>{h.hypothesis.slice(0, 120)}</td>
+                <td className="td"><TechniqueChips mappings={byHunt.get(h.id) ?? []} max={3} /></td>
                 <td className="td tabular-nums">{h.finding_count}</td>
                 <td className="td tabular-nums">{h.query_count}</td>
                 <td className="td font-mono whitespace-nowrap">{fmtTime(h.updated_at)}</td>

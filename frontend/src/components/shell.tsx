@@ -18,7 +18,7 @@ export const NAV = [
   { href: "/reports", label: "Reports" },
   { href: "/settings", label: "Settings" },
 ];
-const LIVE = new Set(["/", "/hunts", "/investigations", "/cases", "/events", "/assets", "/data-sources", "/reports", "/settings"]);
+const LIVE = new Set(["/", "/hunts", "/investigations", "/cases", "/events", "/threat-intel", "/mitre", "/assets", "/data-sources", "/reports", "/settings"]);
 
 export function Shell({ children }: { children: ReactNode }) {
   const { status, session, logout, switchTenant } = useAuth();

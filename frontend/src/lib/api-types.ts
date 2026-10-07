@@ -222,3 +222,73 @@ export interface DataSource {
 export interface DataSourceCreate {
   name: string; connector_type: string; config: Record<string, unknown>; secrets: Record<string, string>; enabled: boolean;
 }
+
+// ---- threat intelligence ---------------------------------------------------------------------------
+export type EntityType = "ip" | "domain" | "url" | "sha256" | "sha1" | "md5" | "email" | "certificate" | "malware" | "threat_actor" | "campaign";
+export const ENTITY_TYPES: EntityType[] = ["ip", "domain", "url", "sha256", "sha1", "md5", "email", "certificate", "malware", "threat_actor", "campaign"];
+export type Verdict = "unknown" | "benign" | "suspicious" | "malicious";
+export type WatchVerdict = "malicious" | "suspicious" | "benign";
+export interface IntelEntity {
+  id: string; type: EntityType; value: string; verdict: Verdict; score: number; watch_verdict: WatchVerdict | null;
+  watch_confidence: number; notes: string; tags: string[]; source: string; last_enriched_at: string | null;
+  created_at: string; updated_at: string;
+}
+export interface ScoreSignal { provider: string; verdict: string; confidence: number; weight: number; contribution: number; summary: string }
+export interface IntelObservation {
+  provider: string; status: "ok" | "not_found" | "error" | "unavailable"; verdict: string; confidence: number; summary: string;
+  data: Record<string, unknown>; fetched_at: string;
+}
+export interface IntelRelation { id: string; kind: string; direction: "out" | "in"; other: IntelEntity; source: string }
+export interface IntelCoverage { answered: number; failed: number; not_found: number; skipped: Array<{ provider: string; reason: string }> }
+export interface IntelDetail {
+  entity: IntelEntity; score_breakdown: ScoreSignal[]; observations: IntelObservation[]; relations: IntelRelation[];
+  coverage: IntelCoverage | null;
+}
+export interface IntelProvider {
+  key: string; display_name: string; description: string; supported_types: string[]; offline: boolean; secret_keys: string[];
+  config_schema: JsonSchema; configured: boolean; enabled: boolean; last_status: string; last_detail: string; last_checked_at: string | null;
+}
+export interface Sightings {
+  total: number; by_field: Record<string, number>; days: number; hosts: Array<{ key: string; count: number }>;
+  first_seen: string | null; last_seen: string | null; recent: EventDoc[];
+}
+export interface LookupBody { value: string; type?: EntityType; refresh?: boolean; providers?: string[] }
+export interface EntityUpdate {
+  watch_verdict?: WatchVerdict; clear_watch?: boolean; watch_confidence?: number; notes?: string; tags?: string[];
+}
+export interface BatchVerdict { type: string; value: string; entity_id: string | null; verdict: Verdict | null; score: number | null }
+export interface EnrichCaseResult {
+  checked: number; malicious: number; results: Array<{ type: string; value: string; verdict: Verdict; score: number; entity_id: string }>;
+}
+export interface StixImportResult { created: number; updated: number; named_objects: number; relations: number; skipped: number }
+
+// ---- MITRE ATT&CK ----------------------------------------------------------------------------------
+export type Confidence = "LOW" | "MEDIUM" | "HIGH";
+export const CONFIDENCES: Confidence[] = ["LOW", "MEDIUM", "HIGH"];
+export type MitreObjectType = "hunt" | "case" | "finding" | "detection";
+export interface MitreTactic { id: string; shortname: string; name: string; position: number }
+export interface MitreTechnique {
+  id: string; name: string; parent_id: string | null; is_subtechnique: boolean; tactics: string[]; description: string; url: string; source: string;
+  subtechniques?: MitreTechnique[];
+}
+export interface MatrixTechnique { id: string; name: string; mapping_count: number; top_confidence: Confidence | null; subtechniques: MatrixTechnique[] }
+export interface MatrixColumn { tactic: MitreTactic; techniques: MatrixTechnique[] }
+export interface MitreSuggestion {
+  technique_id: string; name: string; tactics: string[]; confidence: Confidence; reasoning: string[]; event_ids: string[];
+  event_count: number; hosts: string[]; users: string[]; mapped: boolean;
+}
+export interface SuggestResponse { analyzed_events: number; suggestions: MitreSuggestion[] }
+export interface MitreMapping {
+  id: string; technique_id: string; technique_name: string; tactics: string[]; object_type: MitreObjectType; object_id: string;
+  confidence: Confidence; reasoning: string; evidence_event_ids: string[]; evidence_count: number; source: string;
+  created_by: string | null; created_at: string;
+}
+export interface MappingCreate {
+  technique_id: string; object_type: MitreObjectType; object_id: string; confidence: Confidence; reasoning: string;
+  evidence_event_ids: string[]; source: "analyst" | "suggestion";
+}
+export interface TechniqueSummary {
+  technique: MitreTechnique; mappings: number; objects: Array<{ object_type: string; object_id: string; title: string; confidence: Confidence }>;
+  evidence_events: number; hosts: { count: number; names: string[] }; users: { count: number; names: string[] };
+  risk: "HIGH" | "MEDIUM" | "LOW"; risk_reasons: string[];
+}

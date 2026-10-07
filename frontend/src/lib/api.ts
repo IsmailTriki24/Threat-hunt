@@ -4,6 +4,8 @@ import type {
   SavedQuery, Timeline, TimelineScope,
   Asset, AssetCaseRef, AssetCreate, AssetEvents, AssetRelated, AssetUpdate, AuditRow, CaseActivity, CaseAssetRef, CaseCreate,
   CaseEvidence, CaseIoc, CaseOut, CaseReport, CaseUpdate, ConnectorInfo, DataSource, DataSourceCreate, IocType,
+  BatchVerdict, EnrichCaseResult, EntityUpdate, IntelDetail, IntelEntity, IntelProvider, LookupBody, Sightings, StixImportResult,
+  MappingCreate, MatrixColumn, MitreMapping, MitreTactic, MitreTechnique, SuggestResponse, TechniqueSummary,
 } from "./api-types";
 
 const CSRF = { "X-Requested-With": "threat-hunt" };
@@ -188,6 +190,33 @@ export const api = {
   rotateKey: (id: string) => request<DataSource>(`/api/v1/data-sources/${enc(id)}/rotate-key`, { method: "POST" }),
   testDataSource: (id: string) => request<{ ok: boolean; detail: string }>(`/api/v1/data-sources/${enc(id)}/test`, { method: "POST" }),
   collectDataSource: (id: string) => request<{ accepted: number }>(`/api/v1/data-sources/${enc(id)}/collect`, { method: "POST" }),
+  // threat intelligence
+  intelProviders: () => request<IntelProvider[]>("/api/v1/intel/providers"),
+  configureProvider: (key: string, b: { enabled: boolean; config: Record<string, unknown>; secrets?: Record<string, string> }) =>
+    request<IntelProvider>(`/api/v1/intel/providers/${enc(key)}`, { method: "PUT", body: b }),
+  testProvider: (key: string) => request<{ ok: boolean; detail: string }>(`/api/v1/intel/providers/${enc(key)}/test`, { method: "POST" }),
+  taxiiPull: () => request<StixImportResult>("/api/v1/intel/taxii/pull", { method: "POST" }),
+  importStix: (bundle: unknown) => request<StixImportResult>("/api/v1/intel/import/stix", J(bundle)),
+  intelLookup: (b: LookupBody) => request<IntelDetail>("/api/v1/intel/lookup", J(b)),
+  listEntities: (qs = "") => request<IntelEntity[]>(`/api/v1/intel/entities${qs}`),
+  getEntity: (id: string) => request<IntelDetail>(`/api/v1/intel/entities/${enc(id)}`),
+  updateEntity: (id: string, b: EntityUpdate) => request<IntelDetail>(`/api/v1/intel/entities/${enc(id)}`, { method: "PATCH", body: b }),
+  deleteEntity: (id: string) => request<void>(`/api/v1/intel/entities/${enc(id)}`, { method: "DELETE" }),
+  enrichEntity: (id: string, refresh: boolean) => request<IntelDetail>(`/api/v1/intel/entities/${enc(id)}/enrich?refresh=${refresh}`, { method: "POST" }),
+  sightings: (id: string, days = 30) => request<Sightings>(`/api/v1/intel/entities/${enc(id)}/sightings?days=${days}`),
+  addRelation: (id: string, dst_id: string, kind: string) => request<{ status: string }>(`/api/v1/intel/entities/${enc(id)}/relations`, J({ dst_id, kind })),
+  removeRelation: (rid: string) => request<void>(`/api/v1/intel/relations/${enc(rid)}`, { method: "DELETE" }),
+  lookupBatch: (items: Array<{ type: string; value: string }>) => request<BatchVerdict[]>("/api/v1/intel/lookup-batch", J({ items })),
+  enrichCase: (caseId: string, refresh = false) => request<EnrichCaseResult>(`/api/v1/intel/enrich-case/${enc(caseId)}?refresh=${refresh}`, { method: "POST" }),
+  // MITRE ATT&CK
+  mitreTactics: () => request<MitreTactic[]>("/api/v1/mitre/tactics"),
+  mitreMatrix: () => request<MatrixColumn[]>("/api/v1/mitre/matrix"),
+  mitreTechnique: (id: string) => request<MitreTechnique>(`/api/v1/mitre/techniques/${enc(id)}`),
+  mitreSummary: (id: string) => request<TechniqueSummary>(`/api/v1/mitre/techniques/${enc(id)}/summary`),
+  mitreSuggest: (source: { case_id: string } | { hunt_id: string }) => request<SuggestResponse>("/api/v1/mitre/suggest", J(source)),
+  mitreMappings: (qs = "") => request<MitreMapping[]>(`/api/v1/mitre/mappings${qs}`),
+  createMapping: (b: MappingCreate) => request<MitreMapping>("/api/v1/mitre/mappings", J(b)),
+  deleteMapping: (id: string) => request<void>(`/api/v1/mitre/mappings/${enc(id)}`, { method: "DELETE" }),
   // audit
   audit: (qs = "") => request<AuditRow[]>(`/api/v1/audit${qs}`),
   listUsers: () => request<MemberOut[]>("/api/v1/users"),

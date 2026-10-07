@@ -8,9 +8,10 @@ import { isLocked } from "@/lib/cases";
 import { fmtTime } from "@/lib/query";
 import { ErrorLine, LevelBadge } from "./badges";
 import { AssetsTab, AuditTab, EvidenceTab, IocsTab, JournalTab, OverviewTab, ReportsTab, TimelineTab } from "./case-tabs";
+import { MitrePanel } from "./mitre-panel";
 import { WorkflowBar } from "./workflow-bar";
 
-type Tab = "overview" | "timeline" | "evidence" | "iocs" | "assets" | "journal" | "reports" | "audit";
+type Tab = "overview" | "timeline" | "evidence" | "iocs" | "assets" | "mitre" | "journal" | "reports" | "audit";
 
 function Header({ c, canEdit }: { c: CaseOut; canEdit: boolean }) {
   const { can } = useAuth();
@@ -84,7 +85,7 @@ export function CaseWorkspace({ id }: { id: string }) {
   const mutable = canWrite && !locked;
   const tabs: Array<[Tab, string]> = [
     ["overview", "Overview"], ["timeline", "Timeline"], ["evidence", `Evidence (${kase.evidence_count})`], ["iocs", `IOCs (${kase.ioc_count})`],
-    ["assets", `Assets (${kase.asset_count})`], ["journal", "Notes / Journal"], ["reports", "Reports"],
+    ["assets", `Assets (${kase.asset_count})`], ...(can("mitre:read") ? [["mitre", "MITRE"] as [Tab, string]] : []), ["journal", "Notes / Journal"], ["reports", "Reports"],
     ...(can("audit:read") ? [["audit", "Audit"] as [Tab, string]] : []),
   ];
 
@@ -110,6 +111,7 @@ export function CaseWorkspace({ id }: { id: string }) {
         {tab === "evidence" && <EvidenceTab caseId={id} mutable={mutable} />}
         {tab === "iocs" && <IocsTab caseId={id} mutable={mutable} />}
         {tab === "assets" && <AssetsTab caseId={id} mutable={mutable} />}
+        {tab === "mitre" && <MitrePanel source={{ case_id: id }} targets={[{ type: "case", id, label: `Case ${kase.case_id}` }]} mutable={mutable} />}
         {tab === "journal" && <JournalTab caseId={id} canWrite={canWrite} />}
         {tab === "reports" && <ReportsTab caseId={id} canWrite={canWrite} caseNumber={kase.case_id} />}
         {tab === "audit" && <AuditTab caseId={id} />}

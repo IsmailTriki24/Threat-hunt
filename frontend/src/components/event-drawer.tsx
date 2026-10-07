@@ -3,7 +3,10 @@ import { useQuery } from "@tanstack/react-query";
 import { useState } from "react";
 import { api, ApiError } from "@/lib/api";
 import type { EventDoc, Filter, TimelineScope } from "@/lib/api-types";
+import { useOptionalAuth } from "@/lib/auth";
+import { eventIndicators } from "@/lib/intel";
 import { fmtTime } from "@/lib/query";
+import { IntelOpenButton } from "./intel-action";
 import { SeverityBadge } from "./results-table";
 
 type Row = [string, unknown];
@@ -43,6 +46,7 @@ export function EventDrawer({ id, onClose, onPivot, onPivotQuery, onTimeline, on
   const live = useQuery({ queryKey: ["event", id], queryFn: () => api.getEvent(id), enabled: !snapshot });
   const q = snapshot ? { isLoading: false, error: null, data: { event: snapshot, pivots: [] } } : live;
   const [showRaw, setShowRaw] = useState(false);
+  const canIntel = useOptionalAuth()?.can("intel:write") ?? false;
 
   return (
     <aside className="panel fixed right-0 top-9 bottom-0 w-[34rem] max-w-full overflow-y-auto p-3 z-10 shadow-xl" aria-label="Event detail">
@@ -87,6 +91,16 @@ export function EventDrawer({ id, onClose, onPivot, onPivotQuery, onTimeline, on
                 </select>
                 <button className="btn" onClick={() => onTimeline(id, scope, win)}>Timeline around this event</button>
               </div>
+            </section>
+          )}
+          {canIntel && eventIndicators(q.data.event).length > 0 && (
+            <section>
+              <h3 className="text-xs text-muted uppercase mb-1">Threat intelligence</h3>
+              <ul className="text-xs space-y-0.5">
+                {eventIndicators(q.data.event).map((i) => (
+                  <li key={i.value} className="flex items-center gap-2"><span className="text-muted w-24">{i.label}</span><span className="font-mono break-all flex-1">{i.value}</span><IntelOpenButton type={i.type} value={i.value} /></li>
+                ))}
+              </ul>
             </section>
           )}
           {sections(q.data.event).filter(([, r]) => r.length).map(([title, r]) => (
