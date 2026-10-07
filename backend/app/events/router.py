@@ -3,11 +3,13 @@ from typing import Any
 
 from fastapi import APIRouter, Depends, Request
 from pydantic import BaseModel
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.audit import service as audit
 from app.auth.deps import Principal, require
 from app.auth.rbac import Permission
 from app.connectors import registry
+from app.core.db import get_session
 from app.core.errors import AppError, NotFound
 from app.core.metrics import SEARCHES
 from app.core.ratelimit import enforce
@@ -44,10 +46,15 @@ async def search_events(
     query: EventQuery,
     request: Request,
     principal: Principal = Depends(require(Permission.EVENTS_READ)),
+    session: AsyncSession = Depends(get_session),
 ) -> SearchResult:
     await enforce(request, f"search:{principal.user_id}", 120, 60)
     result = await backend_of(request).search(principal.tid, query)
     SEARCHES.inc()
+    if principal.has(Permission.HUNTS_READ):
+        from app.hunts.service import record_history
+
+        await record_history(session, principal, query, result)
     await audit.record(
         request,
         "event.search",

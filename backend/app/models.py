@@ -7,3 +7,6 @@ from app.tenants.models import Tenant
 from app.users.models import Membership, User
 
 __all__ = ["AuditLog", "Base", "Membership", "RefreshToken", "Tenant", "User"]
+from app.hunts.models import Finding, Hunt, HuntNote, QueryHistory, SavedQuery  # noqa: E402
+
+__all__ += ["Finding", "Hunt", "HuntNote", "QueryHistory", "SavedQuery"]

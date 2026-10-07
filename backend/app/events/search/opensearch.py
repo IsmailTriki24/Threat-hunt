@@ -154,15 +154,17 @@ class OpenSearchBackend:
         tr = query.effective_range()
         user_filter: list[dict[str, Any]] = []
         user_must_not: list[dict[str, Any]] = []
-        for f in query.filters:
+        for f in query.effective_filters():
             clause, negate = self._compile_filter(f)
+            negate = negate != f.negate
             (user_must_not if negate else user_filter).append(clause)
         user_must: list[dict[str, Any]] = []
-        if query.q and query.q.strip():
+        effective_q = query.effective_q()
+        if effective_q:
             user_must.append(
                 {
                     "simple_query_string": {
-                        "query": translate_query(query.q),
+                        "query": translate_query(effective_q),
                         "fields": FULL_TEXT_FIELDS,
                         "default_operator": "and",
                         # No FUZZY/NEAR/SLOP/ESCAPE games; PREFIX allows `power*`.
@@ -296,6 +298,22 @@ class OpenSearchBackend:
             raise UpstreamUnavailable("Search backend unavailable") from exc
         hits = resp["hits"]["hits"]
         return hits[0]["_source"] if hits else None
+
+    async def get_events(self, tenant_id: uuid.UUID, event_ids: list[str]) -> list[dict[str, Any]]:
+        if not event_ids:
+            return []
+        body = {
+            "size": min(len(event_ids), 200),
+            "_source": {"excludes": _EXCLUDE_FROM_LIST},
+            "query": {"bool": {"filter": [{"term": {"tenant_id": str(tenant_id)}}, {"ids": {"values": event_ids}}]}},
+        }
+        try:
+            resp = await self.client.search(
+                index=self.pattern, body=body, ignore_unavailable=True, allow_no_indices=True
+            )
+        except OpenSearchException as exc:
+            raise UpstreamUnavailable("Search backend unavailable") from exc
+        return [h["_source"] for h in resp["hits"]["hits"]]
 
     async def delete_before(self, tenant_id: uuid.UUID, cutoff_iso: str) -> int:
         body = {

@@ -6,7 +6,7 @@ import re
 from datetime import UTC, datetime, timedelta
 from typing import Annotated, Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, StringConstraints, model_validator
+from pydantic import BaseModel, ConfigDict, Field, PrivateAttr, StringConstraints, model_validator
 
 from app.events.fields import AGGREGATABLE, FIELDS, NON_QUERYABLE, SORTABLE
 
@@ -81,6 +81,7 @@ def _coerce(kind: str, value: Scalar) -> Scalar:
 class Filter(_Strict):
     field: str
     op: Op = "eq"
+    negate: bool = False
     value: Scalar | list[Scalar] | None = None
 
     @model_validator(mode="after")
@@ -138,6 +139,8 @@ class Aggregation(_Strict):
 
 class EventQuery(_Strict):
     q: Annotated[str, StringConstraints(max_length=MAX_Q_LEN)] | None = None
+    # Hunt query language source (see dsl.py); parsed and validated here, merged at execution time.
+    text: Annotated[str, StringConstraints(max_length=2000)] | None = None
     time_range: TimeRange | None = None  # defaults to the last 24 hours
     filters: list[Filter] = Field(default_factory=list, max_length=25)
     sort: list[Sort] = Field(default_factory=list, max_length=3)
@@ -145,13 +148,33 @@ class EventQuery(_Strict):
     limit: int = Field(default=50, ge=1, le=200)
     aggregations: list[Aggregation] = Field(default_factory=list, max_length=6)
 
+    _parsed: tuple[str | None, list[Filter]] = PrivateAttr(default=(None, []))
+
     @model_validator(mode="after")
     def _check(self) -> "EventQuery":
+        if self.text and self.text.strip():
+            from app.events.search.dsl import QueryParseError, parse
+
+            try:
+                self._parsed = parse(self.text)
+            except QueryParseError as exc:
+                raise ValueError(f"query text: {exc}") from None
+        if len(self.filters) + len(self._parsed[1]) > 25:
+            raise ValueError("too many filters (max 25)")
         if self.offset + self.limit > MAX_WINDOW:
             raise ValueError(f"offset + limit must not exceed {MAX_WINDOW}")
         if len({a.name for a in self.aggregations}) != len(self.aggregations):
             raise ValueError("aggregation names must be unique")
         return self
+
+    def effective_filters(self) -> list[Filter]:
+        return [*self.filters, *self._parsed[1]]
+
+    def effective_q(self) -> str | None:
+        parts = [p for p in (self.q, self._parsed[0]) if p and p.strip()]
+        if len(parts) > 1:
+            return " ".join(f"({p})" for p in parts)
+        return parts[0] if parts else None
 
     def effective_range(self) -> TimeRange:
         return self.time_range or TimeRange.last(timedelta(hours=24))
