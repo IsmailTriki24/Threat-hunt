@@ -13,6 +13,7 @@ Report vulnerabilities privately to the maintainers; do not open public issues f
 | SQL injection | SQLAlchemy parameterised queries only |
 | Input limits | body-size cap (incl. chunked), batch caps, field length caps, `raw` ≤ 64 KiB, window/size caps |
 | XSS | JSON-only API with `CSP: default-src 'none'`; frontend renders values as text only (no `dangerouslySetInnerHTML`) |
+| Exports | capped, rate-limited, audited; CSV formula-injection neutralised |
 | Errors | generic 500s with request id; validation errors strip echoed input |
 | Audit | append-only table (trigger-enforced); logins, denials, user/tenant changes, searches, views, ingests |
 | Secrets | from environment only; startup fails when `JWT_SECRET` is missing/short, or a `dev-only-*` placeholder is used outside `development` |

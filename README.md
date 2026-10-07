@@ -1,9 +1,9 @@
 # Threat Hunting & Investigation Platform
 
 Multi-tenant SOC/CERT platform: **hypothesis → hunt → query → evidence → investigation → enrichment → ATT&CK → detection → case**.
-Milestone 1 (working foundation) is implemented: auth, tenants, RBAC, canonical event model, ingestion, OpenSearch-backed
+Milestones 1–2 are implemented (foundation + hunting: hunts, hunt query language, saved queries/history, findings, notes, export, telemetry-derived timeline): auth, tenants, RBAC, canonical event model, ingestion, OpenSearch-backed
 event search with aggregations, event investigation (pivots, raw view), audit trail, health/metrics, seed data, tests.
-See [ARCHITECTURE.md](ARCHITECTURE.md) for the roadmap (hunts, cases, threat intel, detections and AI hunting are *not built yet*).
+See [ARCHITECTURE.md](ARCHITECTURE.md) for the roadmap (cases, threat intel, detections and AI hunting are *not built yet*).
 
 ## Quick start
 ```bash
@@ -25,7 +25,8 @@ tenants with synthetic telemetry (the *Acme Bank* tenant contains a phishing →
 Demo users (password = `SEED_PASSWORD`, or the one printed by `init`):
 `superadmin@hunt.example`, `admin|analyst|hunter|responder|viewer@acme.example`, `admin|analyst@globex.example`.
 
-Try: search `powershell`, filter `process.parent.name = WINWORD.EXE`, or `network.dst_ip = 203.0.113.45`; open an event and pivot.
+Try the hunt workspace: create a hunt, run `process.parent.name:WINWORD.EXE process.name:powershell.exe`, add the event as a finding, then open *Timeline around this event*.
+Other searches: search `powershell`, filter `process.parent.name = WINWORD.EXE`, or `network.dst_ip = 203.0.113.45`; open an event and pivot.
 Log in as `analyst@globex.example` to confirm none of Acme's events are visible.
 
 ## Ingesting your own data
