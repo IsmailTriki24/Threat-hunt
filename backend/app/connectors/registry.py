@@ -3,7 +3,11 @@ from pydantic import BaseModel
 from app.connectors.base import Connector
 from app.connectors.canonical import CanonicalConnector
 from app.connectors.generic_json import GenericJsonConnector
+from app.connectors.suricata import SuricataConnector
 from app.connectors.sysmon import SysmonConnector
+from app.connectors.wazuh import WazuhConnector
+from app.connectors.windows_eventlog import WindowsEventLogConnector
+from app.connectors.zeek import ZeekConnector
 
 _REGISTRY: dict[str, type[Connector]] = {}
 
@@ -13,7 +17,15 @@ def register(cls: type[Connector]) -> type[Connector]:
     return cls
 
 
-for _cls in (CanonicalConnector, GenericJsonConnector, SysmonConnector):
+for _cls in (
+    CanonicalConnector,
+    GenericJsonConnector,
+    SysmonConnector,
+    ZeekConnector,
+    SuricataConnector,
+    WazuhConnector,
+    WindowsEventLogConnector,
+):
     register(_cls)
 
 

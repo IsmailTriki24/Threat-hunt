@@ -39,8 +39,9 @@ class Connector(ABC):
     supports_collect: ClassVar[bool] = False
     config_model: ClassVar[type[BaseModel]] = EmptyConfig
 
-    def __init__(self, config: BaseModel | None = None) -> None:
+    def __init__(self, config: BaseModel | None = None, secrets: dict[str, str] | None = None) -> None:
         self.config = config if config is not None else self.config_model()
+        self.secrets: dict[str, str] = secrets or {}
 
     async def test_connection(self) -> ConnectionResult:
         return ConnectionResult(ok=True, detail="push-based source; nothing to connect to")
