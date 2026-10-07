@@ -1,9 +1,9 @@
 # Threat Hunting & Investigation Platform
 
 Multi-tenant SOC/CERT platform: **hypothesis → hunt → query → evidence → investigation → enrichment → ATT&CK → detection → case**.
-Milestones 1–2 are implemented (foundation + hunting: hunts, hunt query language, saved queries/history, findings, notes, export, telemetry-derived timeline): auth, tenants, RBAC, canonical event model, ingestion, OpenSearch-backed
+Milestones 1–3 are implemented (foundation, hunting, investigation: cases with evidence/IOCs/assets/timeline/reports, asset inventory, data sources with ingest keys, audit trail): auth, tenants, RBAC, canonical event model, ingestion, OpenSearch-backed
 event search with aggregations, event investigation (pivots, raw view), audit trail, health/metrics, seed data, tests.
-See [ARCHITECTURE.md](ARCHITECTURE.md) for the roadmap (cases, threat intel, detections and AI hunting are *not built yet*).
+See [ARCHITECTURE.md](ARCHITECTURE.md) for the roadmap (threat intel, detections and AI hunting are *not built yet*).
 
 ## Quick start
 ```bash
@@ -39,7 +39,8 @@ curl -s localhost:8000/api/v1/events/ingest -H "authorization: Bearer $TOKEN" -H
             "field_map":{"timestamp":"ts","user.name":"who","auth.source_ip":"ip","outcome":"result"}},
   "events":[{"ts":"2026-10-07T10:00:00Z","who":"dave","ip":"10.1.1.9","result":"failure"}]}'
 ```
-Connectors today: `canonical`, `generic_json`, `sysmon`. Add one by implementing `app/connectors/base.py:Connector` and registering it.
+Connectors today: `canonical`, `generic_json`, `generic_rest` (pull), `sysmon`, `zeek`, `suricata`, `wazuh`, `windows_eventlog`.
+For production-style ingestion create a *Data Source* (UI or `POST /api/v1/data-sources`) and send events to `POST /api/v1/ingest/{id}` with its one-time `hk_…` key. Add one by implementing `app/connectors/base.py:Connector` and registering it.
 
 ## Development
 ```bash

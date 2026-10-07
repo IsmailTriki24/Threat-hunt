@@ -1,6 +1,6 @@
 # Architecture
 
-> Status: **Milestones 1 (foundation) and 2 (hunting) implemented.** Sections marked *(planned)* are designed for but not yet built.
+> Status: **Milestones 1 (foundation), 2 (hunting) and 3 (investigation) implemented.** Sections marked *(planned)* are designed for but not yet built.
 
 ## 1. Goals
 A SOC/CERT threat-hunting and investigation platform that evolves from manual hunting → assisted → AI-assisted →
@@ -27,12 +27,16 @@ and, later, the AI planner use), and **connectors** (all integrations behind one
 | `events/` | canonical schema, **field registry**, engine-neutral `EventQuery`, `SearchBackend` protocol + OpenSearch implementation, ingestion service, pivots, HTTP API |
 | `hunts/` | hunts, hypotheses, saved queries, per-user history, findings (evidence snapshots), notes, CSV/JSON export |
 | `investigations/` | telemetry-derived timeline (process lineage, collapsing, periodicity) |
+| `cases/` | case lifecycle state machine, evidence snapshots, IOCs, case assets, journal, versioned reports |
+| `assets/` | asset inventory, discovery from telemetry, telemetry-derived relationships |
+| `datasources/` | persisted connector instances, encrypted secrets, ingest keys, pull collection |
+| `audit/` | audit trail (write + read API) |
 | `connectors/` | `Connector` interface, registry, `canonical`, `generic_json`, `sysmon` |
 | `workers/` | arq worker: heartbeat, per-tenant retention |
 | `seed/` | deterministic synthetic telemetry (phishing → PowerShell → C2 → persistence → LSASS dump → lateral movement) |
 | `api/` | `/health`, `/ready`, `/metrics`, router assembly |
 
-Planned packages (same conventions): `cases/`, `assets/`, `intelligence/`, `detections/`, `mitre/`, `ai/`.
+Planned packages (same conventions): `intelligence/`, `detections/`, `mitre/`, `ai/`.
 
 ## 4. Request lifecycle & authorisation
 1. Middleware: body-size cap (streamed bodies counted), request id, security headers, metrics, structured access log.
@@ -56,7 +60,7 @@ Roles (`SUPER_ADMIN`, `TENANT_ADMIN`, `SOC_ANALYST`, `THREAT_HUNTER`, `INCIDENT_
 |---|---|---|
 | 1 Foundation | compose stack, auth, tenants, RBAC, migrations, health, canonical schema, ingest, search API, search UI, seed | **done** |
 | 2 Hunting | hunts/hypotheses, hunt query language, saved queries, history, findings, notes, export, pivots, timeline from telemetry | **done** |
-| 3 Investigation | cases, evidence, IOC extraction, assets, audit views, MinIO reports, DataSource entity + more connectors | planned |
+| 3 Investigation | cases, evidence, IOC extraction, assets, audit views, reports, DataSource entity, ingest keys, SSRF-safe pull connector, Zeek/Suricata/Wazuh/WinEvt connectors | **done** (MinIO file export deferred) |
 | 4 Threat intel | IOC entities, enrichment adapters (MISP, ThreatFox/abuse.ch, OTX, VT…) with graceful degradation, scoring, ATT&CK | planned |
 | 5 Detection engineering | Sigma → query compiler, rule lifecycle/testing, hunt→detection | planned |
 | 6 AI hunting | provider abstraction, tool system, planner/validator/analyzer, evidence-cited conclusions | planned |
