@@ -51,7 +51,8 @@ async def search_events(
     await enforce(request, f"search:{principal.user_id}", 120, 60)
     result = await backend_of(request).search(principal.tid, query)
     SEARCHES.inc()
-    if principal.has(Permission.HUNTS_READ):
+    # Skip bare dashboard/aggregation calls so history only holds queries an analyst actually wrote.
+    if principal.has(Permission.HUNTS_READ) and (query.q or query.text or query.filters):
         from app.hunts.service import record_history
 
         await record_history(session, principal, query, result)
