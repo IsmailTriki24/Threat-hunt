@@ -115,6 +115,7 @@ class ProviderOut(BaseModel):
     offline: bool
     secret_keys: list[str]
     config_schema: dict[str, Any]
+    config: dict[str, Any] = Field(default_factory=dict)  # non-secret settings only
     configured: bool
     enabled: bool
     last_status: str

@@ -388,3 +388,16 @@ async def test_taxii_pull_paginates_imports_and_blocks_internal_servers(client, 
     )
     bad = await client.post(f"{I}/taxii/pull", headers=h)
     assert bad.status_code == 400 and "not allowed" in bad.text
+
+
+async def test_provider_list_returns_nonsecret_config_and_offline_are_configured(client, make):
+    t, h = await _admin(make)
+    await client.put(
+        f"{I}/providers/misp",
+        headers=h,
+        json={"config": {"url": "https://misp.example.org"}, "secrets": {"api_key": "SECRET-M"}},
+    )
+    provs = {p["key"]: p for p in (await client.get(f"{I}/providers", headers=h)).json()}
+    assert provs["misp"]["config"]["url"].startswith("https://misp.example.org") and "SECRET-M" not in str(provs)
+    assert provs["heuristics"]["configured"] and provs["watchlist"]["configured"] and provs["heuristics"]["enabled"]
+    assert not provs["otx"]["configured"]
