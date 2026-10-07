@@ -49,6 +49,25 @@ async def enforce_retention(ctx: dict[str, Any]) -> None:
             log.info("retention applied", extra={"tenant_id": str(tenant_id), "deleted": deleted})
 
 
+async def collect_datasources(ctx: dict[str, Any]) -> None:
+    """Pull from every enabled, pull-capable data source (errors only mark that source's health)."""
+    from app.datasources import service as ds_service
+    from app.datasources.models import DataSource
+
+    settings = get_settings()
+    async with ctx["sessionmaker"]() as session:
+        sources = (await session.execute(select(DataSource).where(DataSource.enabled.is_(True)))).scalars().all()
+        for ds in sources:
+            try:
+                if not ds_service.build_connector(ds, settings).supports_collect:
+                    continue
+            except Exception:
+                log.warning("invalid data source configuration", extra={"data_source": str(ds.id)})
+                continue
+            await ds_service.collect_source(session, ctx["search"], settings, ds)
+            await session.commit()
+
+
 def _redis_settings() -> RedisSettings:
     return RedisSettings.from_dsn(get_settings().redis_url)
 
@@ -56,9 +75,10 @@ def _redis_settings() -> RedisSettings:
 class WorkerSettings:
     on_startup = startup
     on_shutdown = shutdown
-    functions = [enforce_retention]
+    functions = [enforce_retention, collect_datasources]
     cron_jobs = [
         cron(heartbeat, second={0, 30}, run_at_startup=True),
         cron(enforce_retention, hour={3}, minute={15}),
+        cron(collect_datasources, minute={0, 5, 10, 15, 20, 25, 30, 35, 40, 45, 50, 55}, timeout=240),
     ]
     redis_settings = _redis_settings()

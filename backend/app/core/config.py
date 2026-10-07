@@ -31,6 +31,13 @@ class Settings(BaseSettings):
     access_token_ttl_minutes: int = 15
     refresh_token_ttl_days: int = 7
 
+    # Encrypts data-source secrets at rest. Falls back to a key derived from JWT_SECRET outside production.
+    data_encryption_key: str = Field(default="", repr=False)
+    # Outbound HTTP (pull connectors, enrichment adapters). Private/loopback/link-local targets are blocked
+    # unless explicitly enabled (development/test only).
+    outbound_allow_private: bool = False
+    outbound_allowed_ports: str = "80,443,8080,8443,9200"
+
     password_min_length: int = 12
     cors_origins: str = ""
     metrics_token: str | None = Field(default=None, repr=False)
@@ -59,6 +66,10 @@ class Settings(BaseSettings):
                 raise ValueError("JWT_SECRET is a development placeholder; refusing to start in production")
             if DEV_PLACEHOLDER_PREFIX in self.database_url:
                 raise ValueError("DATABASE_URL contains a development placeholder password")
+            if not self.data_encryption_key:
+                raise ValueError("DATA_ENCRYPTION_KEY must be set in production")
+            if self.outbound_allow_private:
+                raise ValueError("OUTBOUND_ALLOW_PRIVATE must not be enabled in production")
             if self.seed_demo_data:
                 raise ValueError("SEED_DEMO_DATA must not be enabled in production")
             if not self.opensearch_verify_certs and self.opensearch_url.startswith("https"):

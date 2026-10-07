@@ -66,4 +66,66 @@ async def seed_demo(sessionmaker: async_sessionmaker[AsyncSession], backend: Sea
             if result.failed:
                 log.error("seed events rejected", extra={"tenant": slug, "failed": result.failed[:3]})
         log.info("seeded events", extra={"tenant": slug, "count": len(events)})
+        await backend.refresh()
+        if with_attack:
+            await _seed_case(sessionmaker, backend, tenant_ids[slug])
     return password if generated and created_users else ""
+
+
+async def _seed_case(
+    sessionmaker: async_sessionmaker[AsyncSession], backend: SearchBackend, tenant_id: uuid.UUID
+) -> None:
+    """A realistic, ready-to-explore investigation built from the synthetic attack chain."""
+    from app.assets import service as asset_service
+    from app.auth.deps import Principal
+    from app.cases import service as case_service
+    from app.cases.models import Case
+    from app.datasources.models import DataSource
+    from app.datasources.service import new_ingest_key
+    from app.events.search.query import EventQuery
+
+    async with sessionmaker() as session:
+        analyst = (await session.execute(select(User).where(User.email == "analyst@acme.example"))).scalar_one()
+        principal = Principal(analyst.id, analyst.email, Role.SOC_ANALYST, tenant_id, False)
+        ids: list[str] = []
+        for text in ("host.hostname:ws-fin-014 user.name:mharper severity>=60", "user.name:svc_backup severity>=65"):
+            res = await backend.search(
+                tenant_id, EventQuery(text=text, limit=50, sort=[{"field": "timestamp", "order": "asc"}])
+            )
+            ids += [h["id"] for h in res.hits]
+        case = Case(
+            tenant_id=tenant_id,
+            number=await case_service.next_number(session, tenant_id),
+            title="Suspicious PowerShell from Office on WS-FIN-014",
+            severity="HIGH",
+            priority="P2",
+            description="Word spawned an encoded PowerShell command, followed by C2-like outbound traffic, a "
+            "scheduled task, an LSASS memory dump and a network logon to SRV-FILE-02 with svc_backup.",
+            assignee_id=analyst.id,
+            created_by=analyst.id,
+            status="INVESTIGATING",
+        )
+        session.add(case)
+        await session.flush()
+        await session.refresh(case)
+        await case_service.log(session, principal, case, "created")
+        await case_service.log(
+            session,
+            principal,
+            case,
+            "status_change",
+            "Triage complete; host isolated pending review",
+            {"from": "OPEN", "to": "INVESTIGATING"},
+        )
+        await case_service.add_evidence(
+            session, backend, principal, case, list(dict.fromkeys(ids)), "Seeded demo evidence"
+        )
+        await asset_service.discover(session, backend, tenant_id, 2)
+        raw, key_hash = new_ingest_key()
+        session.add(
+            DataSource(
+                tenant_id=tenant_id, name="Sysmon push (demo)", connector_type="sysmon", ingest_key_hash=key_hash
+            )
+        )
+        del raw  # demo source's key is intentionally unrecoverable; rotate it in the UI to obtain one
+        await session.commit()

@@ -7,6 +7,14 @@ from app.events.search.query import EventQuery, SearchResult
 
 
 @dataclass
+class Distinct:
+    key: str
+    count: int
+    first_seen: str | None
+    last_seen: str | None
+
+
+@dataclass
 class IndexResult:
     accepted: int = 0
     duplicates: int = 0
@@ -21,6 +29,8 @@ class SearchBackend(Protocol):
 
     async def ensure_schema(self) -> None: ...
 
+    async def refresh(self) -> None: ...
+
     async def index_events(self, events: list[Event]) -> IndexResult: ...
 
     async def search(self, tenant_id: uuid.UUID, query: EventQuery) -> SearchResult: ...
@@ -28,6 +38,10 @@ class SearchBackend(Protocol):
     async def get_event(self, tenant_id: uuid.UUID, event_id: str) -> dict[str, Any] | None: ...
 
     async def get_events(self, tenant_id: uuid.UUID, event_ids: list[str]) -> list[dict[str, Any]]: ...
+
+    async def distinct_values(
+        self, tenant_id: uuid.UUID, field: str, start_iso: str, end_iso: str, size: int = 500
+    ) -> list[Distinct]: ...
 
     async def delete_before(self, tenant_id: uuid.UUID, cutoff_iso: str) -> int: ...
 

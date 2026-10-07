@@ -10,7 +10,7 @@ from app.core.config import Settings
 from app.core.errors import UpstreamUnavailable
 from app.events.fields import CUSTOM_ANALYSIS, FIELDS, FULL_TEXT_FIELDS, build_properties
 from app.events.schema import SCHEMA_VERSION, Event, EventType
-from app.events.search.base import IndexResult
+from app.events.search.base import Distinct, IndexResult
 from app.events.search.query import (
     AggregationResult,
     Bucket,
@@ -120,6 +120,9 @@ class OpenSearchBackend:
             "_meta": {"schema_version": SCHEMA_VERSION},
         }
         await self.client.indices.put_index_template(name=f"{self.prefix}telemetry", body=body)
+
+    async def refresh(self) -> None:
+        await self.client.indices.refresh(index=self.pattern, ignore_unavailable=True)
 
     # ---- write ------------------------------------------------------------------------------
     async def index_events(self, events: list[Event]) -> IndexResult:
@@ -314,6 +317,40 @@ class OpenSearchBackend:
         except OpenSearchException as exc:
             raise UpstreamUnavailable("Search backend unavailable") from exc
         return [h["_source"] for h in resp["hits"]["hits"]]
+
+    async def distinct_values(
+        self, tenant_id: uuid.UUID, field: str, start_iso: str, end_iso: str, size: int = 500
+    ) -> list[Distinct]:
+        spec = FIELDS.get(field)
+        if spec is None or not spec.aggregatable:
+            raise ValueError(f"field {field!r} is not aggregatable")
+        body = {
+            "size": 0,
+            "query": {
+                "bool": {
+                    "filter": [
+                        {"term": {"tenant_id": str(tenant_id)}},
+                        {"range": {"timestamp": {"gte": start_iso, "lt": end_iso}}},
+                    ]
+                }
+            },
+            "aggs": {
+                "v": {
+                    "terms": {"field": spec.exact_path, "size": min(size, 1000)},
+                    "aggs": {"first": {"min": {"field": "timestamp"}}, "last": {"max": {"field": "timestamp"}}},
+                }
+            },
+        }
+        try:
+            resp = await self.client.search(
+                index=self.pattern, body=body, ignore_unavailable=True, allow_no_indices=True
+            )
+        except OpenSearchException as exc:
+            raise UpstreamUnavailable("Search backend unavailable") from exc
+        return [
+            Distinct(str(b["key"]), b["doc_count"], b["first"].get("value_as_string"), b["last"].get("value_as_string"))
+            for b in resp["aggregations"]["v"]["buckets"]
+        ]
 
     async def delete_before(self, tenant_id: uuid.UUID, cutoff_iso: str) -> int:
         body = {

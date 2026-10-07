@@ -51,7 +51,7 @@ class GenericRestConnector(Connector):
                 "GET",
                 str(cfg.url),
                 headers=self._headers(),
-                timeout=cfg.timeout_s,
+                timeout_s=cfg.timeout_s,
                 transport=HTTP_TRANSPORT,
                 resolver=RESOLVER,
             )
@@ -75,7 +75,7 @@ class GenericRestConnector(Connector):
             str(cfg.url),
             headers=self._headers(),
             params=params,
-            timeout=cfg.timeout_s,
+            timeout_s=cfg.timeout_s,
             transport=HTTP_TRANSPORT,
             resolver=RESOLVER,
         )

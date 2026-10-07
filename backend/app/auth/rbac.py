@@ -24,13 +24,30 @@ class Permission(StrEnum):
     HUNTS_READ = "hunts:read"
     HUNTS_WRITE = "hunts:write"
     HUNTS_DELETE = "hunts:delete"
+    CASES_READ = "cases:read"
+    CASES_WRITE = "cases:write"
+    ASSETS_READ = "assets:read"
+    ASSETS_WRITE = "assets:write"
+    DATASOURCES_READ = "datasources:read"
+    DATASOURCES_MANAGE = "datasources:manage"
     TENANTS_MANAGE = "tenants:manage"  # platform-wide: create/disable tenants
 
 
-_ANALYST = {Permission.EVENTS_READ, Permission.HUNTS_READ, Permission.HUNTS_WRITE}
+_ANALYST = {
+    Permission.EVENTS_READ,
+    Permission.HUNTS_READ,
+    Permission.HUNTS_WRITE,
+    Permission.CASES_READ,
+    Permission.CASES_WRITE,
+    Permission.ASSETS_READ,
+    Permission.ASSETS_WRITE,
+    Permission.DATASOURCES_READ,
+}
 
 ROLE_PERMISSIONS: dict[Role, frozenset[Permission]] = {
-    Role.VIEWER: frozenset({Permission.EVENTS_READ, Permission.HUNTS_READ}),
+    Role.VIEWER: frozenset(
+        {Permission.EVENTS_READ, Permission.HUNTS_READ, Permission.CASES_READ, Permission.ASSETS_READ}
+    ),
     Role.SOC_ANALYST: frozenset(_ANALYST),
     Role.THREAT_HUNTER: frozenset(_ANALYST | {Permission.HUNTS_DELETE}),
     Role.INCIDENT_RESPONDER: frozenset(_ANALYST),
@@ -44,6 +61,12 @@ ROLE_PERMISSIONS: dict[Role, frozenset[Permission]] = {
             Permission.HUNTS_READ,
             Permission.HUNTS_WRITE,
             Permission.HUNTS_DELETE,
+            Permission.CASES_READ,
+            Permission.CASES_WRITE,
+            Permission.ASSETS_READ,
+            Permission.ASSETS_WRITE,
+            Permission.DATASOURCES_READ,
+            Permission.DATASOURCES_MANAGE,
         }
     ),
     Role.SUPER_ADMIN: frozenset(Permission),

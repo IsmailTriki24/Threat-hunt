@@ -10,3 +10,26 @@ __all__ = ["AuditLog", "Base", "Membership", "RefreshToken", "Tenant", "User"]
 from app.hunts.models import Finding, Hunt, HuntNote, QueryHistory, SavedQuery  # noqa: E402
 
 __all__ += ["Finding", "Hunt", "HuntNote", "QueryHistory", "SavedQuery"]
+from app.assets.models import Asset  # noqa: E402
+from app.cases.models import (  # noqa: E402
+    Case,
+    CaseActivity,
+    CaseAsset,
+    CaseCounter,
+    CaseEvidence,
+    CaseIoc,
+    CaseReport,
+)
+from app.datasources.models import DataSource  # noqa: E402
+
+__all__ += [
+    "Asset",
+    "Case",
+    "CaseActivity",
+    "CaseAsset",
+    "CaseCounter",
+    "CaseEvidence",
+    "CaseIoc",
+    "CaseReport",
+    "DataSource",
+]

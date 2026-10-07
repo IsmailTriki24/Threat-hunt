@@ -9,6 +9,7 @@ sed \
   -e "s|^REDIS_PASSWORD=.*|REDIS_PASSWORD=$(rand)|" \
   -e "s|^MINIO_ROOT_PASSWORD=.*|MINIO_ROOT_PASSWORD=$(rand)|" \
   -e "s|^JWT_SECRET=.*|JWT_SECRET=$(openssl rand -hex 32)|" \
+  -e "s|^DATA_ENCRYPTION_KEY=.*|DATA_ENCRYPTION_KEY=$(openssl rand -base64 32 \| tr '+/' '-_')|" \
   -e "s|^SEED_PASSWORD=.*|SEED_PASSWORD=|" \
   .env.example > .env
 chmod 600 .env

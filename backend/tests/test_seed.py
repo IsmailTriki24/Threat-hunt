@@ -38,3 +38,29 @@ async def test_seed_creates_isolated_demo_tenants_and_is_idempotent(app):
 async def test_generated_seed_password_is_returned_once(app, make):
     # Everything already exists, so nothing is regenerated; the function must not invent credentials.
     assert await seed_demo(app.state.sessionmaker, app.state.search, "") == ""
+
+
+async def test_seed_builds_demo_case_assets_and_data_source(app):
+    import sqlalchemy as sa
+
+    from app.assets.models import Asset
+    from app.cases.models import Case, CaseEvidence, CaseIoc
+    from app.datasources.models import DataSource
+
+    async with app.state.sessionmaker() as s:
+        acme = (await s.execute(sa.select(Tenant).where(Tenant.slug == "acme-bank"))).scalar_one()
+        case = (await s.execute(sa.select(Case).where(Case.tenant_id == acme.id))).scalar_one()
+        evidence = (
+            await s.execute(sa.select(sa.func.count()).select_from(CaseEvidence).where(CaseEvidence.case_id == case.id))
+        ).scalar_one()
+        iocs = {v for (v,) in (await s.execute(sa.select(CaseIoc.value).where(CaseIoc.case_id == case.id))).all()}
+        hosts = {
+            k
+            for (k,) in (
+                await s.execute(sa.select(Asset.key).where(Asset.tenant_id == acme.id, Asset.type == "host"))
+            ).all()
+        }
+        sources = (await s.execute(sa.select(DataSource.name).where(DataSource.tenant_id == acme.id))).scalars().all()
+    assert case.status == "INVESTIGATING" and case.number == 1 and evidence >= 8
+    assert "203.0.113.45" in iocs and "cdn-update-check.example" in iocs
+    assert {"ws-fin-014", "srv-file-02"} <= hosts and sources == ["Sysmon push (demo)"]
