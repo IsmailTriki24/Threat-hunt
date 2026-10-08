@@ -1,4 +1,4 @@
-import type { AllowEntry, FeedType, IocFeed, IocHunt, IocHuntDetail, IocItem, IocOverview, IocPage } from "./ioc";
+import type { AllowEntry, Bulletin, FeedType, Ioa, IocFeed, IocHunt, IocHuntDetail, IocItem, IocOverview, IocPage, ThreatPage, Ttp } from "./ioc";
 import type { AiRun, AiStatus } from "./ai";
 import type { Alert, AlertStatus, Backtest, DetectionOverview, Rule, RuleStatus, TestCase, TestResult } from "./detections";
 import type {
@@ -223,6 +223,15 @@ export const api = {
   aiRuns: () => request<AiRun[]>("/api/v1/ai/runs"),
   aiRun: (b: { goal: string; hunt_id?: string; hours_back: number }) => request<AiRun>("/api/v1/ai/runs", J(b)),
   aiSave: (id: string, finding_indexes: number[], hunt_id?: string) => request<AiRun>(`/api/v1/ai/runs/${enc(id)}/save`, J({ finding_indexes, ...(hunt_id ? { hunt_id } : {}) })),
+  threats: (qs = "") => request<ThreatPage>(`/api/v1/ioc/threats${qs}`),
+  bulletin: (id: string) => request<Bulletin>(`/api/v1/ioc/threats/${enc(id)}`),
+  threatIocs: (id: string, qs = "") => request<IocPage>(`/api/v1/ioc/threats/${enc(id)}/iocs${qs}`),
+  validateThreat: (id: string, b: { lookback_days: number; name?: string; exclude_ioc_ids: string[]; exclude_ioa_ids: string[]; include_signals: boolean }) => request<IocHunt>(`/api/v1/ioc/threats/${enc(id)}/validate`, J(b)),
+  rejectThreat: (id: string, reason: string) => request<{ rejected: number }>(`/api/v1/ioc/threats/${enc(id)}/reject`, J({ reason })),
+  addIoa: (id: string, b: { name: string; query_text: string; technique_id?: string; severity: string; description?: string }) => request<Ioa>(`/api/v1/ioc/threats/${enc(id)}/ioas`, J(b)),
+  deleteIoa: (id: string, ioaId: string) => request<void>(`/api/v1/ioc/threats/${enc(id)}/ioas/${enc(ioaId)}`, { method: "DELETE" }),
+  addTtp: (id: string, technique_id: string) => request<Ttp>(`/api/v1/ioc/threats/${enc(id)}/ttps`, J({ technique_id })),
+  regroupThreats: () => request<{ threats: number }>("/api/v1/ioc/threats/regroup", J({})),
   iocOverview: () => request<IocOverview>("/api/v1/ioc/overview"),
   iocFeedTypes: () => request<FeedType[]>("/api/v1/ioc/feed-types"),
   iocFeeds: () => request<IocFeed[]>("/api/v1/ioc/feeds"),

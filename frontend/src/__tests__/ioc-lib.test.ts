@@ -34,3 +34,25 @@ describe("queue rules", () => {
     expect(s).toContain("1 already appear in your telemetry");
   });
 });
+
+import { bulletinPlan, typeBreakdown } from "@/lib/ioc";
+
+describe("bulletins", () => {
+  it("summarises a bulletin's composition, largest type first", () => {
+    expect(typeBreakdown({ domain: 3, ip: 12, url: 1 })).toBe("12 ip · 3 domain · 1 url");
+    expect(typeBreakdown({})).toBe("");
+  });
+  it("spells out exactly what validating will hunt", () => {
+    const b = { ioc_count: 40, new_ioc_count: 40, ioa_count: 6, ttp_count: 12 };
+    expect(bulletinPlan(b, 0, 0, true)).toBe("40 indicator(s), 6 behaviour(s), 12 technique(s)");
+    expect(bulletinPlan(b, 5, 2, true)).toBe("35 indicator(s), 4 behaviour(s), 12 technique(s)");
+    expect(bulletinPlan(b, 0, 0, false)).toBe("40 indicator(s)");
+  });
+  it("says when a large threat is hunted in batches", () => {
+    const b = { ioc_count: 1171, new_ioc_count: 1171, ioa_count: 0, ttp_count: 0 };
+    expect(bulletinPlan(b, 0, 0, false)).toContain("500 highest-priority now, the rest in follow-up batches");
+  });
+  it("counts only unreviewed indicators for an already validated bulletin", () => {
+    expect(bulletinPlan({ ioc_count: 30, new_ioc_count: 3, ioa_count: 1, ttp_count: 2 }, 0, 0, true)).toBe("3 indicator(s), 1 behaviour(s), 2 technique(s)");
+  });
+});

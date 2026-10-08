@@ -4,11 +4,14 @@ import Link from "next/link";
 import { useMemo, useState } from "react";
 import { api } from "@/lib/api";
 import { useAuth } from "@/lib/auth";
-import { age, COVERAGE_CLASS, defangIoc, HUNT_STATUS_CLASS, IOC_TYPES, selectable, validationSummary, type FeedType, type IocFeed, type IocHunt, type IocItem } from "@/lib/ioc";
+import {
+  age, bulletinPlan, COVERAGE_CLASS, defangIoc, HUNT_STATUS_CLASS, IOC_TYPES, KIND_LABEL, selectable, SEVERITY_CLASS, TTP_SOURCE_NOTE, typeBreakdown, validationSummary,
+  type FeedType, type IocFeed, type IocHunt, type IocItem, type ThreatRow,
+} from "@/lib/ioc";
 import { fmtTime } from "@/lib/query";
 import { ErrorLine, Modal } from "./badges";
 
-type Tab = "queue" | "hunts" | "feeds" | "allow";
+type Tab = "threats" | "queue" | "hunts" | "feeds" | "allow";
 
 function Stat({ label, value, tone }: { label: string; value: number | string; tone?: string }) {
   return <div className="panel px-3 py-2"><div className={`text-lg font-semibold ${tone ?? ""}`}>{value}</div><div className="text-xs text-muted">{label}</div></div>;
@@ -18,13 +21,14 @@ function Overview() {
   const ov = useQuery({ queryKey: ["ioc-overview"], queryFn: () => api.iocOverview(), refetchInterval: 15000 });
   const d = ov.data;
   if (!d) return <ErrorLine error={ov.error} fallback="Failed to load overview" />;
+  const th = d.threats_by_status ?? {};
   return (
     <div className="grid grid-cols-2 md:grid-cols-6 gap-2">
-      <Stat label="awaiting review" value={d.iocs_by_status.NEW ?? 0} />
-      <Stat label="already seen in your telemetry" value={d.seen_in_environment} tone={d.seen_in_environment ? "text-orange-300" : ""} />
-      <Stat label="new in the last 24h" value={d.new_last_24h} />
-      <Stat label="on the watch list" value={d.iocs_by_status.VALIDATED ?? 0} />
-      <Stat label="open IOC cases" value={d.open_ioc_cases} />
+      <Stat label="threats awaiting review" value={th.NEW ?? 0} />
+      <Stat label="new threats in 24h" value={d.new_threats_24h ?? 0} />
+      <Stat label="IOCs already in your telemetry" value={d.seen_in_environment} tone={d.seen_in_environment ? "text-orange-300" : ""} />
+      <Stat label="threats on the watch list" value={th.VALIDATED ?? 0} />
+      <Stat label="open threat cases" value={d.open_ioc_cases} />
       <Stat label="feeds failing" value={`${d.feeds_failing}/${d.feeds}`} tone={d.feeds_failing ? "text-red-400" : ""} />
     </div>
   );
@@ -72,6 +76,176 @@ function AddIocDialog({ onClose, onDone }: { onClose: () => void; onDone: () => 
         <button className="btn btn-primary" disabled={!value.trim() || add.isPending} onClick={() => add.mutate()}>Add to queue</button>
       </div>
     </Modal>
+  );
+}
+
+function Chip({ children, cls }: { children: React.ReactNode; cls?: string }) {
+  return <span className={`px-1.5 rounded text-xs ${cls ?? "border border-line text-muted"}`}>{children}</span>;
+}
+
+function BulletinDrawer({ id, onClose, onHunt }: { id: string; onClose: () => void; onHunt: () => void }) {
+  const { can } = useAuth();
+  const qc = useQueryClient();
+  const b = useQuery({ queryKey: ["ioc-bulletin", id], queryFn: () => api.bulletin(id) });
+  const [sub, setSub] = useState<"iocs" | "ioas" | "ttps" | "hunts">("iocs");
+  const [dropIoc, setDropIoc] = useState<Set<string>>(new Set());
+  const [dropIoa, setDropIoa] = useState<Set<string>>(new Set());
+  const [signals, setSignals] = useState(true);
+  const [days, setDays] = useState(7);
+  const [typeFilter, setTypeFilter] = useState("");
+  const validate = can("iochunt:validate");
+  const done = () => { void qc.invalidateQueries({ queryKey: ["ioc-threats"] }); void qc.invalidateQueries({ queryKey: ["ioc-bulletin", id] }); void qc.invalidateQueries({ queryKey: ["ioc-hunts"] }); void qc.invalidateQueries({ queryKey: ["ioc-overview"] }); };
+  const go = useMutation({
+    mutationFn: () => api.validateThreat(id, { lookback_days: days, exclude_ioc_ids: [...dropIoc], exclude_ioa_ids: [...dropIoa], include_signals: signals }),
+    onSuccess: () => { done(); onHunt(); onClose(); },
+  });
+  const reject = useMutation({ mutationFn: () => api.rejectThreat(id, "rejected in triage"), onSuccess: () => { done(); onClose(); } });
+  const d = b.data;
+  const toggle = (set: Set<string>, setter: (s: Set<string>) => void, key: string) => { const n = new Set(set); if (n.has(key)) n.delete(key); else n.add(key); setter(n); };
+  const shown = (d?.iocs ?? []).filter((i) => !typeFilter || i.type === typeFilter);
+  const pending = d ? d.iocs.filter((i) => selectable(i)).length : 0;
+  return (
+    <div className="fixed inset-0 z-20 bg-black/60 flex justify-end" role="presentation" onClick={onClose}>
+      <aside role="dialog" aria-modal="true" aria-label="Threat bulletin" className="panel w-[64rem] max-w-full h-full overflow-y-auto p-4 space-y-3" onClick={(e) => e.stopPropagation()}>
+        <div className="flex items-start gap-2">
+          <div>
+            <h2 className="text-lg font-semibold">{d?.name ?? "Loading…"}</h2>
+            {d && <div className="flex flex-wrap gap-1 mt-1">
+              <Chip>{KIND_LABEL[d.kind] ?? d.kind}</Chip><Chip cls={SEVERITY_CLASS[d.severity]}>{d.severity}</Chip><Chip>confidence {d.confidence}</Chip><Chip>{d.status}</Chip>
+              {d.mitre_id && <a className="underline text-xs" href={`https://attack.mitre.org/${d.mitre_id.startsWith("G") ? "groups" : "software"}/${d.mitre_id}/`} target="_blank" rel="noreferrer noopener">ATT&amp;CK {d.mitre_id}</a>}
+              {d.seen_count > 0 && <Chip cls="bg-orange-900/50 text-orange-300">{d.seen_count} event(s) already in your telemetry</Chip>}
+            </div>}
+          </div>
+          <button className="btn ml-auto" onClick={onClose} aria-label="Close bulletin">Close</button>
+        </div>
+        <ErrorLine error={b.error} fallback="Failed to load the bulletin" />
+        {d && (
+          <>
+            <p className="text-xs text-muted">
+              First reported {d.first_seen ? fmtTime(d.first_seen) : "—"} · last updated {d.last_updated ? fmtTime(d.last_updated) : "—"} · sources: {d.sources.join(", ") || "—"}
+              {d.aliases.length > 0 && <> · also known as {d.aliases.join(", ")}</>}
+            </p>
+            <p className="text-sm whitespace-pre-wrap">{d.description}</p>
+            {d.references.length > 0 && <p className="text-xs">References: {d.references.slice(0, 5).map((r) => <a key={r} className="underline mr-2" href={r} target="_blank" rel="noreferrer noopener">{r.replace(/^https?:\/\//, "").slice(0, 48)}</a>)}</p>}
+            {d.case_id && <p className="text-xs">Case: <Link className="underline" href={`/cases/${d.case_id}`}>CASE-{String(d.case_number).padStart(4, "0")}</Link> ({d.case_status})</p>}
+
+            <div role="tablist" className="flex gap-2">
+              {([["iocs", `IOCs (${d.ioc_count})`], ["ioas", `IOAs (${d.ioas.length})`], ["ttps", `TTPs (${d.ttps.length})`], ["hunts", `Hunts (${d.hunts.length})`]] as const).map(([k, label]) => (
+                <button key={k} role="tab" aria-selected={sub === k} className={`btn ${sub === k ? "btn-primary" : ""}`} onClick={() => setSub(k)}>{label}</button>
+              ))}
+            </div>
+
+            {sub === "iocs" && (
+              <div className="space-y-1">
+                <div className="flex gap-2 text-xs items-center">
+                  <span className="text-muted">{typeBreakdown(d.ioc_types)}</span>
+                  <select aria-label="IOC type filter" className="input ml-auto" value={typeFilter} onChange={(e) => setTypeFilter(e.target.value)}><option value="">all types</option>{Object.keys(d.ioc_types).map((t) => <option key={t}>{t}</option>)}</select>
+                </div>
+                <p className="text-xs text-muted">Showing the {d.iocs.length} highest-priority of {d.ioc_count}. Untick any indicator you do not want hunted.</p>
+                <table className="w-full text-xs"><thead className="text-left text-muted"><tr><th /><th>Type</th><th>Indicator</th><th>Confidence</th><th>In my telemetry</th><th>Source</th><th>Age</th><th>Status</th></tr></thead>
+                  <tbody>{shown.map((i) => (
+                    <tr key={i.id} className="border-t border-line align-top">
+                      <td><input type="checkbox" aria-label={`Hunt ${i.value}`} disabled={!selectable(i) || !validate} checked={selectable(i) && !dropIoc.has(i.id)} onChange={() => toggle(dropIoc, setDropIoc, i.id)} /></td>
+                      <td>{i.type}</td><td className="font-mono break-all max-w-md">{defangIoc(i.type, i.value)}</td><td><ConfidenceBar value={i.confidence} /></td>
+                      <td>{i.seen_count > 0 ? <span className="text-orange-300">{i.seen_count} event(s)</span> : <span className="text-muted">none</span>}</td><td>{i.source}</td><td>{age(i.last_seen)}</td><td>{i.status}</td>
+                    </tr>))}
+                  </tbody></table>
+              </div>
+            )}
+
+            {sub === "ioas" && (d.ioas.length === 0 ? <p className="text-xs text-muted">No behaviours are linked yet. They follow from the threat&apos;s techniques (built-in catalogue and your detection rules); add a technique under TTPs.</p> : (
+              <table className="w-full text-xs"><thead className="text-left text-muted"><tr><th /><th>Behaviour</th><th>Technique</th><th>Weight</th><th>Source</th><th>How it is detected</th></tr></thead>
+                <tbody>{d.ioas.map((a) => (
+                  <tr key={a.id} className="border-t border-line align-top">
+                    <td><input type="checkbox" aria-label={`Hunt behaviour ${a.name}`} disabled={!validate || !signals} checked={signals && !dropIoa.has(a.id)} onChange={() => toggle(dropIoa, setDropIoa, a.id)} /></td>
+                    <td>{a.name}<div className="text-muted">{a.description}</div></td><td>{a.technique_id}</td><td><Chip cls={SEVERITY_CLASS[a.severity]}>{a.severity}</Chip></td><td>{a.source}</td>
+                    <td className="font-mono text-muted">{a.query_text}{a.trend_query && <div title={a.trend_query}>+ Trend Vision One query</div>}</td>
+                  </tr>))}
+                </tbody></table>
+            ))}
+
+            {sub === "ttps" && (d.ttps.length === 0 ? <p className="text-xs text-muted">No ATT&amp;CK techniques are associated with this threat yet.</p> : (
+              <table className="w-full text-xs"><thead className="text-left text-muted"><tr><th>Technique</th><th>Name</th><th>Tactics</th><th>Basis</th><th>Confidence</th></tr></thead>
+                <tbody>{d.ttps.map((t) => (
+                  <tr key={t.technique_id} className="border-t border-line align-top">
+                    <td><Link className="underline" href={`/mitre?technique=${t.technique_id}`}>{t.technique_id}</Link></td><td>{t.name}</td><td>{t.tactics.join(", ")}</td>
+                    <td title={t.note}>{TTP_SOURCE_NOTE[t.source] ?? t.source}</td><td>{t.confidence}</td>
+                  </tr>))}
+                </tbody></table>
+            ))}
+
+            {sub === "hunts" && (d.hunts.length === 0 ? <p className="text-xs text-muted">This bulletin has not been hunted yet.</p> : (
+              <ul className="text-xs space-y-1">{d.hunts.map((h) => <li key={h.id}><span className={`px-1.5 rounded ${HUNT_STATUS_CLASS[h.status] ?? ""}`}>{h.status}</span> {fmtTime(h.created_at)} · {h.match_count} indicator match(es), {h.signal_count ?? 0} behaviour/technique event(s){h.case_id && <> · <Link className="underline" href={`/cases/${h.case_id}`}>case</Link></>}</li>)}</ul>
+            ))}
+
+            <div className="panel p-3 space-y-2 text-xs border-t border-line">
+              <p>Validating hunts: <b>{bulletinPlan(d, dropIoc.size, dropIoa.size, signals)}</b> across ingested telemetry, Trend Vision One and LogRhythm, then opens a case with the result (whether or not anything is found).</p>
+              <div className="flex flex-wrap items-center gap-3">
+                <label>Look back <input aria-label="Lookback days" type="number" min={1} max={30} className="input w-16" value={days} onChange={(e) => setDays(Math.max(1, Math.min(30, Number(e.target.value) || 7)))} /> days</label>
+                <label className="flex items-center gap-1"><input type="checkbox" checked={signals} onChange={(e) => setSignals(e.target.checked)} /> also hunt behaviours (IOAs) and techniques (TTPs)</label>
+                <span className="ml-auto flex gap-2">
+                  <button className="btn" disabled={!validate || reject.isPending || d.status === "REJECTED"} onClick={() => reject.mutate()}>Reject</button>
+                  <button className="btn btn-primary" disabled={!validate || go.isPending || (pending === 0 && d.ioas.length === 0 && d.ttps.length === 0)} title={validate ? "" : "Only tenant admins can validate"} onClick={() => go.mutate()}>
+                    {go.isPending ? "Starting…" : d.status === "VALIDATED" ? "Hunt new indicators" : "Validate bulletin & hunt"}
+                  </button>
+                </span>
+              </div>
+              <ErrorLine error={go.error ?? reject.error} fallback="Action failed" />
+            </div>
+          </>
+        )}
+      </aside>
+    </div>
+  );
+}
+
+function ThreatsTab({ onHunt }: { onHunt: () => void }) {
+  const { can } = useAuth();
+  const qc = useQueryClient();
+  const [status, setStatus] = useState("NEW");
+  const [kind, setKind] = useState("");
+  const [minConf, setMinConf] = useState(0);
+  const [seenOnly, setSeenOnly] = useState(false);
+  const [q, setQ] = useState("");
+  const [sort, setSort] = useState("updated");
+  const [open, setOpen] = useState<string | null>(null);
+  const qs = `?${new URLSearchParams({ ...(status && { status }), ...(kind && { kind }), ...(minConf && { min_confidence: String(minConf) }), ...(seenOnly && { seen: "true" }), ...(q.trim() && { q: q.trim() }), sort, limit: "200" })}`;
+  const page = useQuery({ queryKey: ["ioc-threats", qs], queryFn: () => api.threats(qs) });
+  const regroup = useMutation({ mutationFn: () => api.regroupThreats(), onSuccess: () => { void qc.invalidateQueries({ queryKey: ["ioc-threats"] }); } });
+  const rows = page.data?.items ?? [];
+  return (
+    <div className="space-y-2">
+      <div className="flex flex-wrap gap-2 text-xs items-center">
+        <select aria-label="Threat status" className="input" value={status} onChange={(e) => setStatus(e.target.value)}>{["NEW", "VALIDATED", "REJECTED", "EXPIRED", ""].map((s) => <option key={s} value={s}>{s ? (s === "NEW" ? "awaiting review" : s.toLowerCase()) : "all"}</option>)}</select>
+        <select aria-label="Threat kind" className="input" value={kind} onChange={(e) => setKind(e.target.value)}><option value="">all kinds</option>{Object.entries(KIND_LABEL).map(([k, l]) => <option key={k} value={k}>{l}</option>)}</select>
+        <label>min confidence <input aria-label="Minimum confidence" type="number" min={0} max={100} className="input w-16" value={minConf} onChange={(e) => setMinConf(Math.max(0, Math.min(100, Number(e.target.value) || 0)))} /></label>
+        <label className="flex items-center gap-1"><input type="checkbox" checked={seenOnly} onChange={(e) => setSeenOnly(e.target.checked)} /> already in my telemetry</label>
+        <input aria-label="Search threats" className="input w-56" placeholder="Search name, alias, description…" value={q} onChange={(e) => setQ(e.target.value)} />
+        <select aria-label="Sort threats" className="input" value={sort} onChange={(e) => setSort(e.target.value)}>{[["updated", "relevance"], ["confidence", "confidence"], ["iocs", "most IOCs"], ["seen", "seen in telemetry"], ["name", "name"]].map(([v, l]) => <option key={v} value={v}>sort: {l}</option>)}</select>
+        <button className="btn ml-auto" disabled={!can("iochunt:manage") || regroup.isPending} title="Re-group indicators and refresh every bulletin" onClick={() => regroup.mutate()}>{regroup.isPending ? "Refreshing…" : "Refresh bulletins"}</button>
+      </div>
+      <ErrorLine error={page.error ?? regroup.error} fallback="Failed to load threats" />
+      {page.data && (rows.length === 0 ? <p className="panel p-3 text-muted">No threats here. Add feeds under <b>Feeds</b>; indicators are grouped under the threat they belong to automatically.</p> : (
+        <table className="w-full text-xs">
+          <thead className="text-left text-muted"><tr><th>Threat</th><th>Kind</th><th>Severity</th><th>Confidence</th><th>IOCs</th><th>IOAs</th><th>TTPs</th><th>In my telemetry</th><th>Sources</th><th>Last updated</th><th>Status</th></tr></thead>
+          <tbody>{rows.map((t: ThreatRow) => (
+            <tr key={t.id} className="border-t border-line align-top cursor-pointer hover:bg-white/5" onClick={() => setOpen(t.id)}>
+              <td><button className="underline text-left font-medium" onClick={(e) => { e.stopPropagation(); setOpen(t.id); }}>{t.name}</button>
+                {t.new_ioc_count > 0 && t.status === "VALIDATED" && <Chip cls="ml-1 bg-blue-900/50 text-blue-200">+{t.new_ioc_count} new</Chip>}
+                {t.aliases.length > 0 && <div className="text-muted">aka {t.aliases.slice(0, 2).join(", ")}</div>}</td>
+              <td>{KIND_LABEL[t.kind] ?? t.kind}</td><td><Chip cls={SEVERITY_CLASS[t.severity]}>{t.severity}</Chip></td><td><ConfidenceBar value={t.confidence} /></td>
+              <td title={typeBreakdown(t.ioc_types)}>{t.ioc_count}<div className="text-muted">{typeBreakdown(t.ioc_types).slice(0, 36)}</div></td>
+              <td>{t.ioa_count}</td><td>{t.ttp_count}</td>
+              <td>{t.seen_count > 0 ? <span className="text-orange-300">{t.seen_count} event(s)</span> : <span className="text-muted">none</span>}</td>
+              <td className="text-muted">{t.sources.join(", ").slice(0, 40)}</td><td title={t.last_updated ? fmtTime(t.last_updated) : ""}>{t.last_updated ? age(t.last_updated) : "—"}</td>
+              <td>{t.status}{t.case_id && <> · <Link className="underline" href={`/cases/${t.case_id}`} onClick={(e) => e.stopPropagation()}>CASE-{String(t.case_number).padStart(4, "0")}</Link></>}</td>
+            </tr>))}
+          </tbody>
+        </table>
+      ))}
+      {page.data && <p className="text-xs text-muted">{page.data.total} threat(s). Select one to read its bulletin and validate it for hunting.</p>}
+      {open && <BulletinDrawer id={open} onClose={() => setOpen(null)} onHunt={onHunt} />}
+    </div>
   );
 }
 
@@ -145,9 +319,9 @@ function HuntRow({ h }: { h: IocHunt }) {
     <>
       <tr className="border-t border-line cursor-pointer hover:bg-white/5" onClick={() => setOpen((o) => !o)}>
         <td><span className={`px-1.5 rounded ${HUNT_STATUS_CLASS[h.status] ?? ""}`}>{h.status}</span></td>
-        <td>{h.name}<div className="text-muted">{h.mode === "rehunt" ? "scheduled re-hunt" : `last ${h.lookback_days} day(s)`}</div></td>
+        <td>{h.name}<div className="text-muted">{h.mode === "rehunt" ? "scheduled re-hunt" : `last ${h.lookback_days} day(s)`}{h.threat_name ? ` · threat: ${h.threat_name}` : ""}</div></td>
         <td>{h.ioc_count}</td>
-        <td className={h.match_count ? "text-orange-300" : ""}>{h.match_count}{h.new_match_count && h.mode === "rehunt" ? ` (+${h.new_match_count} new)` : ""}</td>
+        <td className={h.match_count || h.signal_count ? "text-orange-300" : ""}>{h.match_count}{h.signal_count ? ` + ${h.signal_count} behaviour/technique` : ""}{h.new_match_count && h.mode === "rehunt" ? ` (+${h.new_match_count} new)` : ""}</td>
         <td>{h.case_id ? <Link className="underline" href={`/cases/${h.case_id}`} onClick={(e) => e.stopPropagation()}>CASE-{String(h.case_number).padStart(4, "0")}</Link> : "—"}{h.case_status && <span className="text-muted"> {h.case_status}</span>}</td>
         <td>{fmtTime(h.created_at)}</td>
       </tr>
@@ -160,6 +334,10 @@ function HuntRow({ h }: { h: IocHunt }) {
           {detail.data && detail.data.matches.length > 0 && (
             <table className="w-full text-xs"><thead className="text-left text-muted"><tr><th>Time</th><th>Indicator</th><th>Host</th><th>User</th><th>Event</th></tr></thead>
               <tbody>{detail.data.matches.slice(0, 50).map((m) => <tr key={m.id}><td>{fmtTime(m.event_timestamp)}</td><td className="font-mono">{defangIoc(m.ioc_type, m.ioc_value)}</td><td>{m.host}</td><td>{m.user}</td><td><Link className="underline" href={`/events?id=${m.event_id}`}>{m.summary.slice(0, 80)}</Link></td></tr>)}</tbody></table>
+          )}
+          {detail.data && detail.data.signal_matches.length > 0 && (
+            <table className="w-full text-xs mt-2"><thead className="text-left text-muted"><tr><th>Time</th><th>Signal</th><th>Host</th><th>User</th><th>Event</th></tr></thead>
+              <tbody>{detail.data.signal_matches.slice(0, 50).map((m) => <tr key={m.id}><td>{fmtTime(m.event_timestamp)}</td><td>{m.kind === "ioa" ? "behaviour" : "technique"}: {m.label}</td><td>{m.host}</td><td>{m.user}</td><td><Link className="underline" href={`/events?id=${m.event_id}`}>{m.summary.slice(0, 80)}</Link></td></tr>)}</tbody></table>
           )}
           {(h.status === "FAILED" || h.status === "PARTIAL") && <button className="btn mt-2" disabled={!can("iochunt:validate") || retry.isPending} onClick={() => retry.mutate()}>Retry hunt</button>}
           <ErrorLine error={retry.error} fallback="Retry failed" />
@@ -304,14 +482,15 @@ function AllowTab() {
 }
 
 export function IocHuntingView() {
-  const [tab, setTab] = useState<Tab>("queue");
-  const tabs: [Tab, string][] = [["queue", "Triage queue"], ["hunts", "Hunts"], ["feeds", "Feeds"], ["allow", "Allow-list"]];
+  const [tab, setTab] = useState<Tab>("threats");
+  const tabs: [Tab, string][] = [["threats", "Threats"], ["queue", "All indicators"], ["hunts", "Hunts"], ["feeds", "Feeds"], ["allow", "Allow-list"]];
   return (
     <section className="space-y-3">
       <h1 className="text-base font-semibold">IOC Hunting</h1>
-      <p className="text-xs text-muted">Feeds bring in recent indicators → a tenant admin validates the relevant ones → the platform hunts all data sources automatically and opens a case with the result, whether or not anything is found.</p>
+      <p className="text-xs text-muted">Feeds bring in recent intelligence, grouped by threat → a tenant admin reads a threat&apos;s bulletin (IOCs, IOAs, TTPs) and validates it → the platform hunts every data source for all of it and opens a case with the result, whether or not anything is found.</p>
       <Overview />
       <div role="tablist" className="flex gap-2">{tabs.map(([k, label]) => <button key={k} role="tab" aria-selected={tab === k} className={`btn ${tab === k ? "btn-primary" : ""}`} onClick={() => setTab(k)}>{label}</button>)}</div>
+      {tab === "threats" && <ThreatsTab onHunt={() => setTab("hunts")} />}
       {tab === "queue" && <QueueTab onHunt={() => setTab("hunts")} />}
       {tab === "hunts" && <HuntsTab />}
       {tab === "feeds" && <FeedsTab />}
