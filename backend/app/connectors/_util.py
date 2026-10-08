@@ -81,7 +81,42 @@ def drop_none(doc: dict[str, Any]) -> dict[str, Any]:
     return out
 
 
+# (path, schema maximum). Attacker-controlled values routinely exceed these (a 20 KB base64 PowerShell command is what
+# a hunter wants to see): truncated, never allowed to make the whole event disappear.
+_LIMITS: tuple[tuple[tuple[str, ...], int], ...] = (
+    (("process", "command_line"), 8192),
+    (("process", "parent", "command_line"), 8192),
+    (("process", "executable"), 1024),
+    (("file", "path"), 1024),
+    (("registry", "key"), 1024),
+    (("registry", "value"), 1024),
+    (("message",), 1024),
+    (("process", "name"), 256),
+    (("process", "parent", "name"), 256),
+    (("host", "hostname"), 256),
+    (("user", "name"), 256),
+)
+
+
+def clip_oversized(doc: dict[str, Any]) -> list[str]:
+    """Truncate over-long string fields in place (keeping the head); returns the dotted names that were cut."""
+    cut: list[str] = []
+    for path, limit in _LIMITS:
+        parent: Any = doc
+        for key in path[:-1]:
+            parent = parent.get(key) if isinstance(parent, dict) else None
+        if isinstance(parent, dict) and isinstance(parent.get(path[-1]), str) and len(parent[path[-1]]) > limit:
+            parent[path[-1]] = parent[path[-1]][:limit]
+            cut.append(".".join(path))
+    return cut
+
+
 def finish(doc: dict[str, Any]) -> list[EventIn]:
+    cut = clip_oversized(doc)
+    if cut:
+        labels = dict(doc.get("labels") or {})
+        labels["truncated"] = ",".join(cut)[:256]
+        doc["labels"] = dict(list(labels.items())[:20])
     try:
         return [EventIn.model_validate(drop_none(doc))]
     except ValidationError as exc:

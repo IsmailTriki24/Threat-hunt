@@ -1020,3 +1020,39 @@ def test_tm_process_names_are_file_names_and_paths_go_to_executable():
         }
     )[0]
     assert oat.process.name == "curl"
+
+
+def test_oversized_values_are_truncated_not_dropped():
+    """A multi-kilobyte base64 PowerShell command is exactly what a hunter wants; it must not make the event vanish."""
+    huge = "powershell.exe -nop -enc " + "A" * 30_000
+    [e] = tm("endpoint_activity").normalize(
+        {
+            **EP_BASE,
+            "eventId": "1",
+            "eventSubId": 2,
+            "objectName": "C:\\Windows\\powershell.exe",
+            "objectFilePath": "C:\\Windows\\powershell.exe",
+            "objectCmd": huge,
+        }
+    )
+    assert len(e.process.command_line) == 8192 and e.process.command_line.startswith(
+        "powershell.exe -nop -enc"
+    )  # head kept, so -enc still matches
+    assert e.labels["truncated"] == "process.command_line"
+    assert e.process.name == "powershell.exe"
+    [d] = tm("detections").normalize(
+        {
+            "uuid": "d-big",
+            "eventTimeDT": "2026-10-08T09:00:00+00:00",
+            "eventName": "X",
+            "processCmd": "x" * 20_000,
+            "filePath": "C:\\" + "a" * 5000,
+        }
+    )
+    assert (
+        len(d.process.command_line) == 8192
+        and len(d.file.path) == 1024
+        and "process.command_line" in d.labels["truncated"]
+    )
+    lr = registry.build("logrhythm", {"base_url": "https://lr.example:8501"}).normalize(lr_log(login="x" * 5000))[0]
+    assert len(lr.user.name) == 256

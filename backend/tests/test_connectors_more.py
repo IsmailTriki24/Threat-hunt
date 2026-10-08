@@ -267,16 +267,12 @@ BAD = [
     ("wazuh", {**WAZUH_ALERT, "data": {"srcip": "300.0.0.1"}}),
     ("wazuh", {**WAZUH_ALERT, "agent": {"ip": "nope", "name": "x"}}),
     ("wazuh", {**WAZUH_ALERT, "rule": {**WAZUH_ALERT["rule"], "level": "high"}}),
-    ("wazuh", {**WAZUH_ALERT, "rule": {**WAZUH_ALERT["rule"], "description": "x" * 5000}, "full_log": None})
-    if False
-    else ("wazuh", {**WAZUH_ALERT, "agent": {"name": "h" * 400}}),
     ("windows_eventlog", {}),
     ("windows_eventlog", {**WIN_4624, "event_id": "abc"}),
     ("windows_eventlog", {**WIN_BASE, "event_id": 1102}),
     ("windows_eventlog", {"event_id": 4624, "computer_name": "x"}),
     ("windows_eventlog", {**WIN_4624, "@timestamp": "garbage"}),
     ("windows_eventlog", {**WIN_4624, "winlog": {"event_data": {"IpAddress": "1.2.3.999", "LogonType": "3"}}}),
-    ("windows_eventlog", {**WIN_4688, "winlog": {"event_data": {"NewProcessName": "x" * 2000}}}),
     (
         "windows_eventlog",
         {**WIN_4624, "raw_blob": "x", "winlog": "notadict", "EventData": ["a"], "event_id": 4624, "IpAddress": "bad"},
@@ -344,3 +340,11 @@ async def test_ingest_end_to_end(client, make, kind, raw, cfg, query):
     await make.app.state.opensearch.indices.refresh(index=make.app.state.search.pattern, ignore_unavailable=True)
     res = (await client.post("/api/v1/events/search", headers=h, json={**query, **wide})).json()
     assert res["total"] == 1, (kind, res)
+
+
+def test_overlong_values_are_truncated_instead_of_dropping_the_event():
+    """These used to be rejected, which silently lost the event. Attacker-controlled values are routinely this long."""
+    w = norm("wazuh", {**WAZUH_ALERT, "agent": {**WAZUH_ALERT.get("agent", {}), "name": "h" * 400}})
+    assert len(w[0].host.hostname) == 256 and w[0].labels["truncated"] == "host.hostname"
+    win = norm("windows_eventlog", {**WIN_4688, "winlog": {"event_data": {"NewProcessName": "x" * 2000}}})
+    assert len(win[0].process.executable) == 1024 and "process.executable" in win[0].labels["truncated"]
