@@ -416,7 +416,8 @@ async def test_validating_a_bulletin_hunts_indicators_behaviours_and_techniques_
         "banking trojan" in d
         and "PowerShell encoded command" in d
         and "T1059.001" in d
-        and "Behavioural and technique findings" in d
+        and "Behavioural findings" in d
+        and "technique sightings (context only" in d
     )
     assert case["evidence_count"] >= 4
     maps = {
@@ -865,3 +866,66 @@ async def test_a_corrected_catalogue_reaches_existing_threats_without_touching_m
     assert enc["trend_query"].startswith('eventId:1 AND objectName:"*\\') and enc["severity"] == "HIGH"
     mine = next(i for i in b["ioas"] if i["id"] == manual["id"])
     assert mine["query_text"] == "process.name:toolx.exe" and mine["severity"] == "HIGH" and mine["source"] == "manual"
+
+
+async def test_technique_tagged_events_alone_are_context_not_a_trigger(client, make, app, attack_software):
+    t, _, h = await _admin(client, make)
+    await make.index(
+        t,
+        [
+            ev(
+                15,
+                event_type="alert",
+                action="AIE: T1105",
+                tags=["attack.t1105", "logrhythm"],
+                host={"hostname": "WS-71"},
+            ),
+            ev(
+                14,
+                event_type="alert",
+                action="AIE: T1059",
+                tags=["attack.t1059.003", "trend-vision-one"],
+                host={"hostname": "WS-72"},
+            ),
+        ],
+    )
+    await seed(app, t, [row(t, "198.51.100.200", threat_name="QakBot", malware="QakBot")])
+    tid = await _threat_id(client, h, "QakBot")
+    hunt = (await client.post(f"{API}/threats/{tid}/validate", headers=h, json={})).json()
+    await runner.process_pending(app.state.sessionmaker, app.state.search, get_settings())
+    done = (await client.get(f"{API}/hunts/{hunt['id']}", headers=h)).json()
+    assert (
+        done["match_count"] == 0
+        and any(m["kind"] == "ttp" for m in done["signal_matches"])
+        and not any(m["kind"] == "ioa" for m in done["signal_matches"])
+    )
+    case = (await client.get(f"/api/v1/cases/{done['case_id']}", headers=h)).json()
+    assert (
+        case["title"] == "Threat hunt: no evidence found - QakBot" and case["severity"] == "INFO"
+    )  # no empty "observed on" title
+    assert (
+        "No evidence found" in case["description"]
+        and "technique sightings (context only" in case["description"]
+        and "WS-71" in case["description"]
+    )
+    maps = {
+        m["technique_id"]: m
+        for m in (
+            await client.get(f"/api/v1/mitre/mappings?object_type=case&object_id={done['case_id']}", headers=h)
+        ).json()
+    }
+    assert (
+        maps["T1105"]["confidence"] == "MEDIUM" and maps["T1105"]["evidence_event_ids"]
+    )  # still recorded as ATT&CK evidence
+    # a later re-hunt that only finds more technique-tagged events does not reopen the case
+    await make.index(
+        t, [ev(1, event_type="alert", action="AIE: T1105 again", tags=["attack.t1105"], host={"hostname": "WS-73"})]
+    )
+    async with app.state.sessionmaker() as db:
+        await db.execute(update(Ioc).where(Ioc.tenant_id == t.id).values(last_hunted_at=NOW - timedelta(hours=7)))
+        await db.execute(update(Threat).where(Threat.tenant_id == t.id).values(last_hunted_at=NOW - timedelta(hours=7)))
+        await db.commit()
+    assert await runner.schedule_rehunts(app.state.sessionmaker, t.id) == 1
+    await runner.process_pending(app.state.sessionmaker, app.state.search, get_settings())
+    again = (await client.get(f"/api/v1/cases/{done['case_id']}", headers=h)).json()
+    assert again["status"] == "CLOSED"

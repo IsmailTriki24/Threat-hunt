@@ -251,7 +251,7 @@ def render_report(
         by_ref[f"{h.kind}:{h.ref}"].append(h)
     if by_ref:
         findings.append(
-            "\nBehavioural and technique findings (leads for analyst review, weaker evidence than a known indicator):"
+            "\nBehavioural findings (leads for analyst review, weaker evidence than a known indicator) and technique sightings (context only: events a security product tagged with one of this threat's techniques; common techniques are tagged in any estate and do not by themselves indicate this threat):"
         )
         for _key, sgs in sorted(by_ref.items(), key=lambda kv: -len(kv[1]))[:15]:
             s_hosts = sorted({str((x.doc.get("host") or {}).get("hostname") or "?") for x in sgs})
@@ -288,7 +288,7 @@ def render_report(
             "3. **Reset credentials** for the accounts seen on those hosts if the match indicates execution or C2.",
             "4. **Scope**: the indicators stay on the watch list and are re-hunted automatically; new matches are appended here.",
         ]
-    elif sig:
+    elif any(x.kind == "ioa" for x in sig):
         out += [
             "1. **Review** the flagged hosts and the behaviours above: no known indicator of this threat matched, so confirm whether the activity is legitimate administration or tooling.",
             "2. If the behaviour is not expected, treat the host as suspicious: collect a triage image and check for the threat's known infrastructure.",
@@ -330,19 +330,22 @@ async def finalize(
     for h in hits:
         groups[str(h.ioc.id)].append(h)
     matched_iocs = [hs[0].ioc for hs in groups.values()]
-    ioc_hosts, sig_hosts = hosts_of(hits), hosts_of(signal_hits)
-    hosts = ioc_hosts | sig_hosts
+    # Only a known indicator or an attacker *behaviour* decides the verdict. Events a product merely tagged with one of the threat's techniques
+    # are context: broad techniques (cmd, PowerShell, remote services) are tagged constantly in any estate and say little about one threat.
+    triggers = [h for h in signal_hits if h.kind == "ioa"]
+    ioc_hosts, sig_hosts = hosts_of(hits), hosts_of(triggers)
+    hosts = ioc_hosts | sig_hosts | hosts_of([h for h in signal_hits if h.kind == "ttp"])
     all_hits: list[Hit | SignalHit] = [*hits, *signal_hits]
     users = {str((x.doc.get("user") or {}).get("name")) for x in all_hits if (x.doc.get("user") or {}).get("name")}
     severity = severity_for(matched_iocs, len(ioc_hosts), len(hits))
-    if signal_hits:
-        severity = max((severity, signal_severity(signal_hits, len(sig_hosts))), key=LEVELS.index)
+    if triggers:
+        severity = max((severity, signal_severity(triggers, len(sig_hosts))), key=LEVELS.index)
         if hits and ioc_hosts & sig_hosts:  # known-bad indicator and attacker behaviour on the same host: corroboration
             severity = bump(severity)
     gaps = incomplete(coverage)
     if hits:
         verdict = "Indicators observed in the environment"
-    elif signal_hits:
+    elif triggers:
         verdict = f"Behaviour consistent with {threat.name if threat else 'this threat'} observed; no known indicators matched"
     elif [c for c in coverage if c.status == "error"]:
         verdict = "Inconclusive: a data source could not be searched"
@@ -396,7 +399,7 @@ async def finalize(
         what = ", ".join(p for p in parts if p)
         title = (
             f"Threat hunt: {threat.name}: {what} observed on {len(hosts)} host(s)"
-            if (hits or signal_hits)
+            if (hits or triggers)
             else f"Threat hunt: no evidence found - {threat.name}"
         )[:200]
     else:
@@ -558,7 +561,7 @@ async def finalize(
         severity=severity,
         events_total=len(hits),
     )
-    if not hits and not signal_hits and not gaps:
+    if not hits and not triggers and not gaps:
         await case_service.apply_transition(
             session,
             principal,
@@ -567,7 +570,7 @@ async def finalize(
             "No evidence of these indicators, behaviours or techniques in any searched source. Coverage: "
             + "; ".join(f"{c.source} ({c.status})" for c in coverage),
         )
-    elif not hits and not signal_hits:
+    elif not hits and not triggers:
         await case_service.log(
             session,
             principal,
@@ -627,7 +630,8 @@ async def _append_rehunt(
     if hunt.threat_id:
         await session.execute(update(Threat).where(Threat.id == hunt.threat_id).values(last_hunted_at=now))
     case = await session.get(Case, hunt.case_id) if hunt.case_id else None
-    if case is None or not (new_hits or new_signal_hits):
+    new_triggers = [h for h in new_signal_hits if h.kind == "ioa"]  # technique-tagged events alone never reopen a case
+    if case is None or not (new_hits or new_triggers):
         return case  # quiet re-check: nothing to say
     groups: dict[str, list[Hit]] = defaultdict(list)
     for h in new_hits:
@@ -664,10 +668,10 @@ async def _append_rehunt(
         "Scheduled re-hunt found new activity:\n- " + "\n- ".join(lines),
         {"ioc_hunt": str(hunt.id)},
     )
-    ioc_hosts, sig_hosts = hosts_of(new_hits), hosts_of(new_signal_hits)
+    ioc_hosts, sig_hosts = hosts_of(new_hits), hosts_of(new_triggers)
     sev = severity_for([hs[0].ioc for hs in groups.values()], len(ioc_hosts), len(new_hits))
-    if new_signal_hits:
-        sev = max((sev, signal_severity(new_signal_hits, len(sig_hosts))), key=LEVELS.index)
+    if new_triggers:
+        sev = max((sev, signal_severity(new_triggers, len(sig_hosts))), key=LEVELS.index)
         if new_hits and ioc_hosts & sig_hosts:
             sev = bump(sev)
     if LEVELS.index(sev) > LEVELS.index(case.severity):
