@@ -283,3 +283,81 @@ async def test_anthropic_adapter_wire_format(monkeypatch):
             await p.complete("s", [], [])
         assert "k-123" not in str(exc.value)
     assert providers.build_provider(get_settings()) is None  # default config: disabled
+
+
+async def test_openrouter_adapter_translates_tools_and_results_and_retries_throttling(monkeypatch):
+    from app.core.config import get_settings
+
+    sent: list[dict[str, Any]] = []
+    statuses = [429, 429, 200]
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        sent.append({"auth": request.headers["authorization"], "body": json.loads(request.content)})
+        st = statuses.pop(0) if statuses else 200
+        if st != 200:
+            return httpx.Response(st, json={"error": "throttled"})
+        return httpx.Response(
+            200,
+            json={
+                "choices": [
+                    {
+                        "finish_reason": "tool_calls",
+                        "message": {
+                            "content": "ok",
+                            "tool_calls": [
+                                {
+                                    "id": "c1",
+                                    "type": "function",
+                                    "function": {"name": "search_events", "arguments": '{"query": "x"}'},
+                                },
+                                {"id": "c2", "type": "function", "function": {"name": "bad", "arguments": "{not json"}},
+                            ],
+                        },
+                    }
+                ],
+                "usage": {"prompt_tokens": 9, "completion_tokens": 4},
+            },
+        )
+
+    async def nosleep(_):
+        return None
+
+    real = httpx.AsyncClient
+    monkeypatch.setattr(providers.httpx, "AsyncClient", lambda **kw: real(transport=httpx.MockTransport(handler), **kw))
+    monkeypatch.setattr(providers.asyncio, "sleep", nosleep)
+    s = get_settings().model_copy(
+        update={"ai_provider": "openrouter", "openrouter_api_key": "or-k", "ai_model": "vendor/model"}
+    )
+    p = providers.build_provider(s)
+    assert p is not None and p.name == "openrouter"
+    history = [
+        {"role": "user", "content": "q"},
+        {
+            "role": "assistant",
+            "content": [
+                {"type": "text", "text": "t"},
+                {"type": "tool_use", "id": "c0", "name": "get_event", "input": {"id": 1}},
+            ],
+        },
+        {"role": "user", "content": [{"type": "tool_result", "tool_use_id": "c0", "content": "res"}]},
+    ]
+    out = await p.complete(
+        "sys", history, [{"name": "search_events", "description": "d", "input_schema": {"type": "object"}}]
+    )
+    assert len(sent) == 3  # two throttled attempts, then success
+    body = sent[-1]["body"]
+    assert sent[-1]["auth"] == "Bearer or-k" and body["model"] == "vendor/model"
+    assert body["tools"][0]["function"]["parameters"] == {"type": "object"}
+    assert [m["role"] for m in body["messages"]] == ["system", "user", "assistant", "tool"]
+    assert (
+        body["messages"][2]["tool_calls"][0]["function"]["arguments"] == '{"id": 1}'
+        and body["messages"][3]["tool_call_id"] == "c0"
+    )
+    assert (
+        out.text == "ok" and out.tool_calls[0].input == {"query": "x"} and out.tool_calls[1].input == {}
+    )  # malformed args are not trusted
+    assert (out.input_tokens, out.output_tokens, out.stop_reason) == (9, 4, "tool_use")
+    statuses[:] = [429] * 10
+    with pytest.raises(ProviderUnavailable) as exc:
+        await p.complete("s", [], [])
+    assert "or-k" not in str(exc.value) and "rate limiting" in str(exc.value)

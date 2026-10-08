@@ -51,8 +51,10 @@ class Settings(BaseSettings):
     retention_days: int = 90
 
     # AI hunting. Provider credentials live only in the environment (never in the DB, never sent to the browser).
-    ai_provider: Literal["none", "anthropic"] = "none"
+    ai_provider: Literal["none", "anthropic", "openrouter"] = "none"
     anthropic_api_key: str = Field(default="", repr=False)
+    openrouter_api_key: str = Field(default="", repr=False)
+    openrouter_base_url: str = "https://openrouter.ai/api/v1"  # operator-controlled; never user input
     ai_model: str = "claude-sonnet-5-5"
     ai_base_url: str = "https://api.anthropic.com"  # operator-controlled (gateway/proxy); never user input
     ai_max_steps: int = Field(default=8, ge=1, le=20)

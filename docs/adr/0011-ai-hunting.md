@@ -29,3 +29,7 @@ author (tenant admins can see all). Every run, translation and save is also audi
 
 **Not in scope:** autonomous actions (no write tools), streaming/background runs (runs are synchronous with a timeout and a
 per-user rate limit), multi-provider routing, per-tenant provider credentials.
+
+**Addendum — OpenRouter.** `AI_PROVIDER=openrouter` (+ `OPENROUTER_API_KEY`, `AI_MODEL`, optional `OPENROUTER_BASE_URL`) uses the OpenAI-compatible
+chat-completions API. The adapter maps the neutral blocks to `tool_calls`/`tool` messages and back, ignores malformed tool arguments, and retries
+429/502/503 a few times with backoff (shared upstream pools throttle in bursts). Keys live in `.env` only.
