@@ -174,11 +174,13 @@ async def assign(
     return touched
 
 
-def _severity(conf: int, roles: set[str], tags: set[str]) -> str:
-    base = 3 if conf >= 85 else 2 if conf >= 60 else 1
-    if ("ransomware" in tags) or (roles & {"botnet_cc", "c2", "command_and_control"} and conf >= 90):
-        base = 4
-    return {1: "LOW", 2: "MEDIUM", 3: "HIGH", 4: "CRITICAL"}[base]
+def _severity(conf: int, tags: set[str], seen: int) -> str:
+    """Severity follows evidence, not the feed's enthusiasm: HIGH for a high-confidence threat, CRITICAL only for ransomware or when
+    the threat is already visible in this tenant's own telemetry."""
+    level = 3 if conf >= 85 else 2 if conf >= 60 else 1
+    if "ransomware" in tags or (seen > 0 and conf >= 60):
+        level = 4
+    return {1: "LOW", 2: "MEDIUM", 3: "HIGH", 4: "CRITICAL"}[level]
 
 
 async def refresh(session: AsyncSession, tenant_id: uuid.UUID, threat_ids: set[uuid.UUID] | None = None) -> int:
@@ -224,8 +226,8 @@ async def refresh(session: AsyncSession, tenant_id: uuid.UUID, threat_ids: set[u
         t.ioc_count, t.ioc_types = len(members), dict(types)
         t.first_seen, t.last_updated = min(m.first_seen for m in members), max(m.last_seen for m in members)
         t.confidence = max(m.confidence for m in members)
-        t.severity = _severity(t.confidence, roles, tags)
         t.seen_count = sum(m.seen_count for m in members)
+        t.severity = _severity(t.confidence, tags, t.seen_count)
         t.sources = sources[:10]
         refs = [m.reference for m in sorted(members, key=lambda x: -x.confidence) if m.reference]
         t.references = list(dict.fromkeys(refs))[:10]

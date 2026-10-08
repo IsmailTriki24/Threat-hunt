@@ -57,6 +57,17 @@ GENERIC_TAGS = {
     "malware",
     "url",
     "none",
+    # markers the platform itself adds to every indicator
+    "urlhaus",
+    "threatfox",
+    "feodo",
+    "otx",
+    "misp",
+    "list",
+    "stix",
+    "c2",
+    "botnet",
+    "cc",
 }
 
 

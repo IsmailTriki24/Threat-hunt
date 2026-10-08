@@ -485,12 +485,12 @@ async def test_rehunt_reopens_a_closed_case_when_new_evidence_appears(client, ma
     case_id = first["case_id"]
     assert (await _case(client, h, case_id))["status"] == "CLOSED"
     # the watch list is re-checked on a schedule, not before it is due
-    assert await runner.schedule_rehunts(app.state.sessionmaker) == 0
+    assert await runner.schedule_rehunts(app.state.sessionmaker, t.id) == 0
     async with app.state.sessionmaker() as db:
         await db.execute(update(Ioc).where(Ioc.tenant_id == t.id).values(last_hunted_at=NOW - timedelta(hours=7)))
         await db.commit()
-    assert await runner.schedule_rehunts(app.state.sessionmaker) == 1
-    assert await runner.schedule_rehunts(app.state.sessionmaker) == 0  # not queued twice
+    assert await runner.schedule_rehunts(app.state.sessionmaker, t.id) == 1
+    assert await runner.schedule_rehunts(app.state.sessionmaker, t.id) == 0  # not queued twice
     # nothing new: quiet, the case stays closed
     await _run(app)
     assert (await _case(client, h, case_id))["status"] == "CLOSED"
@@ -509,7 +509,7 @@ async def test_rehunt_reopens_a_closed_case_when_new_evidence_appears(client, ma
             )
         ],
     )
-    assert await runner.schedule_rehunts(app.state.sessionmaker) == 1
+    assert await runner.schedule_rehunts(app.state.sessionmaker, t.id) == 1
     await _run(app)
     case = await _case(client, h, case_id)
     assert (
@@ -525,7 +525,7 @@ async def test_rehunt_reopens_a_closed_case_when_new_evidence_appears(client, ma
     async with app.state.sessionmaker() as db:
         await db.execute(update(Ioc).where(Ioc.tenant_id == t.id).values(last_hunted_at=NOW - timedelta(hours=7)))
         await db.commit()
-    await runner.schedule_rehunts(app.state.sessionmaker)
+    await runner.schedule_rehunts(app.state.sessionmaker, t.id)
     await _run(app)
     assert (await client.get(f"{API}/hunts", headers=h)).json()[0]["new_match_count"] == 0
 

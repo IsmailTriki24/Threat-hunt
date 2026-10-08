@@ -187,7 +187,7 @@ def _priority_order() -> tuple[Any, ...]:
     return (Ioc.last_hunted_at.asc().nullsfirst(), Ioc.seen_count.desc(), Ioc.confidence.desc(), Ioc.last_seen.desc())
 
 
-async def schedule_rehunts(sessionmaker: Any) -> int:
+async def schedule_rehunts(sessionmaker: Any, tenant_id: uuid.UUID | None = None) -> int:
     """Validated threats stay on the watch list: re-hunt their indicators, behaviours and techniques every few hours over the new window only.
     A threat with more indicators than one hunt carries is worked through in batches (never-hunted first)."""
     created = 0
@@ -197,6 +197,7 @@ async def schedule_rehunts(sessionmaker: Any) -> int:
             (
                 await session.execute(
                     select(Threat).where(
+                        *([Threat.tenant_id == tenant_id] if tenant_id else []),
                         Threat.status == "VALIDATED",
                         Threat.case_id.is_not(None),
                         (Threat.last_hunted_at.is_(None))
@@ -264,6 +265,7 @@ async def schedule_rehunts(sessionmaker: Any) -> int:
             (
                 await session.execute(
                     select(Ioc).where(
+                        *([Ioc.tenant_id == tenant_id] if tenant_id else []),
                         Ioc.status == "VALIDATED",
                         Ioc.case_id.is_not(None),
                         Ioc.threat_id.is_(None)

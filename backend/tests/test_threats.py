@@ -147,7 +147,7 @@ async def test_indicators_are_grouped_under_their_threat_and_aliases_merge(app, 
         and ts["Campaign: spring phishing"].kind == "campaign"
     )
     assert "QakBot is a banking trojan" in qak.description and "MITRE ATT&CK: S9999" in qak.description
-    assert qak.severity == "CRITICAL"  # C2 role at confidence >= 90
+    assert qak.severity == "HIGH"  # high confidence, but nobody has seen it in this tenant, so not CRITICAL
 
 
 async def test_regrouping_is_idempotent_and_an_unnamed_threat_expires_when_its_indicators_do(app, make):
@@ -671,7 +671,7 @@ async def test_a_large_threat_is_hunted_in_prioritised_batches(client, make, app
     assert len(validated) == 12  # the whole bulletin is on the watch list...
     await runner.process_pending(app.state.sessionmaker, app.state.search, get_settings())
     # ...and the remainder is queued immediately, never-hunted first
-    assert await runner.schedule_rehunts(app.state.sessionmaker) == 1
+    assert await runner.schedule_rehunts(app.state.sessionmaker, t.id) == 1
     async with app.state.sessionmaker() as db:
         rh = (
             await db.execute(select(IocHunt).where(IocHunt.threat_id == uuid.UUID(tid), IocHunt.mode == "rehunt"))
@@ -747,3 +747,12 @@ async def test_a_full_regroup_rederives_bad_names_from_the_other_tags_and_cleans
         "Unattributed indicators (test-feed)",
     }
     assert not ({"github", "elf", "217-60-102-5"} & names)  # the junk bulletins are gone, not left empty
+
+
+def test_severity_follows_evidence_not_feed_enthusiasm():
+    assert threats._severity(100, set(), 0) == "HIGH"  # a 100-confidence feed entry nobody has seen is not CRITICAL
+    assert threats._severity(70, set(), 0) == "MEDIUM" and threats._severity(30, set(), 0) == "LOW"
+    assert threats._severity(70, set(), 3) == "CRITICAL"  # already visible in our own telemetry
+    assert threats._severity(40, set(), 3) == "LOW"  # ...but only if the intelligence is credible
+    assert threats._severity(50, {"ransomware"}, 0) == "CRITICAL"
+    assert threats.is_generic("threatfox") and threats.is_generic("urlhaus")
