@@ -7,13 +7,14 @@ scheduler's watermark is always safe to advance.
 Time: LogRhythm reports `logDate` shifted by the console's UTC offset (observed: +1h for this deployment). `date_shift_hours`
 corrects both the search window sent to the API and the event timestamp (true time = logDate + shift)."""
 
+import json
 import re
 import time
 from collections.abc import AsyncIterator
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
-from pydantic import BaseModel, ConfigDict, Field, HttpUrl
+from pydantic import BaseModel, ConfigDict, Field, HttpUrl, model_validator
 
 from app.connectors._http import SourceError, request_json
 from app.connectors._util import clip, finish, integer, ip_list, labels, text, valid_ip
@@ -25,6 +26,7 @@ VALUE_STRING = 4
 MAX_MSGS = 30_000
 PAGE_SIZE = 500
 MIN_WINDOW = timedelta(minutes=1)
+MAX_SEARCHES_PER_WINDOW = 16  # bounds the load one window can put on the SIEM when splitting keeps failing
 _TECHNIQUE = re.compile(r"\bT(\d{4})(?:\.(\d{3}))?\b")
 
 
@@ -46,12 +48,26 @@ class LogRhythmConfig(BaseModel):
     hostname: str | None = Field(
         default=None, max_length=255, description="Only logs where this host is origin or impacted"
     )
+    query_filter: dict[str, Any] | None = Field(
+        default=None,
+        description="Raw LogRhythm queryFilter object, e.g. copied from a Web Console search (browser dev tools). Overrides hostname",
+    )
+    allow_unfiltered: bool = Field(
+        default=False,
+        description="Collect with no filter. Real SIEMs often exceed 30,000 logs/minute; leave off unless yours is small",
+    )
     initial_lookback_hours: int = Field(default=1, ge=1, le=168)
-    window_minutes: int = Field(default=60, ge=5, le=240)
+    window_minutes: int = Field(default=10, ge=1, le=240)
     overlap_minutes: int = Field(default=10, ge=0, le=60)
     query_timeout_min: int = Field(default=5, ge=1, le=30)
     time_budget_s: int = Field(default=100, ge=10, le=200)
     timeout_s: float = Field(default=60.0, gt=0, le=120)
+
+    @model_validator(mode="after")
+    def _filter_size(self) -> "LogRhythmConfig":
+        if self.query_filter is not None and (not self.query_filter or len(json.dumps(self.query_filter)) > 20_000):
+            raise ValueError("query_filter must be a non-empty JSON object under 20 KB")
+        return self
 
 
 def _iso(dt: datetime) -> str:
@@ -107,27 +123,36 @@ class LogRhythmConnector(Connector):
                     ],
                 }
             )
+        query_filter: dict[str, Any] = self.cfg.query_filter or {
+            "msgFilterType": 2,
+            "isSavedFilter": False,
+            "filterGroup": {
+                "filterItemType": 1,
+                "filterGroupOperator": 0,
+                "filterMode": 1,
+                "filterType": 1000,
+                "filterItems": items,
+            },
+        }
         return {
             "maxMsgsToQuery": MAX_MSGS,
             "logCacheSize": 10000,
             "queryTimeout": self.cfg.query_timeout_min,
             "queryRawLog": False,
             "queryEventManager": False,
-            "queryFilter": {
-                "msgFilterType": 2,
-                "isSavedFilter": False,
-                "filterGroup": {
-                    "filterItemType": 1,
-                    "filterGroupOperator": 0,
-                    "filterMode": 1,
-                    "filterType": 1000,
-                    "filterItems": items,
-                },
-            },
+            "queryFilter": query_filter,
             "dateCriteria": {"useInsertedDate": False, "dateMin": _iso(start + shift), "dateMax": _iso(end + shift)},
         }
 
-    async def _search_window(self, start: datetime, end: datetime) -> list[dict[str, Any]]:
+    async def _search_window(
+        self, start: datetime, end: datetime, budget: list[int] | None = None
+    ) -> list[dict[str, Any]]:
+        budget = budget if budget is not None else [MAX_SEARCHES_PER_WINDOW]
+        if budget[0] <= 0:
+            raise SourceError(
+                "too many searches needed for one window; narrow this source with hostname or query_filter"
+            )
+        budget[0] -= 1
         task = await self._post("search-task", self._task_body(start, end))
         task_id = task.get("TaskId") or task.get("taskId")
         if not task_id:
@@ -154,13 +179,17 @@ class LogRhythmConnector(Connector):
             if "Completed" in status or "Failed" in status or "Cancel" in status:
                 break
             await _sleep(2)
-        if "Max Results" in status:
+        if "Max Results" in status or "Failed" in status:
+            # Too many logs for one search (cap) or the search timed out under load: retry the two halves.
             if end - start <= MIN_WINDOW:
-                raise SourceError(f"more than {MAX_MSGS} logs in one minute; cannot split further")
+                raise SourceError(
+                    f"LogRhythm returned '{status}' for a 1-minute window (over {MAX_MSGS} logs/minute?). "
+                    "Narrow this source with hostname or query_filter"
+                )
             mid = start + (end - start) / 2
-            return [*await self._search_window(start, mid), *await self._search_window(mid, end)]
-        if "Failed" in status or status == "unknown":
-            raise SourceError(f"search window ended as '{status}'")
+            return [*await self._search_window(start, mid, budget), *await self._search_window(mid, end, budget)]
+        if status == "unknown":
+            raise SourceError("search window ended with an unknown status")
         return logs
 
     # ---- Connector API ---------------------------------------------------------------------------
@@ -178,6 +207,10 @@ class LogRhythmConnector(Connector):
 
     async def collect(self, since: datetime | None = None, limit: int = 20_000) -> AsyncIterator[dict[str, Any]]:
         cfg = self.cfg
+        if not (cfg.hostname or cfg.query_filter or cfg.allow_unfiltered):
+            raise SourceError(
+                "this source has no filter: set hostname or query_filter (a full SIEM is usually far too large to ingest)"
+            )
         now = datetime.now(UTC).replace(microsecond=0)
         end_cap = now - timedelta(minutes=2)  # let the newest logs land before declaring a window complete
         start = (

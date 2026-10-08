@@ -171,7 +171,7 @@ async def test_lr_collect_pages_sorts_and_advances_watermark(wire):
     seen = wire(lr_handler(lambda guid: logs))
     c = registry.build(
         "logrhythm",
-        {"base_url": "https://lr.example:8501", "window_minutes": 60, "initial_lookback_hours": 1},
+        {"base_url": "https://lr.example:8501", "window_minutes": 60, "initial_lookback_hours": 1, "hostname": "dc1"},
         {"token": "SECRET-TOKEN"},
     )
     out = await _collect(c)
@@ -202,14 +202,18 @@ async def test_lr_window_hitting_the_cap_is_split(wire):
         )
 
     wire(handler)
-    c = registry.build("logrhythm", {"base_url": "https://lr.example:8501", "window_minutes": 60}, {"token": "t"})
+    c = registry.build(
+        "logrhythm", {"base_url": "https://lr.example:8501", "window_minutes": 60, "hostname": "dc1"}, {"token": "t"}
+    )
     out = await _collect(c)
     assert len(calls["windows"]) >= 3 and len(out) >= 2  # first window split into halves
 
 
 async def test_lr_errors_are_safe(wire):
     wire(lambda request: httpx.Response(401, json={"error": "nope"}))
-    c = registry.build("logrhythm", {"base_url": "https://lr.example:8501"}, {"token": "SECRET-TOKEN"})
+    c = registry.build(
+        "logrhythm", {"base_url": "https://lr.example:8501", "hostname": "dc1"}, {"token": "SECRET-TOKEN"}
+    )
     with pytest.raises(_http.SourceError) as exc:
         await _collect(c)
     assert "SECRET-TOKEN" not in str(exc.value) and "authentication rejected" in str(exc.value)
@@ -487,7 +491,7 @@ async def test_collect_source_end_to_end_for_both_sources(client, make, wire, ap
     monkeypatch.setattr("app.core.ssrf.get_settings", lambda: settings)
     created = {}
     for name, ctype, cfg, sec in [
-        ("LR", "logrhythm", {"base_url": "https://lr.example:8501"}, {"token": "tok-VALUE-1"}),
+        ("LR", "logrhythm", {"base_url": "https://lr.example:8501", "hostname": "dc1"}, {"token": "tok-VALUE-1"}),
         ("TM", "trend_vision_one", {"dataset": "endpoint_activity"}, {"api_key": "key-VALUE-2"}),
     ]:
         r = await client.post(
@@ -714,3 +718,101 @@ async def test_lr_pinned_certificate_and_hostname_verification_for_real(tls_serv
     assert (await conn(verify_tls=False).test_connection()).ok  # explicit, visible opt-out
     bad = await conn(ca_pem="not a certificate").test_connection()
     assert not bad.ok and "PEM" in bad.detail
+
+
+async def test_lr_unfiltered_source_refuses_to_collect_but_can_be_allowed(wire):
+    seen = wire(lr_handler(lambda g: [lr_log()]))
+    c = registry.build("logrhythm", {"base_url": "https://lr.example:8501"}, {"token": "t"})
+    with pytest.raises(_http.SourceError, match="no filter"):
+        await _collect(c)
+    assert seen == []  # nothing was sent to the SIEM
+    ok = registry.build("logrhythm", {"base_url": "https://lr.example:8501", "allow_unfiltered": True}, {"token": "t"})
+    assert await _collect(ok)
+
+
+async def test_lr_raw_query_filter_is_sent_verbatim_and_validated(wire):
+    seen = wire(lr_handler(lambda g: [lr_log()]))
+    flt = {
+        "msgFilterType": 2,
+        "isSavedFilter": False,
+        "filterGroup": {"filterItemType": 1, "filterItems": [{"filterType": 7, "marker": "x"}]},
+    }
+    c = registry.build(
+        "logrhythm", {"base_url": "https://lr.example:8501", "query_filter": flt, "hostname": "ignored"}, {"token": "t"}
+    )
+    await _collect(c)
+    task = json.loads(next(r for r in seen if r.url.path.endswith("search-task")).content)
+    assert task["queryFilter"] == flt
+    for bad in ({}, {"a": "x" * 30_000}, "string", []):
+        with pytest.raises(Exception):  # noqa: B017, PT011
+            registry.build("logrhythm", {"base_url": "https://lr.example:8501", "query_filter": bad})
+
+
+async def test_lr_failed_status_splits_the_window_instead_of_failing(wire):
+    windows = []
+
+    def handler(request):
+        body = json.loads(request.content)
+        if request.url.path.endswith("search-task"):
+            d = body["dateCriteria"]
+            s_, e_ = (datetime.fromisoformat(d[k].replace("Z", "+00:00")) for k in ("dateMin", "dateMax"))
+            windows.append(e_ - s_)
+            return httpx.Response(200, json={"TaskId": f"{(e_ - s_).total_seconds():.0f}"})
+        too_big = int(body["data"]["searchGuid"]) > 300  # a window over 5 minutes "times out"
+        return httpx.Response(
+            200,
+            json={
+                "TaskStatus": "Search Failed" if too_big else "Completed",
+                "Items": [] if too_big else [lr_log(messageId=body["data"]["searchGuid"])],
+            },
+        )
+
+    wire(handler)
+    c = registry.build(
+        "logrhythm",
+        {"base_url": "https://lr.example:8501", "hostname": "dc1", "window_minutes": 10, "initial_lookback_hours": 1},
+        {"token": "t"},
+    )
+    assert await _collect(c)
+    assert max(windows) == timedelta(minutes=10) and min(windows) <= timedelta(minutes=5)
+
+
+async def test_lr_one_minute_still_too_big_gives_an_actionable_error(wire):
+    wire(lambda r: httpx.Response(200, json={"TaskId": "t", "TaskStatus": "Max Results", "Items": []}))
+    c = registry.build("logrhythm", {"base_url": "https://lr.example:8501", "hostname": "dc1"}, {"token": "t"})
+    with pytest.raises(_http.SourceError, match="Narrow this source"):
+        await _collect(c)
+
+
+async def test_lr_persistent_failure_cannot_flood_the_siem_with_searches(wire):
+    seen = wire(lambda r: httpx.Response(200, json={"TaskId": "t", "TaskStatus": "Search Failed", "Items": []}))
+    c = registry.build(
+        "logrhythm", {"base_url": "https://lr.example:8501", "hostname": "dc1", "window_minutes": 60}, {"token": "t"}
+    )
+    with pytest.raises(_http.SourceError, match="Narrow this source|too many searches"):
+        await _collect(c)
+    tasks = [r for r in seen if r.url.path.endswith("search-task")]
+    assert len(tasks) <= 16
+
+
+async def test_lr_mixed_failures_are_bounded_by_the_search_budget(wire):
+    n = {"t": 0}
+
+    def handler(request):
+        body = json.loads(request.content)
+        if request.url.path.endswith("search-task"):
+            n["t"] += 1
+            return httpx.Response(200, json={"TaskId": str(n["t"])})
+        # every window "fails" except a lone 1-minute leaf now and then, so splitting never ends quickly
+        return httpx.Response(
+            200,
+            json={"TaskStatus": "Max Results" if int(body["data"]["searchGuid"]) % 2 else "Search Failed", "Items": []},
+        )
+
+    wire(handler)
+    c = registry.build(
+        "logrhythm", {"base_url": "https://lr.example:8501", "hostname": "dc1", "window_minutes": 240}, {"token": "t"}
+    )
+    with pytest.raises(_http.SourceError):
+        await _collect(c)
+    assert n["t"] <= 16
