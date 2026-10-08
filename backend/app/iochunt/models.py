@@ -83,7 +83,12 @@ class ThreatIoa(Base):
     name: Mapped[str] = mapped_column(String(160))
     description: Mapped[str] = mapped_column(String(500), default="")
     technique_id: Mapped[str] = mapped_column(String(16), default="")
-    query_text: Mapped[str] = mapped_column(String(1000), default="")  # hunt query language
+    query_text: Mapped[str] = mapped_column(
+        String(1000), default=""
+    )  # human-readable (catalogue) or hunt query language (manual)
+    condition: Mapped[dict[str, Any] | None] = mapped_column(
+        JSONB, nullable=True
+    )  # executable Condition tree; takes precedence
     trend_query: Mapped[str] = mapped_column(String(1000), default="")  # TMV1-Query over endpoint telemetry
     severity: Mapped[str] = mapped_column(String(10), default="MEDIUM")
     source: Mapped[str] = mapped_column(String(10), default="catalog")  # catalog | rule | manual

@@ -76,6 +76,7 @@ def upgrade() -> None:
         sa.Column("description", sa.String(length=500), nullable=False),
         sa.Column("technique_id", sa.String(length=16), nullable=False),
         sa.Column("query_text", sa.String(length=1000), nullable=False),
+        sa.Column("condition", postgresql.JSONB(astext_type=sa.Text()), nullable=True),
         sa.Column("trend_query", sa.String(length=1000), nullable=False),
         sa.Column("severity", sa.String(length=10), nullable=False),
         sa.Column("source", sa.String(length=10), nullable=False),

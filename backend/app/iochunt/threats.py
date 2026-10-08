@@ -184,6 +184,10 @@ async def refresh(session: AsyncSession, tenant_id: uuid.UUID, threat_ids: set[u
         if t.status == "EXPIRED":
             t.status, t.status_reason = "NEW", "re-sighted"
         sw = sw_by_id.get(t.mitre_id) if t.mitre_id else None
+        if sw is not None:
+            t.aliases = sorted((set(t.aliases) | set(sw.aliases)) - {t.name})[
+                :15
+            ]  # ATT&CK knows the other names this threat goes by
         descs = [d for d in dict.fromkeys(m.description for m in sorted(members, key=lambda x: -x.confidence)) if d][:2]
         kind_word = {
             "malware": "malware family",
@@ -265,7 +269,8 @@ async def _ioas(session: AsyncSession, t: Threat, rules: Sequence[DetectionRule]
                 name=d.name,
                 description=d.description,
                 technique_id=d.technique,
-                query_text=d.query,
+                query_text=d.readable,
+                condition=d.cond,
                 trend_query=d.trend,
                 severity=d.severity,
                 source="catalog",

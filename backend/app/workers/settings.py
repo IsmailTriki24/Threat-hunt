@@ -107,7 +107,7 @@ async def process_ioc_hunts(ctx: dict[str, Any]) -> None:
 
 
 async def ioc_maintenance(ctx: dict[str, Any]) -> None:
-    """Hourly: requeue hunts a dead worker left RUNNING and schedule re-hunts of the watch list."""
+    """Every 10 minutes: requeue hunts a dead worker left RUNNING; queue re-hunts of the watch list and any backlog."""
     from app.iochunt import runner
 
     stuck = await runner.recover_stuck(ctx["sessionmaker"])
@@ -137,7 +137,7 @@ class WorkerSettings:
         cron(run_detections, minute={2, 7, 12, 17, 22, 27, 32, 37, 42, 47, 52, 57}, timeout=240),
         cron(refresh_ioc_feeds, minute={1, 11, 21, 31, 41, 51}, timeout=280),
         cron(process_ioc_hunts, minute=set(range(60)), timeout=900),
-        cron(ioc_maintenance, minute={20}, timeout=120),
+        cron(ioc_maintenance, minute={0, 10, 20, 30, 40, 50}, timeout=120),
         cron(collect_datasources, minute={0, 5, 10, 15, 20, 25, 30, 35, 40, 45, 50, 55}, timeout=280),
     ]
     redis_settings = _redis_settings()

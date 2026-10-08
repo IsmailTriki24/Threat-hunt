@@ -1148,7 +1148,7 @@ async def ioa_catalog_list(_: Principal = READ) -> list[dict[str, str]]:
             "technique": d.technique,
             "severity": d.severity,
             "description": d.description,
-            "query": d.query,
+            "query": d.readable,
             "trend_query": d.trend,
         }
         for d in ioa_catalog.CATALOG

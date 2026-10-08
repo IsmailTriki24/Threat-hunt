@@ -6,7 +6,7 @@ import uuid
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
-from sqlalchemy import select, update
+from sqlalchemy import exists, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import Settings
@@ -199,7 +199,12 @@ async def schedule_rehunts(sessionmaker: Any) -> int:
                     select(Threat).where(
                         Threat.status == "VALIDATED",
                         Threat.case_id.is_not(None),
-                        (Threat.last_hunted_at.is_(None)) | (Threat.last_hunted_at < now - REHUNT_EVERY),
+                        (Threat.last_hunted_at.is_(None))
+                        | (Threat.last_hunted_at < now - REHUNT_EVERY)
+                        # a backlog (validated indicators no hunt has reached yet) is worked through straight away, not every 6 hours
+                        | exists().where(
+                            Ioc.threat_id == Threat.id, Ioc.status == "VALIDATED", Ioc.last_hunted_at.is_(None)
+                        ),
                     )
                 )
             )

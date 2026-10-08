@@ -17,7 +17,6 @@ import time
 import uuid
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
-from functools import lru_cache
 from typing import Any
 
 from sqlalchemy import select
@@ -33,7 +32,8 @@ from app.datasources.models import DataSource
 from app.detections.models import DetectionRule
 from app.events.schema import Event
 from app.events.search.base import SearchBackend
-from app.events.search.local import matches_filter, values_at
+from app.events.search.local import matches as local_matches
+from app.events.search.local import values_at
 from app.events.search.query import Condition, EventQuery, Filter, Sort, TimeRange
 from app.events.summary import summarize
 from app.iochunt.models import Ioc, IocHunt, IocMatch, SignalMatch, ThreatIoa
@@ -524,18 +524,22 @@ class SignalResult:
     coverage: list[Coverage] = field(default_factory=list)
 
 
-@lru_cache(maxsize=256)
-def _ioa_filters(text: str) -> tuple[Filter, ...]:
-    return tuple(EventQuery(text=text).effective_filters())
+def ioa_condition(ioa: ThreatIoa) -> Condition | None:
+    """The executable form of an IOA: its stored Condition, else (legacy / manual) the hunt-language query compiled to ANDed filters."""
+    if ioa.condition:
+        return Condition.model_validate(ioa.condition)
+    if ioa.query_text:
+        try:
+            filters = EventQuery(text=ioa.query_text).effective_filters()
+        except ValueError:
+            return None
+        return Condition(all=[Condition(filter=f) for f in filters]) if filters else None
+    return None
 
 
-def ioa_matches(doc: dict[str, Any], query_text: str) -> bool:
-    """Does this normalised event satisfy the IOA's hunt-language query? (also how upstream results are verified)"""
-    try:
-        filters = _ioa_filters(query_text)
-    except ValueError:
-        return False
-    return bool(filters) and all(matches_filter(f, doc) for f in filters)
+def ioa_matches(doc: dict[str, Any], cond: Condition) -> bool:
+    """Does this normalised event satisfy the IOA? Also how upstream results are verified, so a loose vendor query cannot over-report."""
+    return local_matches(cond, doc)
 
 
 def ttp_related(tag_technique: str, ttp: str) -> bool:
@@ -597,18 +601,15 @@ async def search_signals(
         t0 = time.monotonic()
         counts: dict[str, int] = {}
         for ioa in ioas:
-            q: EventQuery | None = None
-            try:
-                if ioa.rule_id:
-                    rule = await session.get(DetectionRule, ioa.rule_id)
-                    if rule is not None and rule.compiled:
-                        q = EventQuery(where=Condition.model_validate(rule.compiled), time_range=tr, limit=100)
-                elif ioa.query_text:
-                    q = EventQuery(text=ioa.query_text, time_range=tr, limit=100)
-            except ValueError:
-                q = None
-            if q is None:
+            cond: Condition | None = None
+            if ioa.rule_id:
+                rule = await session.get(DetectionRule, ioa.rule_id)
+                cond = Condition.model_validate(rule.compiled) if rule is not None and rule.compiled else None
+            else:
+                cond = ioa_condition(ioa)
+            if cond is None:
                 continue
+            q = EventQuery(where=cond, time_range=tr, limit=100)
             res = await backend.search(tenant, q.model_copy(update={"sort": [Sort(field="timestamp", order="desc")]}))
             counts[ioa.name] = res.total
             for doc in res.hits:
@@ -647,6 +648,7 @@ async def search_signals(
                 indexed: dict[str, Event] = {}
                 fresh: list[SignalHit] = []
                 for ioa in upstream:
+                    icond = ioa_condition(ioa)
                     raws, _cut = await conn.search_query(
                         ioa.trend_query, start, end, max_events=1000, deadline=deadline
                     )
@@ -657,8 +659,8 @@ async def search_signals(
                             continue
                         for ev in evs:
                             doc = ev.to_document()
-                            if ioa.query_text and ioa_matches(
-                                doc, ioa.query_text
+                            if icond is not None and ioa_matches(
+                                doc, icond
                             ):  # verify with the same logic the local search uses
                                 indexed[ev.id] = ev
                                 fresh.append(
