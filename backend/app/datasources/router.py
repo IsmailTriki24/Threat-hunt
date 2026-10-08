@@ -245,7 +245,7 @@ async def collect_now(
     principal: Principal = MANAGE,
     session: AsyncSession = Depends(get_session),
     settings: Settings = Depends(get_settings),
-) -> dict[str, int]:
+) -> dict[str, Any]:
     await enforce(request, f"dscollect:{principal.tid}", 6, 60)
     ds = await _get(session, principal, ds_id)
     if not service.build_connector(ds, settings).supports_collect:
@@ -259,7 +259,8 @@ async def collect_now(
         resource_id=str(ds.id),
         details={"accepted": n},
     )
-    return {"accepted": n}
+    await session.refresh(ds)  # collect_source records health with a bulk UPDATE
+    return {"accepted": n, "status": ds.health_status, "detail": ds.health_detail}
 
 
 # ---- push ingestion authenticated by a per-source key (service identity, no user session) ------------

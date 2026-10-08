@@ -12,7 +12,7 @@ fast with a message that never contains the credential.
 
 **Mapping.** LogRhythm classification → canonical type (authentication success/failure, alert for AI-Engine/security
 classes, network/DNS/file/registry, else `other`); ATT&CK ids in rule names become `attack.tXXXX` tags. LogRhythm's `logDate`
-carries the console's UTC offset, so event time is `logDate + date_shift_hours` and the same shift is applied to search windows.
+carries the console's UTC offset, so event time is `logDate + date_shift_hours`; search windows are sent in true UTC time (the API filters on true time, not on the shifted `logDate`).
 Trend `eventId` 1/2/3/4 map to process/file/network/DNS (for process events `object*` is the new process and `process*` its
 parent); Workbench alerts, OAT and product detections become `alert` events. Malformed IPs/hashes are dropped, not fatal.
 

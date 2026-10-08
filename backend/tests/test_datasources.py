@@ -232,7 +232,7 @@ async def test_pull_connector_collects_with_secret_header_and_cursor(client, mak
     test = (await client.post(f"{D}/{ds['id']}/test", headers=h)).json()
     assert test["ok"] and "200" in test["detail"]
     r = await client.post(f"{D}/{ds['id']}/collect", headers=h)
-    assert r.json() == {"accepted": 3}
+    assert r.json()["accepted"] == 3 and r.json()["status"] == "ok"
     assert rest_mock["requests"][-1].headers["host"] == "siem.example.com" and str(
         rest_mock["requests"][-1].url
     ).startswith("https://93.184.216.34")
@@ -243,7 +243,7 @@ async def test_pull_connector_collects_with_secret_header_and_cursor(client, mak
         )
     ).json()["total"] == 3
     again = (await client.post(f"{D}/{ds['id']}/collect", headers=h)).json()
-    assert again == {"accepted": 0}  # deterministic ids => duplicates are ignored
+    assert again["accepted"] == 0  # deterministic ids => duplicates are ignored
     assert "since=" in str(rest_mock["requests"][-1].url)  # cursor sent on the second pull
     got = (await client.get(f"{D}/{ds['id']}", headers=h)).json()
     assert got["events_total"] == 3 and got["health_status"] == "ok"
@@ -260,7 +260,7 @@ async def test_pull_failure_marks_health_and_ssrf_targets_are_blocked(client, ma
         config=REST_CFG,
         secrets={"authorization": "Bearer wrong"},
     )
-    assert (await client.post(f"{D}/{bad_token['id']}/collect", headers=h)).json() == {"accepted": 0}
+    assert (await client.post(f"{D}/{bad_token['id']}/collect", headers=h)).json()["accepted"] == 0
     assert (await client.get(f"{D}/{bad_token['id']}", headers=h)).json()["health_status"] == "down"
     internal = await _create(
         client,
@@ -335,3 +335,32 @@ async def test_set_one_secret_keeps_the_others_and_never_echoes(client, make, db
     assert (
         await client.put(f"/api/v1/data-sources/{ds['id']}/secrets/a", headers=other, json={"value": "v"})
     ).status_code == 404
+
+
+async def test_collect_now_reports_failure_instead_of_a_silent_zero(client, make, monkeypatch):
+    t = await make.tenant()
+    _, h = await make.login_as(t, Role.TENANT_ADMIN)
+    ds = (
+        await client.post(
+            "/api/v1/data-sources",
+            headers=h,
+            json={
+                "name": "bad",
+                "connector_type": "generic_rest",
+                "config": {"url": "https://example.com/x"},
+                "secrets": {"authorization": "x"},
+            },
+        )
+    ).json()
+
+    def boom(request):
+        raise httpx.ConnectError("refused")
+
+    monkeypatch.setattr(generic_rest, "HTTP_TRANSPORT", httpx.MockTransport(boom))
+
+    async def resolve(host, port):
+        return ["93.184.216.34"]
+
+    monkeypatch.setattr(generic_rest, "RESOLVER", resolve)
+    r = (await client.post(f"/api/v1/data-sources/{ds['id']}/collect", headers=h)).json()
+    assert r["accepted"] == 0 and r["status"] == "down" and "ConnectError" in r["detail"]

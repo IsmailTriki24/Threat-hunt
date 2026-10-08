@@ -130,7 +130,7 @@ export function DataSourcesView() {
 
   const toggle = useMutation({ mutationFn: (d: DataSource) => api.updateDataSource(d.id, { enabled: !d.enabled }), onSuccess: refresh });
   const test = useMutation({ mutationFn: (d: DataSource) => api.testDataSource(d.id).then((r) => ({ d, r })), onSuccess: ({ d, r }) => { setNotice(`${d.name}: ${r.ok ? "OK" : "FAILED"} — ${r.detail}`); void refresh(); } });
-  const collect = useMutation({ mutationFn: (d: DataSource) => api.collectDataSource(d.id).then((r) => ({ d, r })), onSuccess: ({ d, r }) => { setNotice(`${d.name}: collected ${r.accepted} new events`); void refresh(); } });
+  const collect = useMutation({ mutationFn: (d: DataSource) => api.collectDataSource(d.id).then((r) => ({ d, r })), onSuccess: ({ d, r }) => { setNotice(r.status === "down" ? `${d.name}: collection FAILED — ${r.detail}` : `${d.name}: collected ${r.accepted} new events${r.detail ? ` (${r.detail})` : ""}`); void refresh(); } });
   const rotate = useMutation({ mutationFn: (d: DataSource) => api.rotateKey(d.id), onSuccess: (d) => { if (d.ingest_key) setReveal({ id: d.id, key: d.ingest_key }); void refresh(); } });
   const remove = useMutation({ mutationFn: (d: DataSource) => api.deleteDataSource(d.id), onSuccess: refresh });
 

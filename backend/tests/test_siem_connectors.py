@@ -816,3 +816,16 @@ async def test_lr_mixed_failures_are_bounded_by_the_search_budget(wire):
     with pytest.raises(_http.SourceError):
         await _collect(c)
     assert n["t"] <= 16
+
+
+async def test_lr_search_window_is_true_utc_and_only_timestamps_are_shifted(wire):
+    seen = wire(lr_handler(lambda g: [lr_log()]))
+    c = registry.build(
+        "logrhythm", {"base_url": "https://lr.example:8501", "hostname": "dc1", "window_minutes": 10}, {"token": "t"}
+    )
+    await _collect(c)
+    task = json.loads(next(r for r in seen if r.url.path.endswith("search-task")).content)
+    d_min = datetime.fromisoformat(task["dateCriteria"]["dateMin"].replace("Z", "+00:00"))
+    assert (
+        abs((datetime.now(UTC) - timedelta(hours=1) - d_min).total_seconds()) < 120
+    )  # lookback 1h from now, no -1h shift

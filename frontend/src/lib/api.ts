@@ -193,7 +193,7 @@ export const api = {
     request<void>(`/api/v1/data-sources/${enc(id)}/secrets/${enc(name)}`, { method: "PUT", body: { value } }),
   rotateKey: (id: string) => request<DataSource>(`/api/v1/data-sources/${enc(id)}/rotate-key`, { method: "POST" }),
   testDataSource: (id: string) => request<{ ok: boolean; detail: string }>(`/api/v1/data-sources/${enc(id)}/test`, { method: "POST" }),
-  collectDataSource: (id: string) => request<{ accepted: number }>(`/api/v1/data-sources/${enc(id)}/collect`, { method: "POST" }),
+  collectDataSource: (id: string) => request<{ accepted: number; status: string; detail: string }>(`/api/v1/data-sources/${enc(id)}/collect`, { method: "POST" }),
   // threat intelligence
   intelProviders: () => request<IntelProvider[]>("/api/v1/intel/providers"),
   configureProvider: (key: string, b: { enabled: boolean; config: Record<string, unknown>; secrets?: Record<string, string> }) =>

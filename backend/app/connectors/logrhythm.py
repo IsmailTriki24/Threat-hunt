@@ -4,8 +4,9 @@ Flow per window: POST search-task -> TaskId -> POST search-result (page until a 
 30,000-log cap is split in half and retried. Windows are read oldest-first and only whole windows are emitted, so the
 scheduler's watermark is always safe to advance.
 
-Time: LogRhythm reports `logDate` shifted by the console's UTC offset (observed: +1h for this deployment). `date_shift_hours`
-corrects both the search window sent to the API and the event timestamp (true time = logDate + shift)."""
+Time: LogRhythm searches by true (UTC) time but reports `logDate` shifted by the console's UTC offset (observed: +1h for
+this deployment). `date_shift_hours` corrects the event timestamp only (true time = logDate + shift); search windows are sent
+unshifted so the collection watermark and the event times agree."""
 
 import json
 import re
@@ -106,7 +107,6 @@ class LogRhythmConnector(Connector):
         return out
 
     def _task_body(self, start: datetime, end: datetime) -> dict[str, Any]:
-        shift = timedelta(hours=self.cfg.date_shift_hours)
         items: list[dict[str, Any]] = []
         if self.cfg.hostname:
             items.append(
@@ -141,7 +141,7 @@ class LogRhythmConnector(Connector):
             "queryRawLog": False,
             "queryEventManager": False,
             "queryFilter": query_filter,
-            "dateCriteria": {"useInsertedDate": False, "dateMin": _iso(start + shift), "dateMax": _iso(end + shift)},
+            "dateCriteria": {"useInsertedDate": False, "dateMin": _iso(start), "dateMax": _iso(end)},
         }
 
     async def _search_window(
