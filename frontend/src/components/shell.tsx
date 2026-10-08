@@ -11,6 +11,7 @@ export const NAV = [
   { href: "/cases", label: "Cases" },
   { href: "/events", label: "Events" },
   { href: "/threat-intel", label: "Threat Intelligence" },
+  { href: "/ioc-hunting", label: "IOC Hunting" },
   { href: "/detections", label: "Detections" },
   { href: "/ai-hunting", label: "AI Hunting" },
   { href: "/mitre", label: "MITRE ATT&CK" },
@@ -19,7 +20,7 @@ export const NAV = [
   { href: "/reports", label: "Reports" },
   { href: "/settings", label: "Settings" },
 ];
-const LIVE = new Set(["/", "/hunts", "/investigations", "/cases", "/events", "/threat-intel", "/detections", "/ai-hunting", "/mitre", "/assets", "/data-sources", "/reports", "/settings"]);
+const LIVE = new Set(["/", "/hunts", "/investigations", "/cases", "/events", "/threat-intel", "/ioc-hunting", "/detections", "/ai-hunting", "/mitre", "/assets", "/data-sources", "/reports", "/settings"]);
 
 export function Shell({ children }: { children: ReactNode }) {
   const { status, session, logout, switchTenant } = useAuth();

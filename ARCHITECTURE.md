@@ -65,6 +65,7 @@ Roles (`SUPER_ADMIN`, `TENANT_ADMIN`, `SOC_ANALYST`, `THREAT_HUNTER`, `INCIDENT_
 | 3 Investigation | cases, evidence, IOC extraction, assets, audit views, reports, DataSource entity, ingest keys, SSRF-safe pull connector, Zeek/Suricata/Wazuh/WinEvt connectors | **done** (MinIO file export deferred) |
 | 4 Threat intel | IOC entities, enrichment adapters (MISP, ThreatFox/abuse.ch, OTX, VT…) with graceful degradation, scoring, ATT&CK | **done** |
 | 5 Detection engineering | Sigma → query compiler, rule lifecycle/testing, hunt→detection, scheduled evaluation, alerts | **done** (ADR 0010) |
+| 7 IOC hunting | recent-IOC database, admin validation, automatic multi-source hunt, auto-generated case and report, watch-list re-hunts | **done** (ADR 0013) |
 | 6 AI hunting | provider abstraction, tool system, agent loop, evidence-validated conclusions, NL→query | **done** (ADR 0011) |
 
 ## 7. AI design constraints (implemented in `app/ai/`, ADR 0011)

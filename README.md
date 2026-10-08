@@ -1,7 +1,7 @@
 # Threat Hunting & Investigation Platform
 
 Multi-tenant SOC/CERT platform: **hypothesis → hunt → query → evidence → investigation → enrichment → ATT&CK → detection → case**.
-All six milestones are implemented. See [ARCHITECTURE.md](ARCHITECTURE.md) for the design and `docs/adr/` for decisions.
+Milestones 1–6 plus the automatic IOC-hunting workflow are implemented. See [ARCHITECTURE.md](ARCHITECTURE.md) for the design and `docs/adr/` for decisions.
 
 | # | Milestone | What you get |
 |---|---|---|
@@ -10,6 +10,7 @@ All six milestones are implemented. See [ARCHITECTURE.md](ARCHITECTURE.md) for t
 | 3 | Investigation | Cases and workflow, evidence, IOC extraction, assets, reports, data sources with ingest keys, connectors (Sysmon, Zeek, Suricata, Wazuh, Windows event log, generic REST/JSON) |
 | 4 | Threat intelligence | IOC entities, provider adapters (ThreatFox, URLhaus, OTX, VirusTotal, MISP) that degrade gracefully, explainable scoring, STIX/TAXII, sightings, MITRE ATT&CK matrix and evidence-backed mapping |
 | 5 | Detection engineering | Sigma and hunt-query rules compiled to one executable form, versioned rule lifecycle gated on passing unit tests, backtests, scheduled evaluation, alerts that escalate to cases, hunt → detection |
+| 7 | IOC hunting | Recent-only IOC database from feeds (URLhaus, Feodo, ThreatFox, OTX, MISP, Trend Suspicious Objects, lists, STIX), admin validation, automatic multi-source hunt (ingested + Trend/LogRhythm upstream), auto-generated case with report/coverage/ATT&CK, watch-list re-hunts |
 | 6 | AI hunting (optional) | LLM provider abstraction, read-only permission-checked tools, bounded agent loop, conclusions verified against the events actually retrieved, question → query translation |
 
 ## Quick start
@@ -73,6 +74,13 @@ token / API key (write-only, stored encrypted). Trend Vision One: pick a `region
 `endpoint_activity`, `identity_activity`, `email_activity`, `mobile_activity`, `network_activity`, `cloud_activity`, `container_activity`, `audit_logs`, `response_tasks`); `oat` and `endpoint_activity` can be very high volume (a mid-size tenant produced ~50 endpoint events/s, several GB/day), so use the `filter` / `query` options to ingest only what you hunt on.
 LogRhythm: set `base_url` (the :8501 gateway). Private hosts must be allow-listed on the server: `OUTBOUND_ALLOWED_NETWORKS=10.0.0.5/32` and add the
 port to `OUTBOUND_ALLOWED_PORTS`. TLS is verified; for a self-signed appliance paste its certificate into `ca_pem` and set `tls_server_name` to a name in it.
+
+## IOC hunting (automatic)
+*IOC Hunting* is the end-to-end threat-hunt workflow: **feeds → triage → automatic hunt → case.**
+1. Add feeds under *Feeds* (no-key starters: **URLhaus recent URLs**, **Feodo Tracker**; add your own **Trend Vision One Suspicious Object List** with the same API key as the Trend data source; ThreatFox / OTX / MISP with their keys). Only *recent* indicators are imported (default 14 days) and stale ones expire; private, benign and allow-listed values never enter the database.
+2. In the *Triage queue* (sorted by "already seen in your telemetry", then confidence) a **tenant admin** validates the indicators worth hunting.
+3. The worker hunts every source within about a minute: ingested telemetry, Trend Vision One upstream search (including datasets you do not ingest), and LogRhythm when its source has `ioc_filter_templates` (a filter captured from the LogRhythm console with `$IOC` as the value, per indicator type).
+4. A **case is opened automatically whether or not anything is found**: hunt report, per-source coverage, evidence, assets, ATT&CK mappings, severity and recommendations. No match with full coverage closes it; incomplete coverage keeps it open. Validated indicators are re-hunted every few hours and reopen the case on new activity.
 
 ## Detection engineering
 *Detections* holds Sigma and hunt-query rules. A new rule is a DRAFT; it needs at least one must-match test case and a passing test run for its

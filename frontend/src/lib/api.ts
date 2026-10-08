@@ -1,3 +1,4 @@
+import type { AllowEntry, FeedType, IocFeed, IocHunt, IocHuntDetail, IocItem, IocOverview, IocPage } from "./ioc";
 import type { AiRun, AiStatus } from "./ai";
 import type { Alert, AlertStatus, Backtest, DetectionOverview, Rule, RuleStatus, TestCase, TestResult } from "./detections";
 import type {
@@ -222,6 +223,24 @@ export const api = {
   aiRuns: () => request<AiRun[]>("/api/v1/ai/runs"),
   aiRun: (b: { goal: string; hunt_id?: string; hours_back: number }) => request<AiRun>("/api/v1/ai/runs", J(b)),
   aiSave: (id: string, finding_indexes: number[], hunt_id?: string) => request<AiRun>(`/api/v1/ai/runs/${enc(id)}/save`, J({ finding_indexes, ...(hunt_id ? { hunt_id } : {}) })),
+  iocOverview: () => request<IocOverview>("/api/v1/ioc/overview"),
+  iocFeedTypes: () => request<FeedType[]>("/api/v1/ioc/feed-types"),
+  iocFeeds: () => request<IocFeed[]>("/api/v1/ioc/feeds"),
+  createIocFeed: (b: Record<string, unknown>) => request<IocFeed>("/api/v1/ioc/feeds", J(b)),
+  updateIocFeed: (id: string, b: Record<string, unknown>) => request<IocFeed>(`/api/v1/ioc/feeds/${enc(id)}`, { method: "PATCH", body: b }),
+  deleteIocFeed: (id: string) => request<void>(`/api/v1/ioc/feeds/${enc(id)}`, { method: "DELETE" }),
+  runIocFeed: (id: string) => request<IocFeed>(`/api/v1/ioc/feeds/${enc(id)}/run`, J({})),
+  setIocFeedSecret: (id: string, name: string, value: string) => request<void>(`/api/v1/ioc/feeds/${enc(id)}/secrets/${enc(name)}`, { method: "PUT", body: { value } }),
+  iocs: (qs = "") => request<IocPage>(`/api/v1/ioc/iocs${qs}`),
+  addIoc: (b: { type: string; value: string; confidence?: number; description?: string }) => request<IocItem>("/api/v1/ioc/iocs", J(b)),
+  validateIocs: (b: { ioc_ids: string[]; name?: string; lookback_days: number }) => request<IocHunt>("/api/v1/ioc/iocs/validate", J(b)),
+  rejectIocs: (ioc_ids: string[], reason: string) => request<{ rejected: number }>("/api/v1/ioc/iocs/reject", J({ ioc_ids, reason })),
+  iocHunts: () => request<IocHunt[]>("/api/v1/ioc/hunts"),
+  iocHunt: (id: string) => request<IocHuntDetail>(`/api/v1/ioc/hunts/${enc(id)}`),
+  retryIocHunt: (id: string) => request<IocHunt>(`/api/v1/ioc/hunts/${enc(id)}/retry`, J({})),
+  iocAllowlist: () => request<AllowEntry[]>("/api/v1/ioc/allowlist"),
+  addIocAllow: (b: { type: string; value: string; reason: string }) => request<AllowEntry>("/api/v1/ioc/allowlist", J(b)),
+  deleteIocAllow: (id: string) => request<void>(`/api/v1/ioc/allowlist/${enc(id)}`, { method: "DELETE" }),
   intelLookup: (b: LookupBody) => request<IntelDetail>("/api/v1/intel/lookup", J(b)),
   listEntities: (qs = "") => request<IntelEntity[]>(`/api/v1/intel/entities${qs}`),
   getEntity: (id: string) => request<IntelDetail>(`/api/v1/intel/entities/${enc(id)}`),
