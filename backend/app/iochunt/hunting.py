@@ -17,6 +17,7 @@ import time
 import uuid
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
+from functools import lru_cache
 from typing import Any
 
 from sqlalchemy import select
@@ -29,12 +30,13 @@ from app.connectors.base import NormalizationError
 from app.core.config import Settings
 from app.core.crypto import decrypt_json
 from app.datasources.models import DataSource
+from app.detections.models import DetectionRule
 from app.events.schema import Event
 from app.events.search.base import SearchBackend
-from app.events.search.local import values_at
-from app.events.search.query import EventQuery, Filter, Sort, TimeRange
+from app.events.search.local import matches_filter, values_at
+from app.events.search.query import Condition, EventQuery, Filter, Sort, TimeRange
 from app.events.summary import summarize
-from app.iochunt.models import Ioc, IocHunt, IocMatch
+from app.iochunt.models import Ioc, IocHunt, IocMatch, SignalMatch, ThreatIoa
 
 log = logging.getLogger("app.iochunt")
 
@@ -505,32 +507,241 @@ async def search_logrhythm(
     return result
 
 
+# ---- behaviours (IOA) and techniques (TTP) -----------------------------------------------------------------
+@dataclass
+class SignalHit:
+    kind: str  # ioa | ttp
+    ref: str  # IOA id or technique id
+    label: str
+    doc: dict[str, Any]
+    source: str
+    severity: str = "MEDIUM"
+
+
+@dataclass
+class SignalResult:
+    hits: list[SignalHit] = field(default_factory=list)
+    coverage: list[Coverage] = field(default_factory=list)
+
+
+@lru_cache(maxsize=256)
+def _ioa_filters(text: str) -> tuple[Filter, ...]:
+    return tuple(EventQuery(text=text).effective_filters())
+
+
+def ioa_matches(doc: dict[str, Any], query_text: str) -> bool:
+    """Does this normalised event satisfy the IOA's hunt-language query? (also how upstream results are verified)"""
+    try:
+        filters = _ioa_filters(query_text)
+    except ValueError:
+        return False
+    return bool(filters) and all(matches_filter(f, doc) for f in filters)
+
+
+def ttp_related(tag_technique: str, ttp: str) -> bool:
+    return tag_technique == ttp or tag_technique.startswith(ttp + ".") or ttp.startswith(tag_technique + ".")
+
+
+async def search_signals(
+    session: AsyncSession, backend: SearchBackend, settings: Settings, hunt: IocHunt, start: datetime, end: datetime
+) -> SignalResult:
+    sig = hunt.signals or {}
+    ttps: list[str] = [str(t).upper() for t in sig.get("ttps", [])][:60]
+    ioa_ids = [uuid.UUID(i) for i in sig.get("ioa_ids", [])]
+    result = SignalResult()
+    if not ttps and not ioa_ids:
+        return result
+    tr = TimeRange(start=start, end=end)
+    tenant = hunt.tenant_id
+
+    # TTPs: events already tagged with the technique by LogRhythm AI Engine, Trend OAT/alerts or our own detections
+    if ttps:
+        cov = Coverage("Technique-tagged events (TTPs)", "ttp:local", iocs_searched=len(ttps))
+        t0 = time.monotonic()
+        seen: set[tuple[str, str]] = set()
+        for ttp in ttps:
+            res = await backend.search(
+                tenant,
+                EventQuery(
+                    time_range=tr,
+                    limit=100,
+                    filters=[Filter(field="tags", op="prefix", value=f"attack.{ttp.lower()}")],
+                    sort=[Sort(field="timestamp", order="desc")],
+                ),
+            )
+            for doc in res.hits:
+                if (ttp, doc["id"]) in seen:
+                    continue
+                seen.add((ttp, doc["id"]))
+                result.hits.append(SignalHit("ttp", ttp, ttp, doc, str(doc.get("source", "local"))))
+        cov.hits, cov.ms = len([h for h in result.hits if h.kind == "ttp"]), int((time.monotonic() - t0) * 1000)
+        cov.detail = (
+            "events that a security product or detection already tagged with these techniques"
+            if cov.hits
+            else "no events tagged with these techniques in the ingested telemetry"
+        )
+        result.coverage.append(cov)
+
+    # IOAs: behaviour queries over the ingested telemetry
+    ioas = (
+        list(
+            (
+                await session.execute(select(ThreatIoa).where(ThreatIoa.tenant_id == tenant, ThreatIoa.id.in_(ioa_ids)))
+            ).scalars()
+        )
+        if ioa_ids
+        else []
+    )
+    if ioas:
+        cov = Coverage("Behaviours (IOAs): ingested telemetry", "ioa:local", iocs_searched=len(ioas))
+        t0 = time.monotonic()
+        counts: dict[str, int] = {}
+        for ioa in ioas:
+            q: EventQuery | None = None
+            try:
+                if ioa.rule_id:
+                    rule = await session.get(DetectionRule, ioa.rule_id)
+                    if rule is not None and rule.compiled:
+                        q = EventQuery(where=Condition.model_validate(rule.compiled), time_range=tr, limit=100)
+                elif ioa.query_text:
+                    q = EventQuery(text=ioa.query_text, time_range=tr, limit=100)
+            except ValueError:
+                q = None
+            if q is None:
+                continue
+            res = await backend.search(tenant, q.model_copy(update={"sort": [Sort(field="timestamp", order="desc")]}))
+            counts[ioa.name] = res.total
+            for doc in res.hits:
+                result.hits.append(
+                    SignalHit("ioa", str(ioa.id), ioa.name, doc, str(doc.get("source", "local")), ioa.severity)
+                )
+        cov.hits, cov.ms = len([h for h in result.hits if h.kind == "ioa"]), int((time.monotonic() - t0) * 1000)
+        top = sorted(((n, c) for n, c in counts.items() if c), key=lambda kv: -kv[1])[:3]
+        cov.detail = ("; ".join(f"{n}: {c}" for n, c in top)) if top else "none of the behaviours were observed"
+        result.coverage.append(cov)
+
+        # ... and upstream in Trend Vision One for the IOAs that have a precise vendor query
+        upstream = [i for i in ioas if i.trend_query]
+        sources = (
+            (
+                await session.execute(
+                    select(DataSource).where(
+                        DataSource.tenant_id == tenant, DataSource.connector_type == "trend_vision_one"
+                    )
+                )
+            )
+            .scalars()
+            .all()
+        )
+        for ds in sources:
+            if (ds.config or {}).get("dataset") != "endpoint_activity" or not upstream:
+                continue
+            tcov = Coverage("Trend Vision One / endpoint_activity (IOAs)", "ioa:trend", iocs_searched=len(upstream))
+            t0 = time.monotonic()
+            try:
+                secrets = (
+                    {k: str(v) for k, v in decrypt_json(settings, ds.secrets_enc).items()} if ds.secrets_enc else {}
+                )
+                conn: Any = connectors.build("trend_vision_one", ds.config, secrets)
+                deadline = time.monotonic() + ADAPTER_BUDGET_S
+                indexed: dict[str, Event] = {}
+                fresh: list[SignalHit] = []
+                for ioa in upstream:
+                    raws, _cut = await conn.search_query(
+                        ioa.trend_query, start, end, max_events=1000, deadline=deadline
+                    )
+                    for raw in raws:
+                        try:
+                            evs = [Event.from_input(e, tenant) for e in conn.normalize(raw)]
+                        except NormalizationError:
+                            continue
+                        for ev in evs:
+                            doc = ev.to_document()
+                            if ioa.query_text and ioa_matches(
+                                doc, ioa.query_text
+                            ):  # verify with the same logic the local search uses
+                                indexed[ev.id] = ev
+                                fresh.append(
+                                    SignalHit("ioa", str(ioa.id), ioa.name, doc, "trend_vision_one", ioa.severity)
+                                )
+                if indexed:
+                    await backend.index_events(list(indexed.values()))
+                    await backend.refresh()
+                result.hits += fresh
+                tcov.hits = len(fresh)
+                tcov.detail = f"{len(upstream)} vendor behaviour queries over the last {(end - start).days or 1} day(s)"
+            except (SourceError, ValueError) as exc:
+                tcov.status, tcov.detail = "error", str(exc)[:240]
+            tcov.ms = int((time.monotonic() - t0) * 1000)
+            result.coverage.append(tcov)
+    return result
+
+
+async def persist_signals(session: AsyncSession, hunt: IocHunt, hits: list[SignalHit]) -> set[tuple[str, str, str]]:
+    new: set[tuple[str, str, str]] = set()
+    for h in hits:
+        doc = h.doc
+        ts = datetime.fromisoformat(str(doc["timestamp"]).replace("Z", "+00:00"))
+        res = await session.execute(
+            insert(SignalMatch)
+            .values(
+                id=uuid.uuid4(),
+                tenant_id=hunt.tenant_id,
+                hunt_id=hunt.id,
+                kind=h.kind,
+                ref=h.ref[:64],
+                label=h.label[:200],
+                event_id=doc["id"],
+                event_timestamp=ts,
+                source=h.source[:64],
+                host=str((doc.get("host") or {}).get("hostname") or "")[:256],
+                user=str((doc.get("user") or {}).get("name") or "")[:256],
+                summary=summarize(doc)[:500],
+            )
+            .on_conflict_do_nothing(constraint="uq_signal_match")
+            .returning(SignalMatch.id)
+        )
+        if res.first():
+            new.add((h.kind, h.ref, doc["id"]))
+    return new
+
+
 # ---- orchestration -------------------------------------------------------------------------------------
 async def execute(
     session: AsyncSession, backend: SearchBackend, settings: Settings, hunt: IocHunt, iocs: list[Ioc]
-) -> tuple[list[Hit], list[Coverage]]:
+) -> tuple[list[Hit], list[SignalHit], list[Coverage]]:
     end = hunt.window_end or datetime.now(UTC)
     start = hunt.window_start or end - timedelta(days=hunt.lookback_days)
+    names = ["Ingested telemetry", "Trend Vision One", "LogRhythm SIEM", "Behaviours and techniques"]
     results = await asyncio.gather(
         search_local(backend, hunt.tenant_id, iocs, start, end),
         search_trend(session, backend, settings, hunt.tenant_id, iocs, start, end),
         search_logrhythm(session, backend, settings, hunt.tenant_id, iocs, start, end),
+        search_signals(session, backend, settings, hunt, start, end),
         return_exceptions=True,
     )
     hits: list[Hit] = []
+    signals: list[SignalHit] = []
     coverage: list[Coverage] = []
-    for name, r in zip(("Ingested telemetry", "Trend Vision One", "LogRhythm SIEM"), results, strict=True):
+    for name, r in zip(names, results, strict=True):
         if isinstance(r, BaseException):
             log.warning("hunt adapter failed", extra={"adapter": name, "error": type(r).__name__})
             coverage.append(Coverage(name, "error", "error", f"{type(r).__name__}: {str(r)[:200]}"))
             continue
-        hits += r.hits
-        coverage += r.coverage
+        if isinstance(r, SignalResult):
+            signals += r.hits
+            coverage += r.coverage
+        else:
+            hits += r.hits
+            coverage += r.coverage
     # one match per (ioc, event); keep the strongest field label
     uniq: dict[tuple[str, str], Hit] = {}
     for h in hits:
         uniq.setdefault((str(h.ioc.id), h.doc["id"]), h)
-    return list(uniq.values()), coverage
+    usig: dict[tuple[str, str, str], SignalHit] = {}
+    for sh in signals:
+        usig.setdefault((sh.kind, sh.ref, sh.doc["id"]), sh)
+    return list(uniq.values()), list(usig.values()), coverage
 
 
 async def persist_matches(session: AsyncSession, hunt: IocHunt, hits: list[Hit]) -> set[tuple[str, str]]:

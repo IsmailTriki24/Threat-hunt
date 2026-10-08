@@ -81,6 +81,8 @@ class OtxFeed(Feed):
                             confidence=60,
                             threat_type="",
                             malware=adversary,
+                            threat=adversary or str(pulse.get("name") or "")[:120],
+                            threat_kind="actor" if adversary else "campaign",
                             description=(
                                 str(pulse.get("name") or "")
                                 + (": " + str(ind.get("description")) if ind.get("description") else "")
@@ -181,6 +183,8 @@ class MispFeed(Feed):
                     last_seen=when,
                     confidence=70 if a.get("to_ids") else 40,
                     threat_type=str(a.get("category") or ""),
+                    threat=str((a.get("Event") or {}).get("info") or "").strip(" \"'")[:120],
+                    threat_kind="report",
                     description=(
                         str((a.get("Event") or {}).get("info") or "")
                         + (f": {a.get('comment')}" if a.get("comment") else "")
@@ -261,6 +265,8 @@ class TrendSuspiciousObjectsFeed(Feed):
                         description=f"Vision One Suspicious Object ({risk or 'unrated'} risk, action: {item.get('scanAction') or 'n/a'})",
                         reference="",
                         tags=["trend-suspicious-object", risk] if risk else ["trend-suspicious-object"],
+                        threat="Trend Vision One Suspicious Objects",
+                        threat_kind="other",
                     )
                 )
             nxt = page.get("nextLink")

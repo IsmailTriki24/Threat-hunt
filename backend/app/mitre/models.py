@@ -52,3 +52,19 @@ class MitreMapping(Base):
     source: Mapped[str] = mapped_column(String(16), default="analyst")  # analyst | suggestion
     created_by: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+class MitreSoftware(Base):
+    """ATT&CK software (malware / tools) and intrusion sets (groups) with the techniques MITRE documents them as using.
+    Lets the platform give a named threat its real TTPs and resolve aliases (QakBot / QBot)."""
+
+    __tablename__ = "mitre_software"
+
+    id: Mapped[str] = mapped_column(String(16), primary_key=True)  # S0154 / G0094
+    name: Mapped[str] = mapped_column(String(200), index=True)
+    kind: Mapped[str] = mapped_column(String(8))  # malware | tool | group
+    aliases: Mapped[list[str]] = mapped_column(JSONB, default=list)
+    alias_keys: Mapped[list[str]] = mapped_column(JSONB, default=list)  # normalised, for lookup
+    description: Mapped[str] = mapped_column(Text, default="")
+    technique_ids: Mapped[list[str]] = mapped_column(JSONB, default=list)
+    url: Mapped[str] = mapped_column(String(300), default="")

@@ -13,6 +13,64 @@ from app.iochunt.feeds.base import Feed, RawIoc, parse_dt
 MAX_FEED_BYTES = 40 * 1024 * 1024
 
 
+# URLhaus tags that describe a file type, host or sensor rather than a threat
+GENERIC_TAGS = {
+    "github",
+    "gitlab",
+    "zip",
+    "rar",
+    "7z",
+    "iso",
+    "elf",
+    "exe",
+    "dll",
+    "msi",
+    "bat",
+    "ps1",
+    "powershell",
+    "js",
+    "vbs",
+    "lnk",
+    "jar",
+    "apk",
+    "sh",
+    "doc",
+    "pdf",
+    "ascii",
+    "32-bit",
+    "64-bit",
+    "arm",
+    "arm64",
+    "mips",
+    "mipsel",
+    "x86",
+    "x64",
+    "ua-wget",
+    "opendir",
+    "honeypot",
+    "cowrie",
+    "censys",
+    "rat",
+    "stealer",
+    "botnetdomain",
+    "downloader",
+    "malware",
+    "url",
+    "none",
+}
+
+
+def urlhaus_threat(tags: list[str]) -> str:
+    """The first tag that names a threat; 'dropped-by-amadey' names Amadey."""
+    for t in tags:
+        low = t.lower()
+        if low.startswith("dropped-by-"):
+            return t[len("dropped-by-") :]
+        if low not in GENERIC_TAGS:
+            return t
+    return ""
+
+
 class UrlhausConfig(BaseModel):
     model_config = ConfigDict(extra="forbid")
     only_online: bool = Field(default=True, description="Skip URLs that are no longer serving payloads")
@@ -54,7 +112,9 @@ class UrlhausCsvFeed(Feed):
                     last_seen=online_dt or added_dt,
                     confidence=75 if online else 35,
                     threat_type="payload_delivery" if "malware" in threat else threat.strip(),
-                    malware=tag_list[0] if tag_list else "",
+                    malware=urlhaus_threat(tag_list),
+                    threat=urlhaus_threat(tag_list),
+                    threat_kind="malware",
                     description=f"URLhaus: {threat.strip()} URL ({status.strip()})",
                     reference=link.strip(),
                     tags=["urlhaus", *tag_list],
@@ -90,6 +150,8 @@ class FeodoFeed(Feed):
                     confidence=90 if online else 55,
                     threat_type="botnet_cc",
                     malware=malware,
+                    threat=malware,
+                    threat_kind="malware",
                     description=f"{malware} botnet C2 on port {row.get('port')} ({row.get('status')}, AS{row.get('as_number')} {row.get('as_name')})",
                     reference="https://feodotracker.abuse.ch/browse/",
                     tags=["feodo", "c2", *([malware.lower()] if malware else [])],
@@ -157,6 +219,8 @@ class ThreatFoxFeed(Feed):
                     confidence=conf,
                     threat_type=str(row.get("threat_type") or ""),
                     malware=str(row.get("malware_printable") or row.get("malware") or ""),
+                    threat=str(row.get("malware_printable") or row.get("malware") or ""),
+                    threat_kind="malware",
                     description=str(row.get("threat_type_desc") or "")[:400],
                     reference=str(row.get("reference") or "")[:500],
                     tags=["threatfox", *[str(t) for t in tags if t][:10]],

@@ -28,6 +28,8 @@ class RawIoc:
     reference: str = ""
     tags: list[str] = field(default_factory=list)
     techniques: list[str] = field(default_factory=list)
+    threat: str = ""  # which named threat (family / actor / campaign / report) this indicator belongs to
+    threat_kind: str = ""  # malware | actor | campaign | report | other
 
 
 class Feed(ABC):

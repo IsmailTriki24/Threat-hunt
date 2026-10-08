@@ -11,15 +11,15 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import Settings
 from app.events.search.base import SearchBackend
-from app.iochunt import casebuild, hunting, ingest
-from app.iochunt.models import Ioc, IocFeed, IocHunt
+from app.iochunt import casebuild, hunting, ingest, threats
+from app.iochunt.models import Ioc, IocFeed, IocHunt, Threat
 from app.tenants.models import Tenant
 
 log = logging.getLogger("app.iochunt")
 
 REHUNT_EVERY = timedelta(hours=6)
 REHUNT_OVERLAP = timedelta(minutes=15)
-MAX_IOCS_PER_HUNT = 200
+MAX_IOCS_PER_HUNT = 500
 
 
 def hypothesis_for(tenant: str, iocs: list[Ioc], days: int) -> str:
@@ -42,22 +42,44 @@ async def create_hunt(
     *,
     name: str | None,
     lookback_days: int,
+    threat: Threat | None = None,
+    ioa_ids: list[uuid.UUID] | None = None,
+    ttps: list[str] | None = None,
 ) -> IocHunt:
     tenant = await session.get(Tenant, tenant_id)
     now = datetime.now(UTC)
+    tname = tenant.name if tenant else "the organisation"
     hunt = IocHunt(
         tenant_id=tenant_id,
-        name=(name or f"IOC hunt {now:%Y-%m-%d %H:%M} ({len(iocs)} IOCs)")[:200],
+        name=(
+            name or (f"Threat hunt: {threat.name}" if threat else f"IOC hunt {now:%Y-%m-%d %H:%M} ({len(iocs)} IOCs)")
+        )[:200],
         mode="initial",
         status="PENDING",
         ioc_ids=[str(i.id) for i in iocs],
         lookback_days=lookback_days,
         requested_by=user_id,
-        hypothesis=hypothesis_for(tenant.name if tenant else "the organisation", iocs, lookback_days),
+        threat_id=threat.id if threat else None,
+        signals={"ioa_ids": [str(i) for i in (ioa_ids or [])], "ttps": list(ttps or [])},
+        hypothesis=threat_hypothesis(tname, threat, iocs, len(ioa_ids or []), len(ttps or []), lookback_days)
+        if threat
+        else hypothesis_for(tname, iocs, lookback_days),
     )
     session.add(hunt)
     await session.flush()
     return hunt
+
+
+def threat_hypothesis(tenant: str, threat: Threat, iocs: list[Ioc], n_ioa: int, n_ttp: int, days: int) -> str:
+    kind = {"malware": "malware", "actor": "threat actor", "campaign": "campaign", "report": "reported threat"}.get(
+        threat.kind, "threat"
+    )
+    return (
+        f"If {threat.name} ({kind}) is active against {tenant}, then within the last {days} day(s) its infrastructure or artefacts "
+        f"({len(iocs)} indicator(s)), its characteristic behaviours ({n_ioa} attack indicator(s)) or its documented ATT&CK techniques ({n_ttp}) will appear in telemetry "
+        "from endpoints, network, identity and security products. Absence across every searched source supports the conclusion that the organisation was not exposed; "
+        "presence of a known indicator is treated as a potential intrusion, while behaviour alone is a lead for analyst review."
+    )
 
 
 async def run_hunt(session: AsyncSession, backend: SearchBackend, settings: Settings, hunt: IocHunt) -> None:
@@ -68,18 +90,24 @@ async def run_hunt(session: AsyncSession, backend: SearchBackend, settings: Sett
             )
         ).scalars()
     )
-    if not iocs:
+    sig = hunt.signals or {}
+    if not iocs and not (sig.get("ioa_ids") or sig.get("ttps")):
         hunt.status, hunt.error, hunt.finished_at = "FAILED", "the indicators no longer exist", datetime.now(UTC)
         return
     now = datetime.now(UTC)
     hunt.window_end = now
     if hunt.mode == "rehunt":
-        last = min((i.last_hunted_at for i in iocs if i.last_hunted_at), default=None)
+        # indicators never hunted yet (a large threat is worked through in batches) need the full lookback; the rest only the new window
+        last = (
+            None
+            if any(i.last_hunted_at is None for i in iocs)
+            else min(i.last_hunted_at for i in iocs if i.last_hunted_at)
+        )
         hunt.window_start = (last - REHUNT_OVERLAP) if last else now - timedelta(days=hunt.lookback_days)
     else:
         hunt.window_start = now - timedelta(days=hunt.lookback_days)
     try:
-        hits, coverage = await hunting.execute(session, backend, settings, hunt, iocs)
+        hits, signal_hits, coverage = await hunting.execute(session, backend, settings, hunt, iocs)
     except Exception as exc:
         log.warning("ioc hunt failed", extra={"hunt": str(hunt.id), "error": type(exc).__name__})
         hunt.status, hunt.error, hunt.finished_at = (
@@ -90,7 +118,10 @@ async def run_hunt(session: AsyncSession, backend: SearchBackend, settings: Sett
         return
     new_keys = await hunting.persist_matches(session, hunt, hits)
     new_hits = [h for h in hits if (str(h.ioc.id), h.doc["id"]) in new_keys]
-    hunt.match_count, hunt.new_match_count = len(hits), len(new_hits)
+    new_sig_keys = await hunting.persist_signals(session, hunt, signal_hits)
+    new_signal_hits = [h for h in signal_hits if (h.kind, h.ref, h.doc["id"]) in new_sig_keys]
+    hunt.match_count, hunt.new_match_count = len(hits), len(new_hits) + len(new_signal_hits)
+    hunt.signal_count = len(signal_hits)
     hunt.coverage = [c.as_dict() for c in coverage]
     errors = [c for c in coverage if c.status == "error"]
     searched = [c for c in coverage if c.status not in ("skipped", "n/a")]
@@ -98,7 +129,9 @@ async def run_hunt(session: AsyncSession, backend: SearchBackend, settings: Sett
         hunt.status, hunt.error = "FAILED", "; ".join(f"{c.source}: {c.detail}" for c in errors)[:300]
     else:
         hunt.status = "PARTIAL" if errors else "COMPLETED"
-        case = await casebuild.finalize(session, backend, hunt, iocs, hits, new_hits, coverage)
+        case = await casebuild.finalize(
+            session, backend, hunt, iocs, hits, new_hits, signal_hits, new_signal_hits, coverage
+        )
         if case is not None:
             hunt.case_id = case.id
     hunt.finished_at = datetime.now(UTC)
@@ -149,17 +182,88 @@ async def recover_stuck(sessionmaker: Any, max_minutes: int = 30) -> int:
         return int(getattr(r, "rowcount", 0) or 0)
 
 
+def _priority_order() -> tuple[Any, ...]:
+    """Never-hunted indicators first (so a big threat is worked through in batches), then the ones already seen in our telemetry."""
+    return (Ioc.last_hunted_at.asc().nullsfirst(), Ioc.seen_count.desc(), Ioc.confidence.desc(), Ioc.last_seen.desc())
+
+
 async def schedule_rehunts(sessionmaker: Any) -> int:
-    """Validated indicators stay on the watch list: re-hunt each case's indicators every few hours over the new window only."""
+    """Validated threats stay on the watch list: re-hunt their indicators, behaviours and techniques every few hours over the new window only.
+    A threat with more indicators than one hunt carries is worked through in batches (never-hunted first)."""
     created = 0
+    now = datetime.now(UTC)
     async with sessionmaker() as session:
+        due = (
+            (
+                await session.execute(
+                    select(Threat).where(
+                        Threat.status == "VALIDATED",
+                        Threat.case_id.is_not(None),
+                        (Threat.last_hunted_at.is_(None)) | (Threat.last_hunted_at < now - REHUNT_EVERY),
+                    )
+                )
+            )
+            .scalars()
+            .all()
+        )
+        for th in due:
+            if (
+                await session.execute(
+                    select(IocHunt.id).where(
+                        IocHunt.case_id == th.case_id,
+                        IocHunt.mode == "rehunt",
+                        IocHunt.status.in_(("PENDING", "RUNNING")),
+                    )
+                )
+            ).first():
+                continue
+            initial = (
+                (
+                    await session.execute(
+                        select(IocHunt)
+                        .where(IocHunt.case_id == th.case_id, IocHunt.mode == "initial")
+                        .order_by(IocHunt.created_at)
+                    )
+                )
+                .scalars()
+                .first()
+            )
+            batch = list(
+                (
+                    await session.execute(
+                        select(Ioc)
+                        .where(Ioc.threat_id == th.id, Ioc.status == "VALIDATED")
+                        .order_by(*_priority_order())
+                        .limit(MAX_IOCS_PER_HUNT)
+                    )
+                ).scalars()
+            )
+            session.add(
+                IocHunt(
+                    tenant_id=th.tenant_id,
+                    name=f"Watch-list re-hunt: {th.name}"[:200],
+                    mode="rehunt",
+                    status="PENDING",
+                    ioc_ids=[str(i.id) for i in batch],
+                    lookback_days=initial.lookback_days if initial else 7,
+                    requested_by=initial.requested_by if initial else th.validated_by,
+                    case_id=th.case_id,
+                    threat_id=th.id,
+                    signals=initial.signals if initial else {},
+                    hypothesis="Scheduled re-check of a validated threat against newly available telemetry.",
+                )
+            )
+            created += 1
+        # plain IOC hunts (validated one by one, not as a threat) keep their per-case watch list
         rows = (
             (
                 await session.execute(
                     select(Ioc).where(
                         Ioc.status == "VALIDATED",
                         Ioc.case_id.is_not(None),
-                        (Ioc.last_hunted_at.is_(None)) | (Ioc.last_hunted_at < datetime.now(UTC) - REHUNT_EVERY),
+                        Ioc.threat_id.is_(None)
+                        | Ioc.threat_id.in_(select(Threat.id).where(Threat.status != "VALIDATED")),
+                        (Ioc.last_hunted_at.is_(None)) | (Ioc.last_hunted_at < now - REHUNT_EVERY),
                     )
                 )
             )
@@ -171,24 +275,26 @@ async def schedule_rehunts(sessionmaker: Any) -> int:
             if r.case_id:
                 by_case.setdefault(r.case_id, []).append(r)
         for case_id, group in by_case.items():
-            open_run = (
+            if (
                 await session.execute(
                     select(IocHunt.id).where(
                         IocHunt.case_id == case_id, IocHunt.mode == "rehunt", IocHunt.status.in_(("PENDING", "RUNNING"))
                     )
                 )
-            ).first()
-            if open_run:
+            ).first():
                 continue
-            first = group[0]
             requester = (
-                await session.execute(
-                    select(IocHunt.requested_by).where(IocHunt.case_id == case_id, IocHunt.mode == "initial")
+                (
+                    await session.execute(
+                        select(IocHunt.requested_by).where(IocHunt.case_id == case_id, IocHunt.mode == "initial")
+                    )
                 )
-            ).scalar_one_or_none()
+                .scalars()
+                .first()
+            )
             session.add(
                 IocHunt(
-                    tenant_id=first.tenant_id,
+                    tenant_id=group[0].tenant_id,
                     name=f"Watch-list re-hunt ({len(group)} IOCs)",
                     mode="rehunt",
                     status="PENDING",
@@ -225,5 +331,7 @@ async def run_due_feeds(sessionmaker: Any, backend: SearchBackend, settings: Set
         async with sessionmaker() as session:
             await ingest.expire(session, tid)
             await ingest.prescreen(session, backend, tid)
+            await threats.sync(session, tid)
+            await threats.refresh(session, tid)  # picks up seen-in-telemetry counts, expiry and new detection rules
             await session.commit()
     return summary

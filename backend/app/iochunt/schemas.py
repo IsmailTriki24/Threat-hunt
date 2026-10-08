@@ -137,6 +137,10 @@ class AllowOut(BaseModel):
 class HuntOut(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
+    threat_id: uuid.UUID | None = None
+    threat_name: str | None = None
+    signal_count: int = 0
+
     id: uuid.UUID
     name: str
     hypothesis: str
@@ -175,11 +179,29 @@ class MatchOut(BaseModel):
     summary: str
 
 
+class SignalMatchOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: uuid.UUID
+    kind: str
+    ref: str
+    label: str
+    event_id: str
+    event_timestamp: datetime
+    source: str
+    host: str
+    user: str
+    summary: str
+
+
 class HuntDetail(HuntOut):
     matches: list[MatchOut] = Field(default_factory=list)
+    signal_matches: list[SignalMatchOut] = Field(default_factory=list)
 
 
 class Overview(BaseModel):
+    threats_by_status: dict[str, int] = Field(default_factory=dict)
+    new_threats_24h: int = 0
     iocs_by_status: dict[str, int]
     new_last_24h: int
     seen_in_environment: int
@@ -187,3 +209,93 @@ class Overview(BaseModel):
     feeds_failing: int
     hunts_by_status: dict[str, int]
     open_ioc_cases: int
+
+
+class TtpOut(BaseModel):
+    technique_id: str
+    name: str = ""
+    tactics: list[str] = Field(default_factory=list)
+    url: str = ""
+    source: str
+    confidence: str
+    note: str = ""
+
+
+class IoaOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: uuid.UUID
+    name: str
+    description: str
+    technique_id: str
+    severity: str
+    source: str
+    query_text: str
+    trend_query: str
+    rule_id: uuid.UUID | None = None
+
+
+class ThreatRow(BaseModel):
+    id: uuid.UUID
+    name: str
+    kind: str
+    aliases: list[str]
+    mitre_id: str
+    severity: str
+    confidence: int
+    status: str
+    first_seen: datetime | None
+    last_updated: datetime | None
+    ioc_count: int
+    ioc_types: dict[str, int]
+    new_ioc_count: int = 0
+    ioa_count: int = 0
+    ttp_count: int = 0
+    seen_count: int
+    sources: list[str]
+    case_id: uuid.UUID | None
+    case_number: int | None = None
+    case_status: str | None = None
+    last_hunted_at: datetime | None
+
+
+class ThreatPage(BaseModel):
+    total: int
+    items: list[ThreatRow]
+    facets: dict[str, dict[str, int]]
+
+
+class Bulletin(ThreatRow):
+    description: str
+    references: list[str]
+    status_reason: str
+    ttps: list[TtpOut]
+    ioas: list[IoaOut]
+    iocs: list[IocOut]
+    hunts: list[HuntOut]
+
+
+class ThreatValidate(_In):
+    lookback_days: int = Field(default=7, ge=1, le=30)
+    name: str | None = Field(default=None, max_length=200)
+    exclude_ioc_ids: list[uuid.UUID] = Field(default_factory=list, max_length=2000)
+    exclude_ioa_ids: list[uuid.UUID] = Field(default_factory=list, max_length=200)
+    include_signals: bool = True  # also hunt the threat's behaviours (IOAs) and techniques (TTPs)
+
+
+class ThreatReject(_In):
+    reason: str = Field(default="", max_length=300)
+
+
+class IoaCreate(_In):
+    name: str = Field(min_length=1, max_length=160)
+    description: str = Field(default="", max_length=500)
+    technique_id: str = Field(default="", pattern=r"^(T\d{4}(\.\d{3})?)?$")
+    query_text: str = Field(min_length=1, max_length=1000, description="Hunt query language")
+    trend_query: str = Field(default="", max_length=1000)
+    severity: Literal["LOW", "MEDIUM", "HIGH", "CRITICAL"] = "MEDIUM"
+
+
+class TtpCreate(_In):
+    technique_id: str = Field(pattern=r"^T\d{4}(\.\d{3})?$")
+    note: str = Field(default="", max_length=300)

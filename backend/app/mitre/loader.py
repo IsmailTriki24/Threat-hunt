@@ -8,7 +8,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.mitre import data
-from app.mitre.models import MitreTactic, MitreTechnique
+from app.mitre.models import MitreSoftware, MitreTactic, MitreTechnique
 
 _TECH_ID = re.compile(r"^T\d{4}(\.\d{3})?$")
 _TACTIC_ID = re.compile(r"^TA\d{4}$")
@@ -110,4 +110,78 @@ async def import_stix_bundle(session: AsyncSession, bundle: dict[str, Any] | str
     tactics, techniques = parse_stix_bundle(parsed)
     n_tactics = await _upsert_tactics(session, tactics)
     n_tech = await _upsert_techniques(session, techniques, "mitre-attack-stix")
+    await _upsert_software(session, parse_software(parsed))
     return n_tactics, n_tech
+
+
+_CITATION = re.compile(r"\(Citation:[^)]*\)")
+_MD_LINK = re.compile(r"\[([^\]]+)\]\([^)]*\)")
+_SOFT_ID = re.compile(r"^(S\d{4}|G\d{4})$")
+
+
+def alias_key(name: str) -> str:
+    """Normalised alias for matching threat names: lower-case alphanumerics only ('Qak Bot' == 'qakbot' == 'QAKBOT')."""
+    return re.sub(r"[^a-z0-9]", "", name.lower())
+
+
+def parse_software(bundle: dict[str, Any]) -> list[dict[str, Any]]:
+    """Software (malware/tool) and groups with their documented techniques, from an ATT&CK STIX bundle."""
+    objects = [
+        o
+        for o in bundle.get("objects", [])
+        if isinstance(o, dict) and not o.get("revoked") and not o.get("x_mitre_deprecated")
+    ]
+    technique_by_stix: dict[str, str] = {}
+    for o in objects:
+        if o.get("type") == "attack-pattern":
+            ext, _ = _mitre_ref(o)
+            if ext and _TECH_ID.match(ext) and o.get("id"):
+                technique_by_stix[str(o["id"])] = ext
+    uses: dict[str, set[str]] = {}
+    for o in objects:
+        if (
+            o.get("type") == "relationship"
+            and o.get("relationship_type") == "uses"
+            and str(o.get("target_ref", "")).startswith("attack-pattern--")
+        ):
+            t = technique_by_stix.get(str(o["target_ref"]))
+            if t:
+                uses.setdefault(str(o.get("source_ref")), set()).add(t)
+    out: list[dict[str, Any]] = []
+    for o in objects:
+        kind = {"malware": "malware", "tool": "tool", "intrusion-set": "group"}.get(str(o.get("type")))
+        if kind is None:
+            continue
+        ext, url = _mitre_ref(o)
+        if not ext or not _SOFT_ID.match(ext) or not o.get("id"):
+            continue
+        name = str(o.get("name", ext))[:200]
+        raw_aliases = o.get("x_mitre_aliases") or o.get("aliases") or []
+        aliases = list(dict.fromkeys([name, *[str(a)[:200] for a in raw_aliases if isinstance(a, str)]]))[:30]
+        desc = _MD_LINK.sub(r"\1", _CITATION.sub("", str(o.get("description", "")))).split("\n")[0].strip()[:1200]
+        out.append(
+            {
+                "id": ext,
+                "name": name,
+                "kind": kind,
+                "aliases": aliases,
+                "alias_keys": sorted({alias_key(a) for a in aliases if alias_key(a)}),
+                "description": desc,
+                "technique_ids": sorted(uses.get(str(o["id"]), set())),
+                "url": url[:300],
+            }
+        )
+    return out
+
+
+async def _upsert_software(session: AsyncSession, rows: list[dict[str, Any]]) -> int:
+    existing = {r.id: r for r in (await session.execute(select(MitreSoftware))).scalars()}
+    for r in rows:
+        row = existing.get(r["id"])
+        if row is None:
+            session.add(MitreSoftware(**r))
+        else:
+            for k, v in r.items():
+                setattr(row, k, v)
+    await session.flush()
+    return len(rows)

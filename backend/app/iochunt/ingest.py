@@ -24,6 +24,7 @@ from app.events.search.base import SearchBackend
 from app.events.search.query import Aggregation, EventQuery, Filter, TimeRange
 from app.intel import types as intel_types
 from app.investigations import iocs as ioc_rules
+from app.iochunt import threats
 from app.iochunt.feeds import registry
 from app.iochunt.feeds.base import RawIoc
 from app.iochunt.models import Ioc, IocAllow, IocFeed
@@ -252,6 +253,8 @@ async def store(
                     valid_until=p.raw.valid_until,
                     threat_type=p.raw.threat_type[:64],
                     malware=p.raw.malware[:120],
+                    threat_name=(p.raw.threat or p.raw.malware)[:200],
+                    threat_kind=p.raw.threat_kind[:12],
                     description=p.raw.description[:1000],
                     reference=p.raw.reference[:500],
                     tags=list(dict.fromkeys(p.raw.tags))[:15],
@@ -303,6 +306,7 @@ async def run_feed(
             now=now,
         )
         await store(session, feed, feed.tenant_id, items, result, feed.name)
+        await threats.sync(session, feed.tenant_id)
         feed.last_status, feed.last_detail = "ok", result.detail()
         feed.last_new, feed.last_seen_total = result.new, result.accepted
     except SourceError as exc:

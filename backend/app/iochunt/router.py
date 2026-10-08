@@ -3,7 +3,8 @@ from datetime import UTC, datetime, timedelta
 from typing import Annotated, Any
 
 from fastapi import APIRouter, Depends, Path, Query, Request, Response
-from sqlalchemy import func, or_, select, update
+from sqlalchemy import String, func, or_, select, update
+from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -16,19 +17,24 @@ from app.core.crypto import decrypt_json, encrypt_json
 from app.core.db import get_session
 from app.core.errors import AppError, Conflict, NotFound
 from app.core.ratelimit import enforce
+from app.events.search.query import EventQuery
 from app.intel import types as intel_types
-from app.iochunt import ingest, runner
+from app.iochunt import ingest, ioa_catalog, runner
+from app.iochunt import threats as threat_svc
 from app.iochunt.feeds import registry
-from app.iochunt.models import Ioc, IocAllow, IocFeed, IocHunt, IocMatch
+from app.iochunt.models import Ioc, IocAllow, IocFeed, IocHunt, IocMatch, SignalMatch, Threat, ThreatIoa, ThreatTtp
 from app.iochunt.schemas import (
     AllowIn,
     AllowOut,
+    Bulletin,
     FeedCreate,
     FeedOut,
     FeedTypeOut,
     FeedUpdate,
     HuntDetail,
     HuntOut,
+    IoaCreate,
+    IoaOut,
     IocOut,
     IocPage,
     ManualIoc,
@@ -36,8 +42,16 @@ from app.iochunt.schemas import (
     Overview,
     RejectIn,
     SecretValue,
+    SignalMatchOut,
+    ThreatPage,
+    ThreatReject,
+    ThreatRow,
+    ThreatValidate,
+    TtpCreate,
+    TtpOut,
     ValidateIn,
 )
+from app.mitre.models import MitreTechnique
 
 router = APIRouter(prefix="/ioc", tags=["ioc-hunting"])
 READ = Depends(require(Permission.IOCHUNT_READ))
@@ -468,9 +482,10 @@ async def delete_allow(
 
 
 # ---- hunts --------------------------------------------------------------------------------------------
-def _hunt_out(h: IocHunt, case: Case | None) -> HuntOut:
+def _hunt_out(h: IocHunt, case: Case | None, threat_name: str | None = None) -> HuntOut:
     out = HuntOut.model_validate(h)
     out.ioc_count = len(h.ioc_ids)
+    out.threat_name = threat_name
     if case is not None:
         out.case_number, out.case_status = case.number, case.status
     return out
@@ -502,7 +517,18 @@ async def list_hunts(
             )
         ).scalars()
     }
-    return [_hunt_out(r, cases.get(r.case_id) if r.case_id else None) for r in rows]
+    names = {
+        t.id: t.name
+        for t in (
+            await session.execute(
+                select(Threat).where(Threat.id.in_([r.threat_id for r in rows if r.threat_id] or [uuid.UUID(int=0)]))
+            )
+        ).scalars()
+    }
+    return [
+        _hunt_out(r, cases.get(r.case_id) if r.case_id else None, names.get(r.threat_id) if r.threat_id else None)
+        for r in rows
+    ]
 
 
 @router.get("/hunts/{hunt_id}", response_model=HuntDetail)
@@ -529,7 +555,30 @@ async def get_hunt(
         mo = MatchOut.model_validate(m)
         mo.ioc_value, mo.ioc_type = value, typ
         matches.append(mo)
-    detail = HuntDetail.model_validate({**_hunt_out(h, case).model_dump(), "matches": matches})
+    tname = (
+        (await session.execute(select(Threat.name).where(Threat.id == h.threat_id))).scalar_one_or_none()
+        if h.threat_id
+        else None
+    )
+    sigs = (
+        (
+            await session.execute(
+                select(SignalMatch)
+                .where(SignalMatch.hunt_id == h.id)
+                .order_by(SignalMatch.event_timestamp.desc())
+                .limit(500)
+            )
+        )
+        .scalars()
+        .all()
+    )
+    detail = HuntDetail.model_validate(
+        {
+            **_hunt_out(h, case, tname).model_dump(),
+            "matches": matches,
+            "signal_matches": [SignalMatchOut.model_validate(x) for x in sigs],
+        }
+    )
     return detail
 
 
@@ -605,3 +654,502 @@ async def overview(principal: Principal = READ, session: AsyncSession = Depends(
         hunts_by_status=hunts,
         open_ioc_cases=open_cases,
     )
+
+
+# ---- threats (bulletins) ------------------------------------------------------------------------------------
+async def _row(
+    session: AsyncSession,
+    th: Threat,
+    counts: dict[str, dict[uuid.UUID, int]] | None = None,
+    cases: dict[uuid.UUID, Case] | None = None,
+) -> ThreatRow:
+    c = counts or {}
+    case = (cases or {}).get(th.case_id) if th.case_id else None
+    return ThreatRow(
+        id=th.id,
+        name=th.name,
+        kind=th.kind,
+        aliases=th.aliases,
+        mitre_id=th.mitre_id,
+        severity=th.severity,
+        confidence=th.confidence,
+        status=th.status,
+        first_seen=th.first_seen,
+        last_updated=th.last_updated,
+        ioc_count=th.ioc_count,
+        ioc_types=th.ioc_types,
+        new_ioc_count=c.get("new", {}).get(th.id, 0),
+        ioa_count=c.get("ioa", {}).get(th.id, 0),
+        ttp_count=c.get("ttp", {}).get(th.id, 0),
+        seen_count=th.seen_count,
+        sources=th.sources,
+        case_id=th.case_id,
+        case_number=case.number if case else None,
+        case_status=case.status if case else None,
+        last_hunted_at=th.last_hunted_at,
+    )
+
+
+async def _counts(session: AsyncSession, ids: list[uuid.UUID]) -> dict[str, dict[uuid.UUID, int]]:
+    if not ids:
+        return {}
+
+    async def grouped(col: Any, *where: Any) -> dict[uuid.UUID, int]:
+        rows = (await session.execute(select(col, func.count()).where(*where).group_by(col))).all()
+        return {k: n for k, n in rows if k is not None}
+
+    return {
+        "new": await grouped(Ioc.threat_id, Ioc.threat_id.in_(ids), Ioc.status == "NEW"),
+        "ioa": await grouped(ThreatIoa.threat_id, ThreatIoa.threat_id.in_(ids)),
+        "ttp": await grouped(ThreatTtp.threat_id, ThreatTtp.threat_id.in_(ids)),
+    }
+
+
+@router.get("/threats", response_model=ThreatPage)
+async def list_threats(
+    status: str | None = None,
+    kind: str | None = None,
+    q: str | None = Query(default=None, max_length=200),
+    min_confidence: int = Query(default=0, ge=0, le=100),
+    seen: bool | None = None,
+    sort: str = Query(default="updated", pattern="^(updated|confidence|iocs|seen|name)$"),
+    limit: int = Query(default=100, ge=1, le=500),
+    offset: int = Query(default=0, ge=0, le=100_000),
+    principal: Principal = READ,
+    session: AsyncSession = Depends(get_session),
+) -> ThreatPage:
+    base = [Threat.tenant_id == principal.tid, Threat.ioc_count > 0]
+    where = list(base)
+    if status:
+        where.append(Threat.status == status.upper())
+    if kind:
+        where.append(Threat.kind == kind.lower())
+    if min_confidence:
+        where.append(Threat.confidence >= min_confidence)
+    if seen is True:
+        where.append(Threat.seen_count > 0)
+    if q:
+        needle = f"%{q.strip()}%"
+        where.append(
+            or_(Threat.name.ilike(needle), Threat.description.ilike(needle), Threat.aliases.cast(String).ilike(needle))
+        )
+    total = (await session.execute(select(func.count()).select_from(Threat).where(*where))).scalar_one()
+    order = {
+        "updated": (Threat.seen_count.desc(), Threat.last_updated.desc().nullslast()),
+        "confidence": (Threat.confidence.desc(), Threat.last_updated.desc().nullslast()),
+        "iocs": (Threat.ioc_count.desc(),),
+        "seen": (Threat.seen_count.desc(), Threat.confidence.desc()),
+        "name": (Threat.name.asc(),),
+    }[sort]
+    rows = (
+        (await session.execute(select(Threat).where(*where).order_by(*order).limit(limit).offset(offset)))
+        .scalars()
+        .all()
+    )
+    counts = await _counts(session, [r.id for r in rows])
+    cases = {
+        c.id: c
+        for c in (
+            await session.execute(
+                select(Case).where(Case.id.in_([r.case_id for r in rows if r.case_id] or [uuid.UUID(int=0)]))
+            )
+        ).scalars()
+    }
+    facets = {
+        name: {
+            str(k): v for k, v in (await session.execute(select(col, func.count()).where(*base).group_by(col))).all()
+        }
+        for name, col in (("status", Threat.status), ("kind", Threat.kind))
+    }
+    return ThreatPage(total=total, items=[await _row(session, r, counts, cases) for r in rows], facets=facets)
+
+
+async def _threat(session: AsyncSession, principal: Principal, threat_id: uuid.UUID) -> Threat:
+    th = (
+        await session.execute(select(Threat).where(Threat.id == threat_id, Threat.tenant_id == principal.tid))
+    ).scalar_one_or_none()
+    if th is None:
+        raise NotFound("Threat not found")
+    return th
+
+
+@router.get("/threats/{threat_id}", response_model=Bulletin)
+async def get_bulletin(
+    threat_id: uuid.UUID, principal: Principal = READ, session: AsyncSession = Depends(get_session)
+) -> Bulletin:
+    th = await _threat(session, principal, threat_id)
+    counts = await _counts(session, [th.id])
+    case = await session.get(Case, th.case_id) if th.case_id else None
+    row = await _row(session, th, counts, {case.id: case} if case else {})
+    ttp_rows = (await session.execute(select(ThreatTtp).where(ThreatTtp.threat_id == th.id))).scalars().all()
+    tech = {
+        t.id: t
+        for t in (
+            await session.execute(
+                select(MitreTechnique).where(MitreTechnique.id.in_([t.technique_id for t in ttp_rows] or ["-"]))
+            )
+        ).scalars()
+    }
+    ttps = [
+        TtpOut(
+            technique_id=t.technique_id,
+            name=tech[t.technique_id].name if t.technique_id in tech else "",
+            tactics=tech[t.technique_id].tactics if t.technique_id in tech else [],
+            url=tech[t.technique_id].url if t.technique_id in tech else "",
+            source=t.source,
+            confidence=t.confidence,
+            note=t.note,
+        )
+        for t in sorted(ttp_rows, key=lambda x: (-threat_svc.TTP_RANK.get(x.source, 0), x.technique_id))
+    ]
+    ioas = [
+        IoaOut.model_validate(i)
+        for i in (
+            await session.execute(
+                select(ThreatIoa).where(ThreatIoa.threat_id == th.id).order_by(ThreatIoa.technique_id, ThreatIoa.name)
+            )
+        ).scalars()
+    ]
+    iocs = (
+        (
+            await session.execute(
+                select(Ioc)
+                .where(Ioc.threat_id == th.id, Ioc.status != "EXPIRED")
+                .order_by(Ioc.seen_count.desc(), Ioc.confidence.desc(), Ioc.last_seen.desc())
+                .limit(200)
+            )
+        )
+        .scalars()
+        .all()
+    )
+    hunts = (
+        (
+            await session.execute(
+                select(IocHunt).where(IocHunt.threat_id == th.id).order_by(IocHunt.created_at.desc()).limit(10)
+            )
+        )
+        .scalars()
+        .all()
+    )
+    return Bulletin(
+        **row.model_dump(),
+        description=th.description,
+        references=th.references,
+        status_reason=th.status_reason,
+        ttps=ttps,
+        ioas=ioas,
+        iocs=[IocOut.model_validate(i) for i in iocs],
+        hunts=[_hunt_out(h, None, th.name) for h in hunts],
+    )
+
+
+@router.get("/threats/{threat_id}/iocs", response_model=IocPage)
+async def threat_iocs(
+    threat_id: uuid.UUID,
+    type: str | None = None,
+    status: str | None = None,  # noqa: A002
+    limit: int = Query(default=200, ge=1, le=500),
+    offset: int = Query(default=0, ge=0, le=100_000),
+    principal: Principal = READ,
+    session: AsyncSession = Depends(get_session),
+) -> IocPage:
+    th = await _threat(session, principal, threat_id)
+    where = [Ioc.threat_id == th.id]
+    where.append(Ioc.status == status.upper() if status else Ioc.status != "EXPIRED")
+    if type:
+        where.append(Ioc.type == type.lower())
+    total = (await session.execute(select(func.count()).select_from(Ioc).where(*where))).scalar_one()
+    rows = (
+        (
+            await session.execute(
+                select(Ioc)
+                .where(*where)
+                .order_by(Ioc.seen_count.desc(), Ioc.confidence.desc(), Ioc.last_seen.desc())
+                .limit(limit)
+                .offset(offset)
+            )
+        )
+        .scalars()
+        .all()
+    )
+    return IocPage(total=total, items=[IocOut.model_validate(r) for r in rows], facets={})
+
+
+@router.post("/threats/{threat_id}/validate", response_model=HuntOut, status_code=201)
+async def validate_threat(
+    threat_id: uuid.UUID,
+    body: ThreatValidate,
+    request: Request,
+    principal: Principal = VALIDATE,
+    session: AsyncSession = Depends(get_session),
+) -> HuntOut:
+    """Validate a whole bulletin: its indicators, behaviours and techniques are hunted together in every source, then the case is built."""
+    await enforce(request, f"ioc-validate:{principal.tid}", 20, 60)
+    th = await _threat(session, principal, threat_id)
+    if (
+        await session.execute(
+            select(IocHunt.id).where(IocHunt.threat_id == th.id, IocHunt.status.in_(("PENDING", "RUNNING")))
+        )
+    ).first():
+        raise Conflict("A hunt for this threat is already in progress")
+    excluded = set(body.exclude_ioc_ids)
+    candidates = list(
+        (
+            await session.execute(
+                select(Ioc)
+                .where(
+                    Ioc.threat_id == th.id,
+                    Ioc.status.in_(("NEW", "REJECTED")),
+                    Ioc.id.notin_(excluded or {uuid.UUID(int=0)}),
+                )
+                .order_by(Ioc.seen_count.desc(), Ioc.confidence.desc(), Ioc.last_seen.desc())
+            )
+        ).scalars()
+    )
+    ioas = (
+        list(
+            (
+                await session.execute(
+                    select(ThreatIoa).where(
+                        ThreatIoa.threat_id == th.id,
+                        ThreatIoa.id.notin_(set(body.exclude_ioa_ids) or {uuid.UUID(int=0)}),
+                    )
+                )
+            ).scalars()
+        )
+        if body.include_signals
+        else []
+    )
+    ttps = (
+        sorted(
+            {
+                t
+                for t in (
+                    await session.execute(select(ThreatTtp.technique_id).where(ThreatTtp.threat_id == th.id))
+                ).scalars()
+            }
+        )
+        if body.include_signals
+        else []
+    )
+    if not candidates and not ioas and not ttps:
+        raise Conflict("Nothing left to hunt: every indicator is already validated, rejected or expired")
+    now = datetime.now(UTC)
+    for c in candidates:
+        c.status, c.status_reason, c.validated_by, c.validated_at = (
+            "VALIDATED",
+            "approved with its threat bulletin",
+            principal.user_id,
+            now,
+        )
+    th.status, th.status_reason, th.validated_by, th.validated_at = (
+        "VALIDATED",
+        "bulletin approved for hunting",
+        principal.user_id,
+        now,
+    )
+    batch = candidates[: runner.MAX_IOCS_PER_HUNT]  # highest priority first; the rest follow in scheduled batches
+    if th.case_id and (await session.get(Case, th.case_id)) is not None:
+        # a bulletin that was already hunted: add the new indicators to the same case
+        hunt = IocHunt(
+            tenant_id=principal.tid,
+            name=(body.name or f"Update: {th.name}")[:200],
+            mode="rehunt",
+            status="PENDING",
+            ioc_ids=[str(i.id) for i in batch],
+            lookback_days=body.lookback_days,
+            requested_by=principal.user_id,
+            case_id=th.case_id,
+            threat_id=th.id,
+            signals={"ioa_ids": [str(i.id) for i in ioas], "ttps": ttps},
+            hypothesis=runner.threat_hypothesis(
+                "the organisation", th, batch, len(ioas), len(ttps), body.lookback_days
+            ),
+        )
+        session.add(hunt)
+        await session.flush()
+    else:
+        hunt = await runner.create_hunt(
+            session,
+            principal.tid,
+            principal.user_id,
+            batch,
+            name=body.name,
+            lookback_days=body.lookback_days,
+            threat=th,
+            ioa_ids=[i.id for i in ioas],
+            ttps=ttps,
+        )
+    await audit.record(
+        request,
+        "ioc.validate_threat",
+        principal=principal,
+        resource_type="ioc_hunt",
+        resource_id=str(hunt.id),
+        details={
+            "threat": th.name,
+            "iocs": len(candidates),
+            "hunted_now": len(batch),
+            "ioas": len(ioas),
+            "ttps": len(ttps),
+        },
+    )
+    return _hunt_out(hunt, None, th.name)
+
+
+@router.post("/threats/{threat_id}/reject")
+async def reject_threat(
+    threat_id: uuid.UUID,
+    body: ThreatReject,
+    request: Request,
+    principal: Principal = VALIDATE,
+    session: AsyncSession = Depends(get_session),
+) -> dict[str, int]:
+    th = await _threat(session, principal, threat_id)
+    th.status, th.status_reason = "REJECTED", (body.reason or "rejected by an analyst")[:300]
+    res = await session.execute(
+        update(Ioc)
+        .where(Ioc.threat_id == th.id, Ioc.status == "NEW")
+        .values(status="REJECTED", status_reason=th.status_reason)
+        .returning(Ioc.id)
+    )
+    n = len(res.all())
+    await audit.record(
+        request,
+        "ioc.reject_threat",
+        principal=principal,
+        resource_type="threat",
+        resource_id=str(th.id),
+        details={"iocs": n},
+    )
+    return {"rejected": n}
+
+
+@router.post("/threats/{threat_id}/ioas", response_model=IoaOut, status_code=201)
+async def add_ioa(
+    threat_id: uuid.UUID,
+    body: IoaCreate,
+    request: Request,
+    principal: Principal = VALIDATE,
+    session: AsyncSession = Depends(get_session),
+) -> IoaOut:
+    th = await _threat(session, principal, threat_id)
+    try:
+        if not EventQuery(text=body.query_text).effective_filters():
+            raise ValueError("the query has no field filters")
+    except ValueError as exc:
+        raise AppError(f"Invalid behaviour query: {str(exc)[:200]}") from None
+    ioa = ThreatIoa(
+        tenant_id=principal.tid,
+        threat_id=th.id,
+        name=body.name,
+        description=body.description,
+        technique_id=body.technique_id,
+        query_text=body.query_text,
+        trend_query=body.trend_query,
+        severity=body.severity,
+        source="manual",
+        created_by=principal.user_id,
+    )
+    session.add(ioa)
+    try:
+        await session.flush()
+    except IntegrityError:
+        raise Conflict("This threat already has a behaviour with that name") from None
+    await audit.record(request, "ioc.ioa_add", principal=principal, resource_type="threat", resource_id=str(th.id))
+    return IoaOut.model_validate(ioa)
+
+
+@router.delete("/threats/{threat_id}/ioas/{ioa_id}", status_code=204)
+async def delete_ioa(
+    threat_id: uuid.UUID,
+    ioa_id: uuid.UUID,
+    request: Request,
+    principal: Principal = VALIDATE,
+    session: AsyncSession = Depends(get_session),
+) -> Response:
+    th = await _threat(session, principal, threat_id)
+    ioa = (
+        await session.execute(select(ThreatIoa).where(ThreatIoa.id == ioa_id, ThreatIoa.threat_id == th.id))
+    ).scalar_one_or_none()
+    if ioa is None:
+        raise NotFound("Behaviour not found")
+    if ioa.source != "manual":
+        raise Conflict(
+            "Built-in and rule-derived behaviours cannot be deleted; exclude them when validating the bulletin"
+        )
+    await session.delete(ioa)
+    await audit.record(request, "ioc.ioa_delete", principal=principal, resource_type="threat", resource_id=str(th.id))
+    return Response(status_code=204)
+
+
+@router.post("/threats/{threat_id}/ttps", response_model=TtpOut, status_code=201)
+async def add_ttp(
+    threat_id: uuid.UUID,
+    body: TtpCreate,
+    request: Request,
+    principal: Principal = VALIDATE,
+    session: AsyncSession = Depends(get_session),
+) -> TtpOut:
+    th = await _threat(session, principal, threat_id)
+    tech = await session.get(MitreTechnique, body.technique_id)
+    if tech is None:
+        raise NotFound("Unknown ATT&CK technique")
+    stmt = insert(ThreatTtp).values(
+        id=uuid.uuid4(),
+        tenant_id=principal.tid,
+        threat_id=th.id,
+        technique_id=tech.id,
+        source="manual",
+        confidence="HIGH",
+        note=body.note or "Added by an analyst",
+    )
+    await session.execute(
+        stmt.on_conflict_do_update(
+            constraint="uq_threat_ttp", set_={"source": "manual", "confidence": "HIGH", "note": stmt.excluded.note}
+        )
+    )
+    await threat_svc.refresh(session, principal.tid, {th.id})  # link behaviours for the new technique
+    await audit.record(
+        request,
+        "ioc.ttp_add",
+        principal=principal,
+        resource_type="threat",
+        resource_id=str(th.id),
+        details={"technique": tech.id},
+    )
+    return TtpOut(
+        technique_id=tech.id,
+        name=tech.name,
+        tactics=tech.tactics,
+        url=tech.url,
+        source="manual",
+        confidence="HIGH",
+        note=body.note,
+    )
+
+
+@router.post("/threats/regroup")
+async def regroup(
+    request: Request, principal: Principal = MANAGE, session: AsyncSession = Depends(get_session)
+) -> dict[str, int]:
+    """Re-run grouping and refresh every bulletin (after loading ATT&CK software data, or after rule changes)."""
+    await threat_svc.sync(session, principal.tid)
+    n = await threat_svc.refresh(session, principal.tid)
+    await audit.record(request, "ioc.regroup", principal=principal, details={"threats": n})
+    return {"threats": n}
+
+
+@router.get("/ioa-catalog")
+async def ioa_catalog_list(_: Principal = READ) -> list[dict[str, str]]:
+    return [
+        {
+            "name": d.name,
+            "technique": d.technique,
+            "severity": d.severity,
+            "description": d.description,
+            "query": d.query,
+            "trend_query": d.trend,
+        }
+        for d in ioa_catalog.CATALOG
+    ]

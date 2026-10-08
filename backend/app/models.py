@@ -34,7 +34,7 @@ __all__ += [
     "DataSource",
 ]
 from app.intel.models import IntelEntity, IntelObservation, IntelProvider, IntelRelation  # noqa: E402
-from app.mitre.models import MitreMapping, MitreTactic, MitreTechnique  # noqa: E402
+from app.mitre.models import MitreMapping, MitreSoftware, MitreTactic, MitreTechnique  # noqa: E402
 
 __all__ += [
     "IntelEntity",
@@ -42,6 +42,7 @@ __all__ += [
     "IntelProvider",
     "IntelRelation",
     "MitreMapping",
+    "MitreSoftware",
     "MitreTactic",
     "MitreTechnique",
 ]
@@ -51,6 +52,16 @@ __all__ += ["Alert", "DetectionRule", "DetectionRun", "RuleTestCase", "RuleVersi
 from app.ai.models import AiRun  # noqa: E402
 
 __all__ += ["AiRun"]
-from app.iochunt.models import Ioc, IocAllow, IocFeed, IocHunt, IocMatch  # noqa: E402
+from app.iochunt.models import (  # noqa: E402
+    Ioc,
+    IocAllow,
+    IocFeed,
+    IocHunt,
+    IocMatch,
+    SignalMatch,
+    Threat,
+    ThreatIoa,
+    ThreatTtp,
+)
 
-__all__ += ["Ioc", "IocAllow", "IocFeed", "IocHunt", "IocMatch"]
+__all__ += ["Ioc", "IocAllow", "IocFeed", "IocHunt", "IocMatch", "SignalMatch", "Threat", "ThreatIoa", "ThreatTtp"]
