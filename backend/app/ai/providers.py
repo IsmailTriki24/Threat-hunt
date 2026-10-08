@@ -169,7 +169,8 @@ class OpenRouterProvider:
         body: dict[str, Any] = {
             "model": self.model,
             "max_tokens": max(max_tokens, MIN_TOKENS),
-            "reasoning": {"effort": "low"},
+            # a plain question->answer call (no tools) needs no thinking; hunts keep a little
+            "reasoning": {"enabled": False} if not tools else {"effort": "low"},
             "messages": _to_openai_messages(system, messages),
         }
         if tools and force_tool:
@@ -195,6 +196,9 @@ class OpenRouterProvider:
                     )
             except httpx.HTTPError:
                 raise ProviderUnavailable("The AI provider could not be reached") from None
+            if resp.status_code == 400 and "reasoning" in body:
+                body.pop("reasoning")  # a model that cannot take the reasoning control: retry without it
+                continue
             if resp.status_code not in (429, 502, 503) or attempt == len(RETRY_DELAYS_S) - 1:
                 break
             await asyncio.sleep(delay)  # shared upstream pools throttle in bursts

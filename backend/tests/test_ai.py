@@ -361,3 +361,28 @@ async def test_openrouter_adapter_translates_tools_and_results_and_retries_throt
     with pytest.raises(ProviderUnavailable) as exc:
         await p.complete("s", [], [])
     assert "or-k" not in str(exc.value) and "rate limiting" in str(exc.value)
+
+
+async def test_openrouter_turns_reasoning_off_for_plain_calls_and_survives_models_that_reject_it(monkeypatch):
+    from app.core.config import get_settings
+
+    bodies: list[dict[str, Any]] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        body = json.loads(request.content)
+        bodies.append(body)
+        if "reasoning" in body and body["reasoning"].get("enabled") is False and len(bodies) == 1:
+            return httpx.Response(400, json={"error": "reasoning cannot be disabled"})
+        return httpx.Response(200, json={"choices": [{"message": {"content": "q"}}], "usage": {}})
+
+    real = httpx.AsyncClient
+    monkeypatch.setattr(providers.httpx, "AsyncClient", lambda **kw: real(transport=httpx.MockTransport(handler), **kw))
+    s = get_settings().model_copy(update={"ai_provider": "openrouter", "openrouter_api_key": "k"})
+    p = providers.build_provider(s)
+    assert p is not None
+    out = await p.complete("s", [{"role": "user", "content": "x"}], [])
+    assert out.text == "q" and bodies[0]["reasoning"] == {"enabled": False} and "reasoning" not in bodies[1]
+    await p.complete(
+        "s", [{"role": "user", "content": "x"}], [{"name": "t", "input_schema": {"type": "object"}}], force_tool="t"
+    )
+    assert bodies[-1]["reasoning"] == {"effort": "low"} and bodies[-1]["tool_choice"]["function"]["name"] == "t"
