@@ -255,8 +255,10 @@ def tm(dataset, **over):
 
 EP_BASE = {
     "uuid": "u-1",
-    "eventTimeDT": "2026-10-08T09:56:03.911000+00:00",
-    "eventTime": 1791453363911,
+    "eventTimeDT": (
+        NOW - timedelta(minutes=10)
+    ).isoformat(),  # relative: absolute dates age out of "last N hours" searches
+    "eventTime": int((NOW - timedelta(minutes=10)).timestamp() * 1000),
     "logReceivedTime": "1791453332676",
     "endpointHostName": "WS-01",
     "endpointIp": ["10.1.1.5", "fe80::1"],
