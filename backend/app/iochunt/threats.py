@@ -11,15 +11,29 @@ from collections import defaultdict
 from collections.abc import Sequence
 from dataclasses import dataclass
 
-from sqlalchemy import func, select, update
+from sqlalchemy import delete, func, select, update
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.detections.models import DetectionRule
 from app.iochunt import ioa_catalog
+from app.iochunt.feeds.abusech import GENERIC_TAGS, urlhaus_threat
 from app.iochunt.models import Ioc, Threat, ThreatIoa, ThreatTtp
 from app.mitre.loader import alias_key
 from app.mitre.models import MitreSoftware, MitreTechnique
+
+_HOSTLIKE = re.compile(r"^\d{1,3}(-\d{1,3}){3}(-\d+)?$")  # tags like '217-60-102-5': an address, not a threat
+
+
+def is_generic(name: str) -> bool:
+    n = name.strip().lower()
+    return (
+        not n
+        or n in GENERIC_TAGS
+        or bool(_HOSTLIKE.match(n))
+        or alias_key(n) in ("", "unknown", "unknownmalware", "none")
+    )
+
 
 _PREFIX = re.compile(r"^(win|elf|osx|apk|php|js|ps1|py|jar|lnk|doc)\.", re.I)
 TTP_RANK = {"manual": 4, "mitre": 3, "feed": 2, "derived": 1}
@@ -76,23 +90,28 @@ async def software_index(session: AsyncSession) -> dict[str, MitreSoftware]:
 def resolve(ioc: Ioc, index: dict[str, MitreSoftware]) -> Resolved:
     hint = canonical_name(ioc.threat_name or ioc.malware or "")
     kind = ioc.threat_kind or ("malware" if ioc.malware else "")
-    if not hint or alias_key(hint) in ("", "unknown", "unknownmalware"):
-        name, kind = (hint, kind) if hint else fallback_name(ioc)
-        if not hint:
-            return Resolved(name, alias_key(name), kind, None)
+    if is_generic(hint):
+        # the stored name may be a file-type / host tag: look for a real family among the indicator's other tags
+        derived = urlhaus_threat([t for t in ioc.tags if t.lower() != "urlhaus"])
+        hint, kind = (canonical_name(derived), "malware") if derived and not is_generic(derived) else ("", "")
+    if not hint:
+        name, kind = fallback_name(ioc)
+        return Resolved(name, alias_key(name), kind, None)
     sw = index.get(alias_key(hint))
     if sw is not None and len(alias_key(hint)) >= 4:
         return Resolved(sw.name, alias_key(sw.name), "actor" if sw.kind == "group" else "malware", sw)
     return Resolved(hint, alias_key(hint)[:160] or "x", kind or "other", None)
 
 
-async def assign(session: AsyncSession, tenant_id: uuid.UUID, *, limit: int = 20000) -> set[uuid.UUID]:
-    """Attach indicators that have no threat yet; returns the ids of every threat that gained indicators."""
-    rows = (
-        (await session.execute(select(Ioc).where(Ioc.tenant_id == tenant_id, Ioc.threat_id.is_(None)).limit(limit)))
-        .scalars()
-        .all()
-    )
+async def assign(
+    session: AsyncSession, tenant_id: uuid.UUID, *, limit: int = 20000, everything: bool = False
+) -> set[uuid.UUID]:
+    """Attach indicators to their threat. With `everything`, re-derive every indicator's threat (after naming rules or ATT&CK data change),
+    moving the ones whose threat differs and retiring bulletins left empty. Returns the ids of every threat touched."""
+    q = select(Ioc).where(Ioc.tenant_id == tenant_id)
+    if not everything:
+        q = q.where(Ioc.threat_id.is_(None))
+    rows = (await session.execute(q.limit(limit))).scalars().all()
     if not rows:
         return set()
     index = await software_index(session)
@@ -101,9 +120,17 @@ async def assign(session: AsyncSession, tenant_id: uuid.UUID, *, limit: int = 20
         r = resolve(ioc, index)
         groups.setdefault(r.key, (r, []))[1].append(ioc)
     touched: set[uuid.UUID] = set()
+    existing_keys = {
+        t.key: t.id for t in (await session.execute(select(Threat).where(Threat.tenant_id == tenant_id))).scalars()
+    }
     for key, (r, members) in groups.items():
         aliases = sorted(
-            {canonical_name(m.threat_name or m.malware) for m in members if (m.threat_name or m.malware)} - {r.name}
+            {
+                canonical_name(m.threat_name or m.malware)
+                for m in members
+                if (m.threat_name or m.malware) and not is_generic(m.threat_name or m.malware)
+            }
+            - {r.name}
         )[:10]
         stmt = (
             insert(Threat)
@@ -121,8 +148,29 @@ async def assign(session: AsyncSession, tenant_id: uuid.UUID, *, limit: int = 20
             .returning(Threat.id)
         )
         tid = (await session.execute(stmt)).scalar_one()
-        await session.execute(update(Ioc).where(Ioc.id.in_([m.id for m in members])).values(threat_id=tid))
-        touched.add(tid)
+        movers = [m for m in members if m.threat_id != tid]
+        touched |= {m.threat_id for m in movers if m.threat_id}
+        if movers or key not in existing_keys:
+            await session.execute(update(Ioc).where(Ioc.id.in_([m.id for m in movers])).values(threat_id=tid))
+            touched.add(tid)
+    if everything and touched:
+        # bulletins that lost all their indicators and were never validated are removed rather than left as empty rows
+        empty = (
+            (
+                await session.execute(
+                    select(Threat.id).where(
+                        Threat.tenant_id == tenant_id,
+                        Threat.status.in_(("NEW", "EXPIRED", "REJECTED")),
+                        ~select(Ioc.id).where(Ioc.threat_id == Threat.id).exists(),
+                    )
+                )
+            )
+            .scalars()
+            .all()
+        )
+        if empty:
+            await session.execute(delete(Threat).where(Threat.id.in_(list(empty))))
+            touched -= set(empty)
     return touched
 
 
@@ -299,7 +347,7 @@ async def _ioas(session: AsyncSession, t: Threat, rules: Sequence[DetectionRule]
             )
 
 
-async def sync(session: AsyncSession, tenant_id: uuid.UUID) -> int:
-    """Group any ungrouped indicators, then refresh the affected bulletins."""
-    touched = await assign(session, tenant_id)
+async def sync(session: AsyncSession, tenant_id: uuid.UUID, *, everything: bool = False) -> int:
+    """Group any ungrouped indicators (or, with `everything`, re-derive all of them), then refresh the affected bulletins."""
+    touched = await assign(session, tenant_id, everything=everything)
     return await refresh(session, tenant_id, touched) if touched else 0

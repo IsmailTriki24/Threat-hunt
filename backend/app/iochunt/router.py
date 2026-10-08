@@ -3,7 +3,7 @@ from datetime import UTC, datetime, timedelta
 from typing import Annotated, Any
 
 from fastapi import APIRouter, Depends, Path, Query, Request, Response
-from sqlalchemy import String, func, or_, select, update
+from sqlalchemy import String, case, func, or_, select, update
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -705,6 +705,9 @@ async def _counts(session: AsyncSession, ids: list[uuid.UUID]) -> dict[str, dict
     }
 
 
+_SEVERITY_RANK = case({"CRITICAL": 4, "HIGH": 3, "MEDIUM": 2, "LOW": 1}, value=Threat.severity, else_=0)
+
+
 @router.get("/threats", response_model=ThreatPage)
 async def list_threats(
     status: str | None = None,
@@ -735,7 +738,12 @@ async def list_threats(
         )
     total = (await session.execute(select(func.count()).select_from(Threat).where(*where))).scalar_one()
     order = {
-        "updated": (Threat.seen_count.desc(), Threat.last_updated.desc().nullslast()),
+        "updated": (
+            Threat.seen_count.desc(),
+            _SEVERITY_RANK.desc(),
+            Threat.confidence.desc(),
+            Threat.last_updated.desc().nullslast(),
+        ),
         "confidence": (Threat.confidence.desc(), Threat.last_updated.desc().nullslast()),
         "iocs": (Threat.ioc_count.desc(),),
         "seen": (Threat.seen_count.desc(), Threat.confidence.desc()),
@@ -1134,7 +1142,7 @@ async def regroup(
     request: Request, principal: Principal = MANAGE, session: AsyncSession = Depends(get_session)
 ) -> dict[str, int]:
     """Re-run grouping and refresh every bulletin (after loading ATT&CK software data, or after rule changes)."""
-    await threat_svc.sync(session, principal.tid)
+    await threat_svc.sync(session, principal.tid, everything=True)
     n = await threat_svc.refresh(session, principal.tid)
     await audit.record(request, "ioc.regroup", principal=principal, details={"threats": n})
     return {"threats": n}

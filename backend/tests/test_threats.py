@@ -698,3 +698,52 @@ async def test_regroup_backfills_indicators_imported_before_bulletins_existed(cl
     assert r.status_code == 200 and r.json()["threats"] == 1
     assert (await client.get(f"{API}/threats", headers=h)).json()["items"][0]["name"] == "Legacy"
     assert (await client.get(f"{API}/ioa-catalog", headers=h)).json()[0]["technique"].startswith("T")
+
+
+def test_generic_tags_and_addresses_are_never_threat_names():
+    for bad in (
+        "github",
+        "ELF",
+        "zip",
+        "217-60-102-5",
+        "176-65-139-239-8080",
+        "Unknown",
+        "unknown malware",
+        "None",
+        "",
+    ):
+        assert threats.is_generic(bad), bad
+    for good in ("Mirai", "SmartLoader", "Cobalt Strike", "CheatSheet", "Remcos"):
+        assert not threats.is_generic(good), good
+
+
+async def test_a_full_regroup_rederives_bad_names_from_the_other_tags_and_cleans_up(client, make, app):
+    t, _, h = await _admin(client, make)
+    # imported before the naming fix: the stored name is a file-type tag, but the real family is among the other tags
+    await seed(
+        app,
+        t,
+        [
+            row(
+                t,
+                "https://a.example/x.zip",
+                "url",
+                malware="github",
+                threat_name="github",
+                tags=["urlhaus", "github", "zip", "SmartLoader"],
+            ),
+            row(
+                t, "https://b.example/y.zip", "url", malware="elf", threat_name="elf", tags=["urlhaus", "elf", "mirai"]
+            ),
+            row(t, "https://c.example/z", "url", malware="217-60-102-5", threat_name="217-60-102-5", tags=["urlhaus"]),
+        ],
+    )
+    r = await client.post(f"{API}/threats/regroup", headers=h)
+    assert r.status_code == 200
+    names = {i["name"] for i in (await client.get(f"{API}/threats?status=", headers=h)).json()["items"]}
+    assert names == {"SmartLoader", "mirai", "Unattributed indicators (test-feed)"} or names == {
+        "SmartLoader",
+        "Mirai",
+        "Unattributed indicators (test-feed)",
+    }
+    assert not ({"github", "elf", "217-60-102-5"} & names)  # the junk bulletins are gone, not left empty
