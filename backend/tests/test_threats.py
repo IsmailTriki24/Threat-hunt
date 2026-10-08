@@ -833,3 +833,35 @@ async def test_updating_a_hunted_bulletin_rescans_the_full_lookback(client, make
     assert done["status"] in ("COMPLETED", "PARTIAL") and (done["window_end"] and done["window_start"])
     span = (datetime.fromisoformat(done["window_end"]) - datetime.fromisoformat(done["window_start"])).days
     assert span == 14
+
+
+async def test_a_corrected_catalogue_reaches_existing_threats_without_touching_manual_behaviours(
+    client, make, app, attack_software
+):
+    t, _, h = await _admin(client, make)
+    await seed(app, t, [row(t, "198.51.100.195", threat_name="QakBot", malware="QakBot")])
+    tid = await _threat_id(client, h, "QakBot")
+    manual = (
+        await client.post(
+            f"{API}/threats/{tid}/ioas",
+            headers=h,
+            json={"name": "Mine", "query_text": "process.name:toolx.exe", "severity": "HIGH"},
+        )
+    ).json()
+    async with app.state.sessionmaker() as db:  # simulate rows written by an older, buggy catalogue
+        await db.execute(
+            update(ThreatIoa)
+            .where(ThreatIoa.threat_id == uuid.UUID(tid), ThreatIoa.source == "catalog")
+            .values(
+                trend_query='eventId:1 AND objectName:"powershell.exe"',
+                condition={"filter": {"field": "process.name", "op": "eq", "value": "stale.exe"}},
+                severity="LOW",
+            )
+        )
+        await db.commit()
+    assert (await client.post(f"{API}/threats/regroup", headers=h)).status_code == 200
+    b = (await client.get(f"{API}/threats/{tid}", headers=h)).json()
+    enc = next(i for i in b["ioas"] if i["name"] == "PowerShell encoded command")
+    assert enc["trend_query"].startswith('eventId:1 AND objectName:"*\\') and enc["severity"] == "HIGH"
+    mine = next(i for i in b["ioas"] if i["id"] == manual["id"])
+    assert mine["query_text"] == "process.name:toolx.exe" and mine["severity"] == "HIGH" and mine["source"] == "manual"

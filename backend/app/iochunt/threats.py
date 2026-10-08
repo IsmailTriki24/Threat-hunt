@@ -310,22 +310,33 @@ async def _ttps(
 async def _ioas(session: AsyncSession, t: Threat, rules: Sequence[DetectionRule]) -> None:
     ttps = list((await session.execute(select(ThreatTtp.technique_id).where(ThreatTtp.threat_id == t.id))).scalars())
     for d in ioa_catalog.for_techniques(ttps):
+        stmt = insert(ThreatIoa).values(
+            id=uuid.uuid4(),
+            tenant_id=t.tenant_id,
+            threat_id=t.id,
+            name=d.name,
+            description=d.description,
+            technique_id=d.technique,
+            query_text=d.readable,
+            condition=d.cond,
+            trend_query=d.trend,
+            severity=d.severity,
+            source="catalog",
+        )
+        # catalogue behaviours follow the catalogue (a corrected detector reaches threats that already exist); manual and rule-derived ones are never touched
         await session.execute(
-            insert(ThreatIoa)
-            .values(
-                id=uuid.uuid4(),
-                tenant_id=t.tenant_id,
-                threat_id=t.id,
-                name=d.name,
-                description=d.description,
-                technique_id=d.technique,
-                query_text=d.readable,
-                condition=d.cond,
-                trend_query=d.trend,
-                severity=d.severity,
-                source="catalog",
+            stmt.on_conflict_do_update(
+                constraint="uq_threat_ioa",
+                set_={
+                    "description": stmt.excluded.description,
+                    "technique_id": stmt.excluded.technique_id,
+                    "query_text": stmt.excluded.query_text,
+                    "condition": stmt.excluded.condition,
+                    "trend_query": stmt.excluded.trend_query,
+                    "severity": stmt.excluded.severity,
+                },
+                where=ThreatIoa.source == "catalog",
             )
-            .on_conflict_do_nothing(constraint="uq_threat_ioa")
         )
     for rule in rules:
         overlap = next((tt for tt in ttps for rt in rule.techniques if ioa_catalog.related(rt, tt)), None)
