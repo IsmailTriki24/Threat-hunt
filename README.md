@@ -1,9 +1,16 @@
 # Threat Hunting & Investigation Platform
 
 Multi-tenant SOC/CERT platform: **hypothesis → hunt → query → evidence → investigation → enrichment → ATT&CK → detection → case**.
-Milestones 1–6 are implemented (foundation, hunting, investigation, threat intelligence + MITRE ATT&CK, detection engineering, AI hunting): auth, tenants, RBAC, canonical event model, ingestion, OpenSearch-backed
-event search with aggregations, event investigation (pivots, raw view), audit trail, health/metrics, seed data, tests.
-See [ARCHITECTURE.md](ARCHITECTURE.md) for the roadmap (AI hunting is optional: set `AI_PROVIDER`/`ANTHROPIC_API_KEY`; disabled by default).
+All six milestones are implemented. See [ARCHITECTURE.md](ARCHITECTURE.md) for the design and `docs/adr/` for decisions.
+
+| # | Milestone | What you get |
+|---|---|---|
+| 1 | Foundation | Auth (JWT + refresh), tenants, RBAC, audit trail, canonical event schema, ingestion, OpenSearch-backed search with aggregations, health/metrics, seed data |
+| 2 | Hunting | Hunts and hypotheses, hunt query language, saved queries and history, findings and notes, CSV/JSON export, pivots, timeline with process lineage |
+| 3 | Investigation | Cases and workflow, evidence, IOC extraction, assets, reports, data sources with ingest keys, connectors (Sysmon, Zeek, Suricata, Wazuh, Windows event log, generic REST/JSON) |
+| 4 | Threat intelligence | IOC entities, provider adapters (ThreatFox, URLhaus, OTX, VirusTotal, MISP) that degrade gracefully, explainable scoring, STIX/TAXII, sightings, MITRE ATT&CK matrix and evidence-backed mapping |
+| 5 | Detection engineering | Sigma and hunt-query rules compiled to one executable form, versioned rule lifecycle gated on passing unit tests, backtests, scheduled evaluation, alerts that escalate to cases, hunt → detection |
+| 6 | AI hunting (optional) | LLM provider abstraction, read-only permission-checked tools, bounded agent loop, conclusions verified against the events actually retrieved, question → query translation |
 
 ## Quick start
 ```bash
@@ -59,6 +66,23 @@ Backend tests run against real PostgreSQL (database `hunt_test`, recreated per r
 
 ## Threat intelligence
 Lookups work with **no API keys** (local heuristics + your own watch-list). Add ThreatFox/URLhaus (abuse.ch Auth-Key), OTX, VirusTotal or MISP credentials under *Threat Intelligence → Providers* (tenant admin). Import STIX bundles or pull a TAXII 2.1 collection into the watch-list. Load the full ATT&CK matrix with `python -m app.cli mitre-load --file enterprise-attack.json` (the curated subset loads on `init`).
+
+## Detection engineering
+*Detections* holds Sigma and hunt-query rules. A new rule is a DRAFT; it needs at least one must-match test case and a passing test run for its
+current version before it can go ACTIVE (activating needs the `detections:manage` permission). Rules the engine cannot run exactly (regex,
+aggregations, unmapped fields) are stored but never deployable. A worker evaluates ACTIVE rules every 5 minutes against newly ingested events and
+raises alerts (one per rule and event); an alert can be acknowledged, closed or opened as a case. *Promote to detection* in a hunt turns its query into a DRAFT rule. Use *Backtest* to count matches over past telemetry without alerting.
+
+## AI hunting (optional)
+Off by default. Enable it in `.env`:
+```bash
+AI_PROVIDER=anthropic
+ANTHROPIC_API_KEY=…          # stays on the server; never stored in the DB or sent to the browser
+AI_MODEL=claude-sonnet-5-5   # default
+```
+The assistant can only run read-only searches as the signed-in user, inside their tenant. Every finding must cite events it actually
+retrieved; unsupported findings are flagged and cannot be saved. Treat its output as a lead to verify, not a verdict. Runs are synchronous (up to
+`AI_TIMEOUT_S`, default 120 s) and rate limited per user. The worker runs scheduled detections whether or not AI is enabled.
 
 ## Notes
 * Requires ~1 GB free RAM for OpenSearch (heap set by `OPENSEARCH_JAVA_OPTS`). Dev compose disables OpenSearch disk watermarks.
