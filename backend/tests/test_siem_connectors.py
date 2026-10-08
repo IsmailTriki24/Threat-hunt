@@ -829,3 +829,155 @@ async def test_lr_search_window_is_true_utc_and_only_timestamps_are_shifted(wire
     assert (
         abs((datetime.now(UTC) - timedelta(hours=1) - d_min).total_seconds()) < 120
     )  # lookback 1h from now, no -1h shift
+
+
+# ---- extra Trend datasets ----------------------------------------------------------------------------
+def test_tm_identity_sign_in_and_directory_audit():
+    signin = {
+        "uuid": "i-1",
+        "eventName": "IDENTITY_IAM_SIGN_INS",
+        "eventTimeDT": "2026-10-08T09:00:00+00:00",
+        "principalName": "alice@corp.example",
+        "userId": "uid-1",
+        "ipAddress": "203.0.113.9",
+        "status": "Failure",
+        "statusReason": "Invalid username or password",
+        "application": "Office 365",
+        "clientApp": "Browser",
+        "locationCountry": "TN",
+        "riskLevelDuringSignIn": "high",
+        "authenticationProtocol": "none",
+        "rawDataStr": "{...}",
+    }
+    [e] = tm("identity_activity").normalize(signin)
+    assert (
+        e.event_type == "authentication"
+        and e.outcome == "failure"
+        and e.user.name == "alice@corp.example"
+        and e.user.domain == "corp.example"
+    )
+    assert e.auth.source_ip == "203.0.113.9" and "risk-high" in e.tags and e.labels["application"] == "Office 365"
+    assert "rawDataStr" not in e.raw
+    ok = tm("identity_activity").normalize(
+        {**signin, "uuid": "i-2", "status": "Success", "riskLevelDuringSignIn": "none"}
+    )[0]
+    assert ok.outcome == "success" and not any(t.startswith("risk-") for t in ok.tags)
+    audit = {
+        "uuid": "i-3",
+        "eventName": "IDENTITY_AAD_DIR_AUDIT",
+        "eventTimeDT": "2026-10-08T09:00:00+00:00",
+        "actionName": "Unregister device",
+        "eventCategory": "Device",
+        "operationType": "Delete",
+        "result": "success",
+        "loggedByService": "Device Registration Service",
+        "resultReason": "(blank)",
+        "targetResources": [{"displayName": "LAPTOP-1", "id": "d1", "type": "Device"}],
+    }
+    [d] = tm("identity_activity").normalize(audit)
+    assert (
+        d.event_type == "other"
+        and d.action == "Unregister device"
+        and d.outcome == "success"
+        and d.labels["target"] == "LAPTOP-1"
+        and "directory-audit" in d.tags
+    )
+
+
+def test_tm_console_audit_logs_get_a_stable_content_derived_id():
+    raw = {
+        "loggedDateTime": "2026-10-08T09:00:00Z",
+        "loggedUser": "admin",
+        "loggedUserId": "u1",
+        "loggedRole": "Master Administrator",
+        "category": "Authentication",
+        "activity": "Sign in",
+        "result": "Successful",
+        "accessType": "Console",
+        "details": "Sign in from 1.2.3.4",
+    }
+    a, b = tm("audit_logs").normalize(raw)[0], tm("audit_logs").normalize(dict(raw))[0]
+    assert (
+        a.original_id == b.original_id
+        and len(a.original_id) == 32
+        and a.outcome == "success"
+        and a.user.name == "admin"
+    )
+    other = tm("audit_logs").normalize({**raw, "details": "different"})[0]
+    assert other.original_id != a.original_id
+
+
+def test_tm_response_task_state_changes_are_separate_events():
+    t = {
+        "id": "T-1",
+        "action": "collectFile",
+        "status": "running",
+        "createdDateTime": "2026-10-08T09:00:00Z",
+        "lastActionDateTime": "2026-10-08T09:01:00Z",
+        "endpointName": "WS-1",
+        "account": "analyst@corp.example",
+    }
+    run, done = tm("response_tasks").normalize(t)[0], tm("response_tasks").normalize({**t, "status": "succeeded"})[0]
+    assert run.original_id == "T-1:running" and done.original_id == "T-1:succeeded" and run.host.hostname == "WS-1"
+    assert tm("response_tasks").normalize(t)[0].original_id == run.original_id  # re-read is idempotent
+
+
+@pytest.mark.parametrize(
+    "ds", ["email_activity", "mobile_activity", "network_activity", "cloud_activity", "container_activity"]
+)
+def test_tm_other_activity_feeds_never_crash_on_unknown_shapes(ds):
+    [e] = tm(ds).normalize(
+        {
+            "uuid": "a-1",
+            "eventTimeDT": "2026-10-08T09:00:00Z",
+            "mailMsgSubject": "hello" * 200,
+            "mailFromAddresses": ["x@y.example"],
+            "mailToAddresses": ["a@b.example"],
+            "src": "bogus",
+        }
+    )
+    assert e.source == "trend_vision_one" and e.original_id == "a-1" and len(e.message) <= 1024
+    net = tm("network_activity").normalize(
+        {
+            "uuid": "n-1",
+            "eventTimeDT": "2026-10-08T09:00:00Z",
+            "src": "10.0.0.1",
+            "dst": "8.8.8.8",
+            "spt": 1234,
+            "dpt": 53,
+            "proto": "17",
+        }
+    )[0]
+    assert net.event_type == "network_connection" and net.network.dst_port == 53 and net.network.protocol == "udp"
+
+
+async def test_tm_audit_logs_page_size_is_snapped_to_the_allowed_values(wire):
+    seen = wire(lambda r: httpx.Response(200, json={"items": []}))
+    await _collect(tm("audit_logs", page_size=75))
+    assert dict(seen[0].url.params)["top"] == "50" and seen[0].url.path.endswith("/v3.0/audit/logs")
+    seen.clear()
+    await _collect(tm("audit_logs", page_size=500))
+    assert dict(seen[0].url.params)["top"] == "200"
+
+
+async def test_tm_response_tasks_is_a_snapshot_without_a_time_window(wire):
+    seen = wire(
+        lambda r: httpx.Response(
+            200, json={"items": [{"id": "T-1", "status": "succeeded"}, {"id": "T-2", "status": "failed"}]}
+        )
+    )
+    c = tm("response_tasks")
+    assert [r["id"] for r in await _collect(c)] == ["T-1", "T-2"]
+    assert len(seen) == 1 and not dict(seen[0].url.params) and c.watermark is not None
+
+
+async def test_tm_new_datasets_use_the_right_endpoints_and_query_header(wire):
+    seen = wire(lambda r: httpx.Response(200, json={"items": []}))
+    for ds, path in [
+        ("identity_activity", "identityActivities"),
+        ("email_activity", "emailActivities"),
+        ("network_activity", "networkActivities"),
+    ]:
+        seen.clear()
+        await _collect(tm(ds, query="userId:abc"))
+        assert seen[0].url.path.endswith(f"/v3.0/search/{path}") and seen[0].headers["tmv1-query"] == "userId:abc"

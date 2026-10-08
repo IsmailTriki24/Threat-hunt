@@ -25,5 +25,11 @@ For appliances with self-signed certificates a source can pin the certificate (`
 **Credentials.** Stored encrypted per data source; set or rotated one name at a time with a write-only endpoint
 (`PUT /data-sources/{id}/secrets/{name}`), never returned, audited without the value.
 
+**Trend datasets.** Besides alerts/OAT/endpoint/detections: `identity_activity` (Entra ID sign-ins → authentication events, directory
+audit → other), `audit_logs` (console audit trail; no API id, so a content hash is used), `response_tasks` (snapshot, one event per
+status change), and best-effort `email`/`mobile`/`network`/`cloud`/`container` activity (empty or unavailable on the tested tenant).
+Page size and window default per dataset (endpoint telemetry: 500/page, 3-minute windows). Capacity is the operator's call: endpoint
+telemetry measured at roughly 1.8 KB and 50 events/s per mid-size tenant, i.e. several GB per day.
+
 **Not in scope:** Trend endpoint inventory (returns 400 on the tested tenant), email/cloud activity, alert status updates after
 first ingest (alerts are de-duplicated by id), LogRhythm raw-log retrieval.

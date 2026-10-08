@@ -4,13 +4,17 @@
   oat                Observed Attack Techniques GET /v3.0/oat/detections            (window on ingestion time)
   endpoint_activity  Endpoint telemetry        GET /v3.0/search/endpointActivities (TMV1-Query header)
   detections         Product security events   GET /v3.0/search/detections         (TMV1-Query header)
+  identity_activity  Entra ID sign-ins/audit   GET /v3.0/search/identityActivities
+  email_activity / mobile_activity / network_activity / cloud_activity / container_activity   GET /v3.0/search/<name>Activities
+  audit_logs         Vision One console audit  GET /v3.0/audit/logs                  (page size must be 50/100/200)
+  response_tasks     Response-action history   GET /v3.0/response/tasks              (snapshot: no time window)
 
 Read-only. Pagination follows the server-supplied `nextLink` (never rebuilt). Windows are read oldest-first; only whole windows
 are emitted so the scheduler watermark can advance safely. The API key is a secret (`api_key`); only the region (a fixed set of
 Trend hosts) is configurable, never a free-form URL."""
 
 import time
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Callable
 from datetime import UTC, datetime, timedelta
 from typing import Any, Literal
 
@@ -30,12 +34,43 @@ REGIONS = {
     "in": "https://api.in.xdr.trendmicro.com",
     "mea": "https://api.mea.xdr.trendmicro.com",
 }
-Dataset = Literal["alerts", "oat", "endpoint_activity", "detections"]
+Dataset = Literal[
+    "alerts",
+    "oat",
+    "endpoint_activity",
+    "detections",
+    "identity_activity",
+    "email_activity",
+    "mobile_activity",
+    "network_activity",
+    "cloud_activity",
+    "container_activity",
+    "audit_logs",
+    "response_tasks",
+]
+SEARCH_DATASETS = {
+    "endpoint_activity",
+    "detections",
+    "identity_activity",
+    "email_activity",
+    "mobile_activity",
+    "network_activity",
+    "cloud_activity",
+    "container_activity",
+}
 PATHS: dict[str, str] = {
     "alerts": "/v3.0/workbench/alerts",
     "oat": "/v3.0/oat/detections",
     "endpoint_activity": "/v3.0/search/endpointActivities",
     "detections": "/v3.0/search/detections",
+    "identity_activity": "/v3.0/search/identityActivities",
+    "email_activity": "/v3.0/search/emailActivities",
+    "mobile_activity": "/v3.0/search/mobileActivities",
+    "network_activity": "/v3.0/search/networkActivities",
+    "cloud_activity": "/v3.0/search/cloudActivities",
+    "container_activity": "/v3.0/search/containerActivities",
+    "audit_logs": "/v3.0/audit/logs",
+    "response_tasks": "/v3.0/response/tasks",
 }
 SEVERITY = {"info": 10, "low": 25, "medium": 50, "high": 75, "critical": 95}
 MAX_PAGES_PER_WINDOW = 20  # a window needing more pages is split in half and retried
@@ -59,14 +94,21 @@ class TrendConfig(BaseModel):
         default="*", max_length=1000, description="TMV1-Query for the search datasets (endpoint_activity, detections)"
     )
     initial_lookback_hours: int = Field(default=1, ge=1, le=168)
-    window_minutes: int = Field(default=15, ge=5, le=240)
+    window_minutes: int | None = Field(
+        default=None, ge=1, le=240, description="Default: 3 for endpoint_activity (very high volume), 15 otherwise"
+    )
     overlap_minutes: int = Field(default=10, ge=0, le=60)
     filter: str | None = Field(
         default=None,
         max_length=1000,
         description="TMV1-Filter for alerts / oat (Trend filter syntax), e.g. to keep only high risk",
     )
-    page_size: int = Field(default=100, ge=1, le=500)
+    page_size: int | None = Field(
+        default=None,
+        ge=1,
+        le=500,
+        description="Default: the largest the dataset allows (500 for search feeds, 200 otherwise)",
+    )
     time_budget_s: int = Field(default=100, ge=10, le=200)
     timeout_s: float = Field(default=60.0, gt=0, le=120)
 
@@ -95,12 +137,21 @@ class TrendVisionOneConnector(Connector):
     def cfg(self) -> TrendConfig:
         return self.config  # type: ignore[return-value]
 
+    @property
+    def _window_minutes(self) -> int:
+        return self.cfg.window_minutes or (3 if self.cfg.dataset == "endpoint_activity" else 15)
+
+    @property
+    def _top(self) -> int:
+        cap = 500 if self.cfg.dataset in SEARCH_DATASETS else 200
+        return min(self.cfg.page_size or cap, cap)
+
     def _headers(self) -> dict[str, str]:
         key = self.secrets.get("api_key")
         if not key:
             raise SourceError("no API key configured for this data source")
         h = {"Authorization": f"Bearer {key}", "Accept": "application/json"}
-        if self.cfg.dataset in ("endpoint_activity", "detections"):
+        if self.cfg.dataset in SEARCH_DATASETS:
             h["TMV1-Query"] = self.cfg.query or "*"
         elif self.cfg.filter:
             h["TMV1-Filter"] = self.cfg.filter
@@ -136,11 +187,19 @@ class TrendVisionOneConnector(Connector):
                 "endDateTime": e,
                 "dateTimeTarget": "updatedDateTime",
                 "orderBy": "createdDateTime asc",
-                "top": min(c.page_size, 200),
+                "top": self._top,
             }
         if c.dataset == "oat":
-            return {"ingestedStartDateTime": s, "ingestedEndDateTime": e, "top": min(c.page_size, 200)}
-        return {"startDateTime": s, "endDateTime": e, "top": c.page_size}
+            return {"ingestedStartDateTime": s, "ingestedEndDateTime": e, "top": self._top}
+        if c.dataset == "audit_logs":
+            return {
+                "startDateTime": s,
+                "endDateTime": e,
+                "top": 50 if self._top < 100 else 100 if self._top < 200 else 200,
+            }
+        if c.dataset == "response_tasks":
+            return {}
+        return {"startDateTime": s, "endDateTime": e, "top": self._top}
 
     async def _read(self, start: datetime, end: datetime, deadline: float) -> list[dict[str, Any]]:
         """Read one window to exhaustion. Raises _TooBig if it needs more than MAX_PAGES_PER_WINDOW pages (caller splits it)
@@ -175,11 +234,18 @@ class TrendVisionOneConnector(Connector):
     async def collect(self, since: datetime | None = None, limit: int = 20_000) -> AsyncIterator[dict[str, Any]]:
         c = self.cfg
         now = datetime.now(UTC).replace(microsecond=0)
+        if (
+            c.dataset == "response_tasks"
+        ):  # no time window: read the whole (small) task list; ids make re-reads idempotent
+            for rec in await self._read(now, now, time.monotonic() + c.time_budget_s):
+                yield rec
+            self.watermark = now
+            return
         end_cap = now - timedelta(minutes=1)
         start = (
             (since - timedelta(minutes=c.overlap_minutes)) if since else now - timedelta(hours=c.initial_lookback_hours)
         )
-        step = timedelta(minutes=c.window_minutes)
+        step = timedelta(minutes=self._window_minutes)
         deadline = time.monotonic() + c.time_budget_s
         emitted = 0
         t = start
@@ -198,7 +264,8 @@ class TrendVisionOneConnector(Connector):
                 break
 
     def normalize(self, raw: dict[str, Any]) -> list[EventIn]:
-        return _NORMALIZERS[self.cfg.dataset](raw)
+        result: list[EventIn] = _NORMALIZERS[self.cfg.dataset](raw)
+        return result
 
 
 # ---- shared bits -------------------------------------------------------------------------------------
@@ -486,4 +553,240 @@ def _detections(raw: dict[str, Any]) -> list[EventIn]:
     )
 
 
-_NORMALIZERS = {"alerts": _alerts, "oat": _oat, "endpoint_activity": _endpoint_activity, "detections": _detections}
+def _outcome(value: Any) -> str:
+    v = (text(value) or "").lower()
+    if v in ("success", "successful", "succeeded", "ok", "allowed") or v.startswith("success"):
+        return "success"
+    if v and any(k in v for k in ("fail", "denied", "error", "block", "interrupt", "reject")):
+        return "failure"
+    return "unknown"
+
+
+def _identity(raw: dict[str, Any]) -> list[EventIn]:
+    uuid_ = text(raw.get("uuid"))
+    if not uuid_:
+        raise NormalizationError("uuid: missing")
+    name = clip(raw.get("eventName")) or "identity event"
+    when = _ts(raw.get("eventTimeDT"), raw.get("eventTime"))
+    if name == "IDENTITY_IAM_SIGN_INS" or raw.get("principalName"):  # a sign-in
+        principal = clip(raw.get("principalName")) or clip(raw.get("userDisplayName"))
+        domain = principal.split("@", 1)[1] if principal and "@" in principal else None
+        risk = clip(raw.get("riskLevelDuringSignIn")) or clip(raw.get("riskLevelAggregated"))
+        return finish(
+            {
+                "timestamp": when,
+                "source": "trend_vision_one",
+                "event_type": "authentication",
+                "action": "sign_in",
+                "outcome": _outcome(raw.get("status")),
+                "original_id": uuid_,
+                "message": clip(
+                    f"Sign-in {clip(raw.get('status')) or ''} for {principal or 'unknown user'} to {clip(raw.get('application')) or 'application'}",
+                    1024,
+                ),
+                "user": {"id": clip(raw.get("userId")), "name": principal, "domain": domain} if principal else None,
+                "auth": {
+                    "method": clip(raw.get("authenticationProtocol"), 64),
+                    "source_ip": _one_ip(raw.get("ipAddress")),
+                },
+                "tags": _tags(
+                    "identity",
+                    [],
+                    "entra-id",
+                    "sign-in",
+                    (f"risk-{risk.lower()}" if risk and risk.lower() not in ("none", "hidden") else None),
+                ),
+                "labels": labels(
+                    application=raw.get("application"),
+                    client_app=raw.get("clientApp"),
+                    client_os=raw.get("clientOS"),
+                    client_browser=raw.get("clientBrowser"),
+                    country=raw.get("locationCountry"),
+                    city=raw.get("locationCity"),
+                    status_reason=raw.get("statusReason"),
+                    risk_state=raw.get("riskState"),
+                    risk_level=risk,
+                    conditional_access=raw.get("conditionalAccessStatus"),
+                    user_type=raw.get("userType"),
+                    resource=raw.get("targetResourceDisplayName"),
+                ),
+                "raw": {k: v for k, v in raw.items() if k != "rawDataStr"},
+            }
+        )
+    targets = (
+        [obj(t) for t in raw.get("targetResources", []) if isinstance(t, dict)]
+        if isinstance(raw.get("targetResources"), list)
+        else []
+    )
+    first = targets[0] if targets else {}
+    action = clip(raw.get("actionName")) or name
+    return finish(
+        {
+            "timestamp": when,
+            "source": "trend_vision_one",
+            "event_type": "other",
+            "action": clip(action, 64),
+            "outcome": _outcome(raw.get("result")),
+            "original_id": uuid_,
+            "message": clip(
+                f"{action} on {target_name}" if (target_name := clip(first.get("displayName"), 120)) else action,
+                1024,
+            ),
+            "tags": _tags(
+                "identity", [], "entra-id", "directory-audit", (text(raw.get("eventCategory")) or "").lower() or None
+            ),
+            "labels": labels(
+                category=raw.get("eventCategory"),
+                operation_type=raw.get("operationType"),
+                service=raw.get("loggedByService"),
+                initiated_by_app=raw.get("initiatedByAppDisplayName"),
+                result_reason=raw.get("resultReason"),
+                correlation_id=raw.get("correlationId"),
+                target=first.get("displayName"),
+                target_type=first.get("type"),
+            ),
+            "raw": raw,
+        }
+    )
+
+
+def _activity(kind: str) -> Callable[[dict[str, Any]], list[EventIn]]:
+    """Email / mobile / network / cloud / container activity. Best-effort mapping (these feeds are empty or unavailable on the
+    tested tenant): network fields become a connection, everything else is kept in `raw` and in labels."""
+
+    def normalize(raw: dict[str, Any]) -> list[EventIn]:
+        uuid_ = text(raw.get("uuid"))
+        if not uuid_:
+            raise NormalizationError("uuid: missing")
+        src, dst = (
+            _one_ip(raw.get("src") or raw.get("srcIp") or raw.get("mailSenderIp")),
+            _one_ip(raw.get("dst") or raw.get("dstIp")),
+        )
+        net = (
+            {
+                "src_ip": src,
+                "src_port": integer(raw.get("spt")),
+                "dst_ip": dst,
+                "dst_port": integer(raw.get("dpt")),
+                "protocol": _PROTO.get(text(raw.get("proto")) or ""),
+            }
+            if (src or dst)
+            else None
+        )
+        subject = clip(raw.get("mailMsgSubject"), 300)
+        return finish(
+            {
+                "timestamp": _ts(raw.get("eventTimeDT"), raw.get("eventTime")),
+                "source": "trend_vision_one",
+                "event_type": "network_connection" if (net and kind == "network") else "other",
+                "action": clip(raw.get("eventName") or raw.get("eventSubName") or f"{kind}_activity", 64),
+                "original_id": uuid_,
+                "message": clip(f"{kind} activity: {subject}" if subject else f"{kind} activity", 1024),
+                "host": _host(raw.get("endpointHostName") or raw.get("deviceName"), raw.get("endpointIp")),
+                "user": {"name": _first(raw.get("mailFromAddresses")) or clip(raw.get("userName"))}
+                if (raw.get("mailFromAddresses") or raw.get("userName"))
+                else None,
+                "network": net,
+                "tags": _tags(f"{kind}-activity", []),
+                "labels": labels(
+                    event_id=raw.get("eventId"),
+                    product=raw.get("pname"),
+                    recipients=",".join(str(x) for x in raw.get("mailToAddresses", [])[:5])
+                    if isinstance(raw.get("mailToAddresses"), list)
+                    else None,
+                    message_id=raw.get("mailMsgId"),
+                ),
+                "raw": raw,
+            }
+        )
+
+    return normalize
+
+
+# ---- console audit log + response tasks --------------------------------------------------------------
+def _audit_logs(raw: dict[str, Any]) -> list[EventIn]:
+    import hashlib
+
+    when = _ts(raw.get("loggedDateTime"), raw.get("ingestedDateTime"))
+    activity = clip(raw.get("activity")) or "audit event"
+    # The API gives audit entries no id: derive a stable one from the entry's own content.
+    ident = hashlib.sha256(
+        "|".join(
+            str(raw.get(k)) for k in ("loggedDateTime", "loggedUserId", "category", "activity", "details", "result")
+        ).encode()
+    ).hexdigest()[:32]
+    return finish(
+        {
+            "timestamp": when,
+            "source": "trend_vision_one",
+            "event_type": "other",
+            "action": clip(activity, 64),
+            "outcome": _outcome(raw.get("result")),
+            "original_id": ident,
+            "message": clip(f"{activity}: {text(raw.get('details')) or ''}".rstrip(": "), 1024),
+            "user": {
+                "id": clip(raw.get("loggedUserId")),
+                "name": clip(raw.get("loggedUser")) or clip(raw.get("loggedUserMailAddress")),
+            }
+            if (raw.get("loggedUser") or raw.get("loggedUserMailAddress"))
+            else None,
+            "tags": _tags("console-audit", [], (text(raw.get("category")) or "").lower() or None),
+            "labels": labels(
+                category=raw.get("category"),
+                access_type=raw.get("accessType"),
+                role=raw.get("loggedRole"),
+                result=raw.get("result"),
+            ),
+            "raw": raw,
+        }
+    )
+
+
+def _response_tasks(raw: dict[str, Any]) -> list[EventIn]:
+    tid = text(raw.get("id"))
+    if not tid:
+        raise NormalizationError("id: missing")
+    status = clip(raw.get("status")) or "unknown"
+    action = clip(raw.get("action")) or "response task"
+    return finish(
+        {
+            "timestamp": _ts(raw.get("lastActionDateTime"), raw.get("createdDateTime")),
+            "source": "trend_vision_one",
+            "event_type": "other",
+            "action": clip(f"response_{action}", 64),
+            # status is part of the id so each state change of a task is its own event, but re-reads stay idempotent
+            "original_id": f"{tid}:{status}",
+            "message": clip(
+                f"Response action '{action}' {status}"
+                + (f" on {clip(raw.get('endpointName'), 120)}" if raw.get("endpointName") else ""),
+                1024,
+            ),
+            "host": _host(raw.get("endpointName"), None),
+            "user": {"name": clip(raw.get("account"))} if raw.get("account") else None,
+            "tags": _tags("response-action", [], status.lower()),
+            "labels": labels(
+                task_id=tid,
+                status=status,
+                action=action,
+                agent_guid=raw.get("agentGuid"),
+                description=raw.get("description"),
+            ),
+            "raw": raw,
+        }
+    )
+
+
+_NORMALIZERS = {
+    "alerts": _alerts,
+    "oat": _oat,
+    "endpoint_activity": _endpoint_activity,
+    "detections": _detections,
+    "identity_activity": _identity,
+    "email_activity": _activity("email"),
+    "mobile_activity": _activity("mobile"),
+    "network_activity": _activity("network"),
+    "cloud_activity": _activity("cloud"),
+    "container_activity": _activity("container"),
+    "audit_logs": _audit_logs,
+    "response_tasks": _response_tasks,
+}
