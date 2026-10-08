@@ -567,3 +567,32 @@ async def test_validation_rules_and_isolation(client, make, app):
     _, hb = await make.login_as(await make.tenant(), Role.TENANT_ADMIN)
     assert (await client.get(f"{API}/hunts", headers=hb)).json() == []
     _ = Settings
+
+
+async def test_a_dataset_with_nothing_applicable_is_not_a_coverage_gap(client, make, app, wire):
+    t, _, h = await _admin(client, make)
+    wire(lambda r: httpx.Response(200, json={"items": [], "progressRate": 100}))
+    for name, ds in (("tm-ep", "endpoint_activity"), ("tm-id", "identity_activity")):
+        await client.post(
+            "/api/v1/data-sources",
+            headers=h,
+            json={
+                "name": name,
+                "connector_type": "trend_vision_one",
+                "config": {"dataset": ds},
+                "secrets": {"api_key": "K"},
+                "enabled": False,
+            },
+        )
+    a = await _add(client, h, "sha256", "c" * 64)  # a hash cannot be looked up in Entra sign-in logs
+    hunt = await _validate(client, h, [a["id"]])
+    await _run(app)
+    done = (await client.get(f"{API}/hunts/{hunt['id']}", headers=h)).json()
+    cov = {c["kind"]: c["status"] for c in done["coverage"]}
+    assert cov["trend:identity_activity"] == "n/a" and cov["trend:endpoint_activity"] == "ok"
+    case = await _case(client, h, done["case_id"])
+    assert (
+        "identity_activity" not in case["description"].split("Coverage gaps")[-1]
+        if "Coverage gaps" in case["description"]
+        else True
+    )

@@ -119,14 +119,14 @@ def render_report(
     feeds = sorted({i.source for i in iocs if i.source})
     out = [
         f"## Verdict\n\n**{verdict}** (severity {severity}). {len(iocs)} indicator(s) from {', '.join(feeds) or 'manual entry'} were checked "
-        f"against {len([c for c in coverage if c.status != 'skipped'])} data source(s) for the period {start} to {end} UTC.\n"
+        f"against {len([c for c in coverage if c.status not in ('skipped', 'n/a')])} data source(s) for the period {start} to {end} UTC.\n"
     ]
     out.append(f"## Hypothesis\n\n{hunt.hypothesis}\n")
     out.append(
         "## Scope: indicators\n\n| Type | Indicator | Source | Confidence | First seen | Context |\n|---|---|---|---|---|---|"
     )
     for i in sorted(iocs, key=lambda x: -x.confidence)[:MAX_IOC_ROWS]:
-        ctx = ", ".join(x for x in [i.malware, i.threat_type, *i.tags[:3]] if x)[:80]
+        ctx = ", ".join(dict.fromkeys(x for x in [i.malware, i.threat_type, *i.tags[:4]] if x))[:80]
         out.append(
             f"| {i.type} | `{defang(i.value)}` | {i.source} | {i.confidence} | {i.first_seen:%Y-%m-%d} | {ctx} |"
         )
@@ -235,7 +235,7 @@ async def finalize(
         status="COMPLETED",
         time_start=hunt.window_start,
         time_end=hunt.window_end,
-        data_sources=sorted({c.kind.split(":")[0] for c in coverage if c.status != "skipped"}),
+        data_sources=sorted({c.kind.split(":")[0] for c in coverage if c.status not in ("skipped", "n/a")}),
         created_by=hunt.requested_by,
         conclusion=f"{verdict}. {len(hits)} event(s) matched.",
     )

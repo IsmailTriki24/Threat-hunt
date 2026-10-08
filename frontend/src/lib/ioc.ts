@@ -42,7 +42,7 @@ export const HUNT_STATUS_CLASS: Record<string, string> = {
   PARTIAL: "bg-orange-900/50 text-orange-300", FAILED: "bg-red-900/60 text-red-200",
 };
 
-export const COVERAGE_CLASS: Record<string, string> = { ok: "text-green-300", truncated: "text-orange-300", skipped: "text-muted", error: "text-red-400" };
+export const COVERAGE_CLASS: Record<string, string> = { ok: "text-green-300", truncated: "text-orange-300", skipped: "text-orange-300", "n/a": "text-muted", error: "text-red-400" };
 
 /** What the admin is about to commit to: shown in the confirmation so a validation is never a blind click. */
 export function validationSummary(items: IocItem[]): string {

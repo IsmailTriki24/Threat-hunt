@@ -93,7 +93,7 @@ async def run_hunt(session: AsyncSession, backend: SearchBackend, settings: Sett
     hunt.match_count, hunt.new_match_count = len(hits), len(new_hits)
     hunt.coverage = [c.as_dict() for c in coverage]
     errors = [c for c in coverage if c.status == "error"]
-    searched = [c for c in coverage if c.status != "skipped"]
+    searched = [c for c in coverage if c.status not in ("skipped", "n/a")]
     if searched and len(errors) == len(searched):
         hunt.status, hunt.error = "FAILED", "; ".join(f"{c.source}: {c.detail}" for c in errors)[:300]
     else:

@@ -123,7 +123,7 @@ class Hit:
 class Coverage:
     source: str
     kind: str
-    status: str = "ok"  # ok | truncated | error | skipped
+    status: str = "ok"  # ok | truncated | error | skipped (could not search) | n/a (nothing applicable to search)
     detail: str = ""
     iocs_searched: int = 0
     hits: int = 0
@@ -356,7 +356,10 @@ async def search_trend(
             conn: Any = connectors.build("trend_vision_one", ds.config, secrets)
             queries = _trend_queries(dataset, iocs)
             if not queries:
-                cov.status, cov.detail = "skipped", "no searchable indicator types for this dataset"
+                cov.status, cov.detail = (
+                    "n/a",
+                    "none of the indicators in this hunt are of a type this dataset can be searched by",
+                )
                 result.coverage.append(cov)
                 continue
             cov.iocs_searched = sum(len(c[1]) for c in queries)
