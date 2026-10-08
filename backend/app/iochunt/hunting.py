@@ -229,6 +229,74 @@ TREND_FIELDS: dict[str, dict[str, list[tuple[str, bool]]]] = {
 }
 
 
+# Hosts that serve huge amounts of benign content: a host-only search would drown in noise, so a URL on one of these is only
+# searched upstream when it has a distinctive path segment.
+SHARED_HOSTS = (
+    "github.com",
+    "githubusercontent.com",
+    "gist.github.com",
+    "pastebin.com",
+    "paste.ee",
+    "discord.com",
+    "discordapp.com",
+    "dropbox.com",
+    "dropboxusercontent.com",
+    "drive.google.com",
+    "docs.google.com",
+    "storage.googleapis.com",
+    "onedrive.live.com",
+    "sharepoint.com",
+    "blob.core.windows.net",
+    "amazonaws.com",
+    "cloudfront.net",
+    "t.me",
+    "telegram.org",
+    "bit.ly",
+    "tinyurl.com",
+    "gitlab.com",
+    "bitbucket.org",
+    "mediafire.com",
+    "mega.nz",
+    "ipfs.io",
+    "workers.dev",
+    "pages.dev",
+)
+_SEGMENT = re.compile(r"[A-Za-z0-9._-]{6,}")
+
+
+def _distinctive_segment(url: str) -> str | None:
+    from urllib.parse import urlsplit
+
+    try:
+        path = urlsplit(url).path
+    except ValueError:
+        return None
+    segs = [
+        s
+        for s in path.split("/")
+        if _SEGMENT.fullmatch(s)
+        and not s.lower().endswith((".exe", ".dll"))
+        or (_SEGMENT.fullmatch(s) and s.lower().endswith((".exe", ".dll")))
+    ]
+    return max(segs, key=len) if segs else None
+
+
+def _url_clause(ioc: Ioc, fields: list[tuple[str, bool]]) -> str | None:
+    host = _host_of(ioc.value)
+    if not host:
+        return None
+    seg = _distinctive_segment(ioc.value)
+    shared = any(host == h or host.endswith("." + h) for h in SHARED_HOSTS)
+    if shared and not seg:
+        return None  # cannot be searched selectively
+    parts = []
+    for fld, wild in fields:
+        if not wild:
+            continue
+        parts.append(f"({_clause(fld, host, True)} AND {_clause(fld, seg, True)})" if seg else _clause(fld, host, True))
+    return " OR ".join(parts) or None
+
+
 def _trend_queries(dataset: str, iocs: list[Ioc]) -> list[tuple[str, list[Ioc]]]:
     """(query, iocs it covers) chunks, each short enough for the vendor's query limit."""
     spec = TREND_FIELDS.get(dataset, {})
@@ -237,10 +305,14 @@ def _trend_queries(dataset: str, iocs: list[Ioc]) -> list[tuple[str, list[Ioc]]]
         fields = spec.get(i.type)
         if not fields:
             continue
-        needle = _host_of(i.value) if i.type == "url" else i.value
-        if not needle:
+        if i.type == "url":
+            clause = _url_clause(i, fields)
+            if clause:
+                pairs.append((i, clause))
             continue
-        pairs.append((i, " OR ".join(_clause(f, needle, w) for f, w in fields)))
+        if not i.value:
+            continue
+        pairs.append((i, " OR ".join(_clause(f, i.value, w) for f, w in fields)))
     chunks: list[tuple[str, list[Ioc]]] = []
     cur: list[str] = []
     cur_iocs: list[Ioc] = []
@@ -294,6 +366,13 @@ async def search_trend(
                 result.coverage.append(cov)
                 continue
             cov.iocs_searched = sum(len(c[1]) for c in queries)
+            skipped_urls = [
+                i
+                for i in iocs
+                if i.type == "url"
+                and "url" in TREND_FIELDS[dataset]
+                and _url_clause(i, TREND_FIELDS[dataset]["url"]) is None
+            ]
             deadline = time.monotonic() + ADAPTER_BUDGET_S
             hits: dict[tuple[str, str], Hit] = {}
             truncated = False
@@ -339,8 +418,14 @@ async def search_trend(
             result.hits += list(hits.values())
             cov.hits = len(hits)
             cov.status = "truncated" if truncated else "ok"
-            cov.detail = f"{len(queries)} vendor queries over the last {(end - start).days or 1} day(s)" + (
-                "; result cap reached" if truncated else ""
+            cov.detail = (
+                f"{len(queries)} vendor queries over the last {(end - start).days or 1} day(s)"
+                + ("; result cap reached" if truncated else "")
+                + (
+                    f"; {len(skipped_urls)} URL(s) on shared hosting (e.g. GitHub) without a distinctive path were not searched upstream"
+                    if skipped_urls
+                    else ""
+                )
             )
         except (SourceError, ValueError) as exc:
             cov.status, cov.detail = "error", str(exc)[:240]

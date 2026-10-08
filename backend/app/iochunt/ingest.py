@@ -356,6 +356,17 @@ _SEEN_FIELDS: dict[str, list[str]] = {
 }
 
 
+def _screen_key(ioc: Ioc) -> tuple[str, str] | None:
+    """(type, value) to look for in our own telemetry. A URL is screened by its host: only a prioritisation hint, never a match."""
+    if ioc.type in _SEEN_FIELDS:
+        return ioc.type, ioc.value
+    if ioc.type == "url":
+        host = _host_of(ioc.value)
+        if host:
+            return ("ip" if _is_ip(host) else "domain"), host
+    return None
+
+
 async def prescreen(
     session: AsyncSession, backend: SearchBackend, tenant_id: uuid.UUID, *, days: int = 3, limit: int = 3000
 ) -> int:
@@ -368,7 +379,7 @@ async def prescreen(
                 .where(
                     Ioc.tenant_id == tenant_id,
                     Ioc.status == "NEW",
-                    Ioc.type.in_(list(_SEEN_FIELDS)),
+                    Ioc.type.in_([*_SEEN_FIELDS, "url"]),
                     Ioc.seen_at.is_(None),
                 )
                 .order_by(Ioc.confidence.desc())
@@ -381,19 +392,23 @@ async def prescreen(
     end = datetime.now(UTC)
     tr = TimeRange(start=end - timedelta(days=days), end=end)
     flagged = 0
-    by_type: dict[str, list[Ioc]] = {}
+    by_key: dict[str, dict[str, list[Ioc]]] = {}
     for r in rows:
-        by_type.setdefault(r.type, []).append(r)
-    for typ, group in by_type.items():
-        for i in range(0, len(group), 100):
-            chunk = group[i : i + 100]
-            values = [c.value for c in chunk]
+        key = _screen_key(r)
+        if key:
+            by_key.setdefault(key[0], {}).setdefault(key[1], []).append(r)
+    for typ, values in by_key.items():
+        names = list(values)
+        for i in range(
+            0, len(names), 50
+        ):  # a terms aggregation returns at most 50 buckets, so 50 values can never be undercounted
+            chunk = names[i : i + 50]
             counts: dict[str, int] = {}
             for fld in _SEEN_FIELDS[typ]:
                 q = EventQuery(
                     time_range=tr,
                     limit=1,
-                    filters=[Filter(field=fld, op="in", value=values)],
+                    filters=[Filter(field=fld, op="in", value=chunk)],
                     aggregations=[Aggregation(name="v", type="terms", field=fld, size=50)]
                     if fld in ioc_agg_fields
                     else [],
@@ -402,10 +417,11 @@ async def prescreen(
                 agg = res.aggregations.get("v")
                 for b in agg.buckets if agg is not None else []:
                     counts[str(b.key)] = counts.get(str(b.key), 0) + b.count
-            for c in chunk:
-                c.seen_count = counts.get(c.value, 0)
-                c.seen_at = end
-                flagged += 1 if c.seen_count else 0
+            for name in chunk:
+                for ioc in values[name]:
+                    ioc.seen_count = counts.get(name, 0)
+                    ioc.seen_at = end
+                    flagged += 1 if ioc.seen_count else 0
     return flagged
 
 

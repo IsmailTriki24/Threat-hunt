@@ -88,6 +88,16 @@ def test_trend_queries_are_chunked_and_url_iocs_search_by_host():
     assert sum(len(c) for _, c in qs) == 39 and 'dst:"198.51.100.1"' in qs[0][0]
     [(q, _)] = hunting._trend_queries("endpoint_activity", [ioc("url", "https://bad.example/p?a=b")])
     assert 'processCmd:"*bad.example*"' in q and "?a=b" not in q
+    # a distinctive path segment makes a URL search selective (host AND segment); a shared host without one is not searched upstream
+    [(q, _)] = hunting._trend_queries("endpoint_activity", [ioc("url", "http://bad.example/stage/payload-x86.bin")])
+    assert 'processCmd:"*bad.example*" AND processCmd:"*payload-x86.bin*"' in q and "objectCmd" in q
+    assert (
+        hunting._trend_queries("endpoint_activity", [ioc("url", "https://raw.githubusercontent.com/u/r/main/x")]) == []
+    )
+    [(q, _)] = hunting._trend_queries(
+        "endpoint_activity", [ioc("url", "https://raw.githubusercontent.com/someuser/evil-repo-name/main/x")]
+    )
+    assert "evil-repo-name" in q
     [(q, _)] = hunting._trend_queries("endpoint_activity", [ioc("domain", 'we"ird.example')])
     assert '\\"' in q
     assert (
@@ -152,7 +162,7 @@ async def test_validated_ioc_with_a_match_opens_a_fully_populated_case(client, m
     b = await _add(client, h, "domain", "never-seen.example")
     hunt = await _validate(client, h, [a["id"], b["id"]], name="Wifak weekly IOCs")
     assert hunt["status"] == "PENDING" and hunt["ioc_count"] == 2 and "validated indicator(s)" in hunt["hypothesis"]
-    assert await _run(app) == 1
+    assert await _run(app) >= 1  # the worker is global: hunts left by other tests in the shared DB may run too
 
     done = (await client.get(f"{API}/hunts/{hunt['id']}", headers=h)).json()
     assert done["status"] == "COMPLETED" and done["match_count"] == 2 and done["case_id"] and done["case_number"] == 1
