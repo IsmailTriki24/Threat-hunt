@@ -76,9 +76,9 @@ LogRhythm: set `base_url` (the :8501 gateway). Private hosts must be allow-liste
 port to `OUTBOUND_ALLOWED_PORTS`. TLS is verified; for a self-signed appliance paste its certificate into `ca_pem` and set `tls_server_name` to a name in it.
 
 ## IOC hunting (automatic)
-*IOC Hunting* is the end-to-end threat-hunt workflow: **feeds → triage → automatic hunt → case.**
+*IOC Hunting* is the end-to-end threat-hunt workflow: **feeds → threat bulletins → validation → automatic hunt → case.** Indicators are grouped under the **threat** they belong to (malware family, actor, campaign); the *Threats* table lists them with their IOC / IOA / TTP counts, and opening one shows its bulletin (description, IOCs, behaviours, ATT&CK techniques). Validating the bulletin hunts all of it. For documented techniques and aliases load the full ATT&CK dataset once: `python -m app.cli mitre-load --file enterprise-attack.json` (download from the MITRE CTI repository).
 1. Add feeds under *Feeds* (no-key starters: **URLhaus recent URLs**, **Feodo Tracker**; add your own **Trend Vision One Suspicious Object List** with the same API key as the Trend data source; ThreatFox / OTX / MISP with their keys). Only *recent* indicators are imported (default 14 days) and stale ones expire; private, benign and allow-listed values never enter the database.
-2. In the *Triage queue* (sorted by "already seen in your telemetry", then confidence) a **tenant admin** validates the indicators worth hunting.
+2. In the *Threats* table (sorted by "already in your telemetry", severity, confidence) a **tenant admin** opens a bulletin and validates it (individual IOCs and behaviours can be excluded). *All indicators* still lists the flat queue.
 3. The worker hunts every source within about a minute: ingested telemetry, Trend Vision One upstream search (including datasets you do not ingest), and LogRhythm when its source has `ioc_filter_templates` (a filter captured from the LogRhythm console with `$IOC` as the value, per indicator type).
 4. A **case is opened automatically whether or not anything is found**: hunt report, per-source coverage, evidence, assets, ATT&CK mappings, severity and recommendations. No match with full coverage closes it; incomplete coverage keeps it open. Validated indicators are re-hunted every few hours and reopen the case on new activity.
 
