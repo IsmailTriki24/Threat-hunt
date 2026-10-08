@@ -572,3 +572,18 @@ async def test_tenants_cannot_see_or_validate_each_others_indicators(client, mak
     assert (await client.get(f"{API}/iocs", headers=hb)).json()["total"] == 0
     assert (await client.post(f"{API}/iocs/validate", headers=hb, json={"ioc_ids": [ioc["id"]]})).status_code == 404
     assert (await client.post(f"{API}/iocs/reject", headers=hb, json={"ioc_ids": [ioc["id"]]})).status_code == 404
+
+
+async def test_misp_filters_on_attribute_time_not_publish_time_and_threatfox_allows_big_exports(wire):
+    seen = {}
+
+    def h(request):
+        seen["body"] = json.loads(request.content)
+        return httpx.Response(200, json={"response": {"Attribute": []}, "query_status": "ok", "data": []})
+
+    wire(h)
+    await registry.build("misp", {"base_url": "https://misp.example"}, {"api_key": "K"}).fetch(None, 14)
+    assert seen["body"]["timestamp"] == "14d" and "last" not in seen["body"]
+    big = "x" * (11 * 1024 * 1024)  # an export over the generic 10 MB cap must still be accepted
+    wire(lambda r: httpx.Response(200, json={"query_status": "ok", "data": [], "pad": big}))
+    assert await registry.build("threatfox", {}, {"auth_key": "K"}).fetch(None, 7) == []

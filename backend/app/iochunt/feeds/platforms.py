@@ -140,7 +140,8 @@ class MispFeed(Feed):
         cfg: MispConfig = self.config  # type: ignore[assignment]
         body = {
             "returnFormat": "json",
-            "last": f"{max(1, max_age_days)}d",
+            # attribute last-modified time; `last` would use the event *publish* time and re-admit years-old attributes of republished events
+            "timestamp": f"{max(1, max_age_days)}d",
             "limit": cfg.limit,
             "includeEventTags": True,
             "deleted": False,

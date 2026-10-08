@@ -124,6 +124,7 @@ class ThreatFoxFeed(Feed):
             "https://threatfox-api.abuse.ch/api/v1/",
             headers={"Auth-Key": key, "Accept": "application/json"},
             json_body={"query": "get_iocs", "days": min(cfg.days, max(1, max_age_days))},
+            max_bytes=MAX_FEED_BYTES,
         )
         if not isinstance(body, dict) or body.get("query_status") not in ("ok", "no_result"):
             raise SourceError(f"ThreatFox: {str(body.get('query_status') if isinstance(body, dict) else body)[:100]}")
