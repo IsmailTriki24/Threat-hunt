@@ -96,3 +96,45 @@ def strict_int(value: Any, name: str) -> int | None:
     if value is not None and result is None:
         raise NormalizationError(f"{name}: expected an integer")
     return result
+
+
+def valid_ip(value: Any) -> str | None:
+    """A clean IP string (IPv4-mapped IPv6 unwrapped) or None; never raises."""
+    import ipaddress
+
+    v = text(value)
+    if not v:
+        return None
+    try:
+        ip = ipaddress.ip_address(v.strip().strip("[]"))
+    except ValueError:
+        return None
+    if isinstance(ip, ipaddress.IPv6Address) and ip.ipv4_mapped:
+        ip = ip.ipv4_mapped
+    return str(ip)
+
+
+def ip_list(value: Any, limit: int = 16) -> list[str]:
+    items = value if isinstance(value, list) else [value]
+    return list(dict.fromkeys(ip for ip in (valid_ip(v) for v in items[:limit]) if ip))
+
+
+def hashes(md5: Any = None, sha1: Any = None, sha256: Any = None) -> dict[str, str] | None:
+    """Only well-formed hex digests of the right length; anything else is dropped rather than failing the event."""
+    out: dict[str, str] = {}
+    for key, value, size in (("md5", md5, 32), ("sha1", sha1, 40), ("sha256", sha256, 64)):
+        v = text(value)
+        if v and len(v) == size and all(c in "0123456789abcdefABCDEF" for c in v):
+            out[key] = v
+    return out or None
+
+
+def clip(value: Any, n: int = 256) -> str | None:
+    v = text(value)
+    return v[:n].strip() or None if v else None
+
+
+def labels(**pairs: Any) -> dict[str, str]:
+    """Label map with every value clipped to the schema limit; empty values omitted; at most 20 keys."""
+    out = {k: c for k, v in pairs.items() if (c := clip(v))}
+    return dict(list(out.items())[:20])

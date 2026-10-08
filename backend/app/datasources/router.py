@@ -1,8 +1,8 @@
 import uuid
 from datetime import UTC, datetime
-from typing import Any
+from typing import Annotated, Any
 
-from fastapi import APIRouter, Depends, Request, Response
+from fastapi import APIRouter, Depends, Path, Request, Response
 from pydantic import ValidationError
 from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
@@ -13,12 +13,13 @@ from app.auth.deps import Principal, require
 from app.auth.rbac import Permission
 from app.connectors import registry
 from app.core.config import Settings, get_settings
+from app.core.crypto import decrypt_json
 from app.core.db import get_session
 from app.core.errors import AppError, Conflict, NotFound, Unauthorized
 from app.core.ratelimit import enforce
 from app.datasources import service
 from app.datasources.models import DataSource
-from app.datasources.schemas import ConnectorInfo, DataSourceCreate, DataSourceOut, DataSourceUpdate
+from app.datasources.schemas import ConnectorInfo, DataSourceCreate, DataSourceOut, DataSourceUpdate, SecretValue
 from app.events import service as ingest_service
 from app.events.search.base import SearchBackend
 from app.tenants.models import Tenant
@@ -154,6 +155,34 @@ async def update_source(
         details={"fields": sorted(body.model_dump(exclude_none=True)), "secrets_changed": body.secrets is not None},
     )
     return service.to_out(ds, settings)
+
+
+@router.put("/{ds_id}/secrets/{name}", status_code=204)
+async def set_secret(
+    ds_id: uuid.UUID,
+    name: Annotated[str, Path(pattern=r"^[A-Za-z0-9_.-]{1,64}$")],
+    body: SecretValue,
+    request: Request,
+    principal: Principal = MANAGE,
+    session: AsyncSession = Depends(get_session),
+    settings: Settings = Depends(get_settings),
+) -> Response:
+    """Write-only: set or rotate ONE credential; other secrets are kept. The value is never echoed or logged."""
+    ds = await _get(session, principal, ds_id)
+    current = {k: str(v) for k, v in decrypt_json(settings, ds.secrets_enc).items()} if ds.secrets_enc else {}
+    if name not in current and len(current) >= 10:
+        raise AppError("A data source can hold at most 10 secrets")
+    current[name] = body.value
+    ds.secrets_enc = service.encrypt_secrets(settings, current)
+    await audit.record(
+        request,
+        "datasource.secret_set",
+        principal=principal,
+        resource_type="datasource",
+        resource_id=str(ds.id),
+        details={"name": name},
+    )
+    return Response(status_code=204)
 
 
 @router.delete("/{ds_id}", status_code=204)

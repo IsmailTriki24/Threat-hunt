@@ -38,10 +38,15 @@ class Connector(ABC):
     display_name: ClassVar[str]
     supports_collect: ClassVar[bool] = False
     config_model: ClassVar[type[BaseModel]] = EmptyConfig
+    # Max raw records one collection run may pull (pull connectors for busy SIEMs raise this).
+    collect_limit: ClassVar[int] = 1000
 
     def __init__(self, config: BaseModel | None = None, secrets: dict[str, str] | None = None) -> None:
         self.config = config if config is not None else self.config_model()
         self.secrets: dict[str, str] = secrets or {}
+        # Set by collect(): everything strictly before this instant has been fully read. Lets the scheduler advance
+        # past quiet periods instead of re-scanning them. None => fall back to the newest event timestamp.
+        self.watermark: datetime | None = None
 
     async def test_connection(self) -> ConnectionResult:
         return ConnectionResult(ok=True, detail="push-based source; nothing to connect to")

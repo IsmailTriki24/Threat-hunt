@@ -92,8 +92,10 @@ async def collect_source(session: AsyncSession, backend: SearchBackend, settings
     try:
         connector = build_connector(ds, settings)
         since = datetime.fromisoformat(ds.cursor) if ds.cursor else None
-        raws = [r async for r in connector.collect(since=since, limit=1000)]
+        raws = [r async for r in connector.collect(since=since, limit=connector.collect_limit)]
         if not raws:
+            advance = connector.watermark.isoformat() if connector.watermark else ds.cursor
+            await session.execute(update(DataSource).where(DataSource.id == ds.id).values(cursor=advance))
             await _mark(session, ds, "ok", "no new records")
             return 0
         events = [e for r in raws for e in _safe_normalize(connector, r)]
@@ -101,7 +103,7 @@ async def collect_source(session: AsyncSession, backend: SearchBackend, settings
 
         staged = [Event.from_input(e, ds.tenant_id) for e in events]
         result = await backend.index_events(staged)
-        newest = max((e.timestamp for e in events), default=None)
+        newest = connector.watermark or max((e.timestamp for e in events), default=None)
         await session.execute(
             update(DataSource)
             .where(DataSource.id == ds.id)

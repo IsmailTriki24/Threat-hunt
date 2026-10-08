@@ -4,8 +4,10 @@ from app.connectors.base import Connector
 from app.connectors.canonical import CanonicalConnector
 from app.connectors.generic_json import GenericJsonConnector
 from app.connectors.generic_rest import GenericRestConnector
+from app.connectors.logrhythm import LogRhythmConnector
 from app.connectors.suricata import SuricataConnector
 from app.connectors.sysmon import SysmonConnector
+from app.connectors.trend_vision_one import TrendVisionOneConnector
 from app.connectors.wazuh import WazuhConnector
 from app.connectors.windows_eventlog import WindowsEventLogConnector
 from app.connectors.zeek import ZeekConnector
@@ -27,6 +29,8 @@ for _cls in (
     SuricataConnector,
     WazuhConnector,
     WindowsEventLogConnector,
+    LogRhythmConnector,
+    TrendVisionOneConnector,
 ):
     register(_cls)
 

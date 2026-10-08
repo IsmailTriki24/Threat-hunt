@@ -2,6 +2,7 @@ import httpx
 import pytest
 
 from app.core import ssrf
+from app.core.config import get_settings
 
 
 def resolver(mapping):
@@ -149,3 +150,27 @@ async def test_redirect_loop_and_oversized_response_are_bounded(monkeypatch):
     big = httpx.MockTransport(lambda r: httpx.Response(200, content=b"x" * 1000))
     with pytest.raises(ssrf.SsrfError, match="too large"):
         await ssrf.fetch("GET", "http://a.example.com/", transport=big, resolver=res)
+
+
+async def test_allowed_networks_permit_only_listed_private_hosts(monkeypatch):
+    s = get_settings()
+    monkeypatch.setattr(s, "outbound_allowed_networks", "10.0.0.5/32")
+    monkeypatch.setattr(s, "outbound_allowed_ports", "443,8501")
+    ok = await ssrf.validate_url("https://siem.corp.example:8501/", resolver({"siem.corp.example": ["10.0.0.5"]}))
+    assert ok[2] == ["10.0.0.5"]
+    for bad in ("10.0.0.6", "127.0.0.1", "169.254.169.254"):
+        with pytest.raises(ssrf.SsrfError):
+            await ssrf.validate_url("https://x.example:8501/", resolver({"x.example": [bad]}))
+    # a DNS answer mixing an allowed and a forbidden address is still refused
+    with pytest.raises(ssrf.SsrfError):
+        await ssrf.validate_url("https://x.example:8501/", resolver({"x.example": ["10.0.0.5", "10.0.0.9"]}))
+
+
+def test_allowed_networks_must_be_narrow():
+    from app.core.config import Settings
+
+    base = {"jwt_secret": "x" * 40}
+    for bad in ("10.0.0.0/8", "0.0.0.0/0", "::/0", "not-a-cidr"):
+        with pytest.raises(ValueError):
+            Settings(**base, outbound_allowed_networks=bad)
+    assert Settings(**base, outbound_allowed_networks="10.0.0.5/32, 192.168.1.0/24").outbound_networks

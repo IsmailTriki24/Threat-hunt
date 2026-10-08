@@ -11,6 +11,12 @@ x-backend-env: &backend-env
   SEED_DEMO_DATA: ${SEED_DEMO_DATA:-false}
   SEED_PASSWORD: ${SEED_PASSWORD:-}
   CORS_ORIGINS: http://localhost:${FRONTEND_PORT:-3000}
+  # Outbound policy for pull connectors: public hosts are always allowed; private ones only when listed here.
+  OUTBOUND_ALLOWED_NETWORKS: ${OUTBOUND_ALLOWED_NETWORKS:-}
+  OUTBOUND_ALLOWED_PORTS: ${OUTBOUND_ALLOWED_PORTS:-80,443,8080,8443,9200}
+  AI_PROVIDER: ${AI_PROVIDER:-none}
+  ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+  AI_MODEL: ${AI_MODEL:-claude-sonnet-5-5}
 
 services:
   postgres:

@@ -8,6 +8,27 @@ import { buildConfig, fieldsFromSchema, ingestCurl } from "@/lib/cases";
 import { fmtTime } from "@/lib/query";
 import { CopyButton, ErrorLine, HealthBadge, Modal } from "./badges";
 
+const DEFAULT_SECRET: Record<string, string> = { logrhythm: "token", trend_vision_one: "api_key", generic_rest: "authorization" };
+
+/** Write-only credential editor: the value is never read back from the server and is cleared on close. */
+export function SecretDialog({ source, onClose, onSaved }: { source: DataSource; onClose: () => void; onSaved: () => void }) {
+  const [name, setName] = useState(source.secret_keys[0] ?? DEFAULT_SECRET[source.connector_type] ?? "authorization");
+  const [value, setValue] = useState("");
+  const save = useMutation({ mutationFn: () => api.setDataSourceSecret(source.id, name.trim(), value), onSuccess: () => { setValue(""); onSaved(); onClose(); } });
+  const valid = /^[A-Za-z0-9_.-]{1,64}$/.test(name.trim()) && value.length > 0;
+  return (
+    <Modal title={`Set credential — ${source.name}`} onClose={onClose}>
+      <form className="space-y-2" onSubmit={(e) => { e.preventDefault(); if (valid) save.mutate(); }}>
+        <p className="text-xs text-muted">Stored encrypted and never shown again. Other credentials on this source are kept. Use this to rotate a key too.</p>
+        <label className="block text-xs">Name <input aria-label="Credential name" className="input w-full font-mono" value={name} onChange={(e) => setName(e.target.value)} /></label>
+        <label className="block text-xs">Value <input aria-label="Credential value" className="input w-full" type="password" autoComplete="new-password" value={value} onChange={(e) => setValue(e.target.value)} /></label>
+        <ErrorLine error={save.error} fallback="Could not save the credential" />
+        <button className="btn btn-primary" type="submit" disabled={!valid || save.isPending}>Save credential</button>
+      </form>
+    </Modal>
+  );
+}
+
 /** The ingest key is shown exactly once: this dialog owns the only copy and drops it on close. */
 export function OneTimeKeyDialog({ sourceId, ingestKey, onClose }: { sourceId: string; ingestKey: string; onClose: () => void }) {
   const origin = typeof window === "undefined" ? "" : window.location.origin;
@@ -102,6 +123,7 @@ export function DataSourcesView() {
   const [showNew, setShowNew] = useState(false);
   const [reveal, setReveal] = useState<{ id: string; key: string } | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
+  const [secretFor, setSecretFor] = useState<DataSource | null>(null);
   const sources = useQuery({ queryKey: ["data-sources"], queryFn: api.listDataSources });
   const connectors = useQuery({ queryKey: ["connectors"], queryFn: api.connectors });
   const refresh = () => qc.invalidateQueries({ queryKey: ["data-sources"] });
@@ -126,6 +148,7 @@ export function DataSourcesView() {
         <CreateWizard connectors={connectors.data} onCancel={() => setShowNew(false)}
           onCreated={(ds) => { setShowNew(false); void refresh(); if (ds.ingest_key) setReveal({ id: ds.id, key: ds.ingest_key }); }} />
       )}
+      {secretFor && <SecretDialog source={secretFor} onClose={() => setSecretFor(null)} onSaved={() => { setNotice(`Credential saved for ${secretFor.name}. Enable the source (or Test it) to use it.`); void refresh(); }} />}
       {reveal && <OneTimeKeyDialog sourceId={reveal.id} ingestKey={reveal.key} onClose={() => setReveal(null)} />}
       <ErrorLine error={sources.error} fallback="Failed to load data sources" />
       {sources.data && (sources.data.length === 0 ? <p className="panel p-3 text-muted">No data sources configured.</p> : (
@@ -144,6 +167,7 @@ export function DataSourcesView() {
                 <td className="td whitespace-nowrap">
                   <button className="btn py-0 text-xs" disabled={!manage} title={hint} onClick={() => test.mutate(d)}>Test</button>{" "}
                   {d.supports_collect && <button className="btn py-0 text-xs" disabled={!manage} onClick={() => collect.mutate(d)}>Collect now</button>}{" "}
+                  {d.supports_collect && <button className="btn py-0 text-xs" disabled={!manage} title={hint} onClick={() => setSecretFor(d)}>Set credential</button>}{" "}
                   <button className="btn py-0 text-xs" disabled={!manage} onClick={() => { if (confirm(`Rotate the ingest key for “${d.name}”? The old key stops working immediately.`)) rotate.mutate(d); }}>Rotate key</button>{" "}
                   <button className="btn py-0 text-xs" disabled={!manage} onClick={() => { if (confirm(`Delete data source “${d.name}”? Ingested events are kept.`)) remove.mutate(d); }}>Delete</button>
                 </td>

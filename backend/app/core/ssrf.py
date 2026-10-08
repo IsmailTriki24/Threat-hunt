@@ -43,6 +43,13 @@ def is_forbidden_address(addr: str) -> bool:
     )
 
 
+def _in_networks(addr: str, nets: list[ipaddress.IPv4Network | ipaddress.IPv6Network]) -> bool:
+    ip = ipaddress.ip_address(addr)
+    if isinstance(ip, ipaddress.IPv6Address) and ip.ipv4_mapped:
+        ip = ip.ipv4_mapped
+    return any(ip.version == n.version and ip in n for n in nets)
+
+
 async def default_resolver(host: str, port: int) -> list[str]:
     loop = asyncio.get_running_loop()
     infos = await loop.getaddrinfo(host, port, type=socket.SOCK_STREAM)
@@ -72,9 +79,11 @@ async def validate_url(url: str, resolver: Resolver = default_resolver) -> tuple
         raise SsrfError("host cannot be resolved") from None
     if not addrs:
         raise SsrfError("host cannot be resolved")
-    if not get_settings().outbound_allow_private:
+    settings = get_settings()
+    if not settings.outbound_allow_private:
+        nets = settings.outbound_networks
         for a in addrs:
-            if is_forbidden_address(a):
+            if is_forbidden_address(a) and not _in_networks(a, nets):
                 raise SsrfError("destination address is not allowed")
     return parts.hostname, port, addrs
 
@@ -82,9 +91,17 @@ async def validate_url(url: str, resolver: Resolver = default_resolver) -> tuple
 class SafeTransport(httpx.AsyncBaseTransport):
     """httpx transport that validates and pins the destination IP for every request."""
 
-    def __init__(self, inner: httpx.AsyncBaseTransport | None = None, resolver: Resolver = default_resolver) -> None:
+    def __init__(
+        self,
+        inner: httpx.AsyncBaseTransport | None = None,
+        resolver: Resolver = default_resolver,
+        sni_hostname: str | None = None,
+    ) -> None:
         self._inner = inner or httpx.AsyncHTTPTransport(retries=0)
         self._resolver = resolver
+        # Name the TLS certificate is verified against (and sent as SNI) instead of the URL host, so a source reached
+        # by IP can be validated against its certificate's hostname without any DNS entry.
+        self._sni = sni_hostname
 
     async def handle_async_request(self, request: httpx.Request) -> httpx.Response:
         host, _port, addrs = await validate_url(str(request.url), self._resolver)
@@ -92,7 +109,7 @@ class SafeTransport(httpx.AsyncBaseTransport):
         pinned_host = f"[{ip}]" if ":" in ip else ip
         headers = httpx.Headers(request.headers)
         headers["Host"] = request.headers.get("host", host)
-        extensions: dict[str, Any] = {**request.extensions, "sni_hostname": host}
+        extensions: dict[str, Any] = {**request.extensions, "sni_hostname": self._sni or host}
         pinned = httpx.Request(
             request.method,
             request.url.copy_with(host=pinned_host),
@@ -117,9 +134,10 @@ async def fetch(
     timeout_s: float = 15.0,
     transport: httpx.AsyncBaseTransport | None = None,
     resolver: Resolver = default_resolver,
+    sni_hostname: str | None = None,
 ) -> httpx.Response:
     """SSRF-safe single-shot HTTP request with manual, re-validated redirects and a response size cap."""
-    safe = SafeTransport(transport, resolver)
+    safe = SafeTransport(transport, resolver, sni_hostname)
     async with httpx.AsyncClient(transport=safe, timeout=timeout_s, follow_redirects=False) as client:
         for _ in range(MAX_REDIRECTS + 1):
             req = client.build_request(method, url, headers=headers, params=params, json=json_body, data=form)

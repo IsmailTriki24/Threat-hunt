@@ -47,3 +47,7 @@ class ConnectorInfo(BaseModel):
     display_name: str
     supports_collect: bool
     config_schema: dict[str, Any]
+
+
+class SecretValue(_In):
+    value: str = Field(min_length=1, max_length=8192)

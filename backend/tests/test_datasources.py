@@ -1,4 +1,5 @@
 import json
+import uuid
 from datetime import UTC, datetime, timedelta
 
 import httpx
@@ -291,3 +292,46 @@ def test_encryption_key_required_in_production():
     with pytest.raises(ValueError, match="OUTBOUND_ALLOW_PRIVATE"):
         Settings(**base, data_encryption_key="k" * 44, outbound_allow_private=True)
     assert get_settings().outbound_allow_private is False
+
+
+async def test_set_one_secret_keeps_the_others_and_never_echoes(client, make, db):
+    t = await make.tenant()
+    _, h = await make.login_as(t, Role.TENANT_ADMIN)
+    r = await client.post(
+        "/api/v1/data-sources",
+        headers=h,
+        json={
+            "name": "s",
+            "connector_type": "generic_rest",
+            "config": {"url": "https://example.com/x"},
+            "secrets": {"authorization": "Bearer OLD-VALUE"},
+        },
+    )
+    ds = r.json()
+    put = await client.put(
+        f"/api/v1/data-sources/{ds['id']}/secrets/extra", headers=h, json={"value": "NEW-SECRET-VALUE"}
+    )
+    assert put.status_code == 204 and "NEW-SECRET" not in put.text
+    got = (await client.get(f"/api/v1/data-sources/{ds['id']}", headers=h)).json()
+    assert got["secret_keys"] == ["authorization", "extra"] and "NEW-SECRET" not in json.dumps(got)
+    row = (await db.execute(sa.select(DataSource).where(DataSource.id == uuid.UUID(ds["id"])))).scalar_one()
+    assert b"NEW-SECRET" not in bytes(row.secrets_enc) and b"OLD-VALUE" not in bytes(row.secrets_enc)
+    # overwrite one, validation, permissions, tenant isolation
+    assert (
+        await client.put(f"/api/v1/data-sources/{ds['id']}/secrets/authorization", headers=h, json={"value": "v2"})
+    ).status_code == 204
+    for bad in ("bad name", "x" * 65):
+        assert (
+            await client.put(f"/api/v1/data-sources/{ds['id']}/secrets/{bad}", headers=h, json={"value": "v"})
+        ).status_code in (404, 422)
+    assert (
+        await client.put(f"/api/v1/data-sources/{ds['id']}/secrets/a", headers=h, json={"value": ""})
+    ).status_code == 422
+    _, analyst = await make.login_as(t, Role.SOC_ANALYST)
+    assert (
+        await client.put(f"/api/v1/data-sources/{ds['id']}/secrets/a", headers=analyst, json={"value": "v"})
+    ).status_code == 403
+    _, other = await make.login_as(await make.tenant(), Role.TENANT_ADMIN)
+    assert (
+        await client.put(f"/api/v1/data-sources/{ds['id']}/secrets/a", headers=other, json={"value": "v"})
+    ).status_code == 404

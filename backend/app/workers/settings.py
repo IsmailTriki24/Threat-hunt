@@ -50,22 +50,33 @@ async def enforce_retention(ctx: dict[str, Any]) -> None:
 
 
 async def collect_datasources(ctx: dict[str, Any]) -> None:
-    """Pull from every enabled, pull-capable data source (errors only mark that source's health)."""
+    """Pull from every enabled, pull-capable data source. Sources run concurrently (each in its own session and
+    transaction) so one slow upstream cannot starve the others; errors only mark that source's health."""
+    import asyncio
+
     from app.datasources import service as ds_service
     from app.datasources.models import DataSource
 
     settings = get_settings()
     async with ctx["sessionmaker"]() as session:
-        sources = (await session.execute(select(DataSource).where(DataSource.enabled.is_(True)))).scalars().all()
-        for ds in sources:
+        ids = list((await session.execute(select(DataSource.id).where(DataSource.enabled.is_(True)))).scalars())
+    sem = asyncio.Semaphore(4)
+
+    async def one(ds_id: Any) -> None:
+        async with sem, ctx["sessionmaker"]() as session:
+            ds = await session.get(DataSource, ds_id)
+            if ds is None or not ds.enabled:
+                return
             try:
                 if not ds_service.build_connector(ds, settings).supports_collect:
-                    continue
+                    return
             except Exception:
                 log.warning("invalid data source configuration", extra={"data_source": str(ds.id)})
-                continue
+                return
             await ds_service.collect_source(session, ctx["search"], settings, ds)
             await session.commit()
+
+    await asyncio.gather(*(one(i) for i in ids), return_exceptions=True)
 
 
 async def run_detections(ctx: dict[str, Any]) -> None:
@@ -89,6 +100,6 @@ class WorkerSettings:
         cron(heartbeat, second={0, 30}, run_at_startup=True),
         cron(enforce_retention, hour={3}, minute={15}),
         cron(run_detections, minute={2, 7, 12, 17, 22, 27, 32, 37, 42, 47, 52, 57}, timeout=240),
-        cron(collect_datasources, minute={0, 5, 10, 15, 20, 25, 30, 35, 40, 45, 50, 55}, timeout=240),
+        cron(collect_datasources, minute={0, 5, 10, 15, 20, 25, 30, 35, 40, 45, 50, 55}, timeout=280),
     ]
     redis_settings = _redis_settings()

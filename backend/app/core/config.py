@@ -1,3 +1,4 @@
+import ipaddress
 from functools import lru_cache
 from typing import Literal
 
@@ -37,6 +38,9 @@ class Settings(BaseSettings):
     # unless explicitly enabled (development/test only).
     outbound_allow_private: bool = False
     outbound_allowed_ports: str = "80,443,8080,8443,9200"
+    # Comma-separated CIDRs of *specific* private hosts/networks pull connectors may reach (e.g. an on-prem SIEM:
+    # "10.0.0.5/32"). Narrow by design: unlike OUTBOUND_ALLOW_PRIVATE it is permitted in production.
+    outbound_allowed_networks: str = ""
 
     password_min_length: int = 12
     cors_origins: str = ""
@@ -65,6 +69,29 @@ class Settings(BaseSettings):
     @property
     def cookie_secure(self) -> bool:
         return self.app_env == "production"
+
+    @property
+    def outbound_networks(self) -> list[ipaddress.IPv4Network | ipaddress.IPv6Network]:
+        return [
+            ipaddress.ip_network(n.strip(), strict=False)
+            for n in self.outbound_allowed_networks.split(",")
+            if n.strip()
+        ]
+
+    @model_validator(mode="after")
+    def _validate_outbound_networks(self) -> "Settings":
+        for raw in self.outbound_allowed_networks.split(","):
+            if not raw.strip():
+                continue
+            try:
+                net = ipaddress.ip_network(raw.strip(), strict=False)
+            except ValueError:
+                raise ValueError(f"OUTBOUND_ALLOWED_NETWORKS: {raw.strip()!r} is not a valid CIDR") from None
+            if net.prefixlen < (16 if net.version == 4 else 48):
+                raise ValueError(
+                    f"OUTBOUND_ALLOWED_NETWORKS: {net} is too broad; list specific hosts or small networks"
+                )
+        return self
 
     @model_validator(mode="after")
     def _validate_secrets(self) -> "Settings":

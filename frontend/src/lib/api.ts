@@ -189,6 +189,8 @@ export const api = {
   updateDataSource: (id: string, b: { enabled?: boolean; name?: string }) =>
     request<DataSource>(`/api/v1/data-sources/${enc(id)}`, { method: "PATCH", body: b }),
   deleteDataSource: (id: string) => request<void>(`/api/v1/data-sources/${enc(id)}`, { method: "DELETE" }),
+  setDataSourceSecret: (id: string, name: string, value: string) =>
+    request<void>(`/api/v1/data-sources/${enc(id)}/secrets/${enc(name)}`, { method: "PUT", body: { value } }),
   rotateKey: (id: string) => request<DataSource>(`/api/v1/data-sources/${enc(id)}/rotate-key`, { method: "POST" }),
   testDataSource: (id: string) => request<{ ok: boolean; detail: string }>(`/api/v1/data-sources/${enc(id)}/test`, { method: "POST" }),
   collectDataSource: (id: string) => request<{ accepted: number }>(`/api/v1/data-sources/${enc(id)}/collect`, { method: "POST" }),
