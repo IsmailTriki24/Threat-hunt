@@ -311,6 +311,15 @@ def _ts(*candidates: Any) -> str:
     raise NormalizationError("timestamp: missing")
 
 
+def _base(path: Any) -> str | None:
+    """File name of a path. Vision One reports `processName` / `objectName` as full paths, but the canonical `process.name` is the file name
+    (so name-based IOAs and detection rules match); the full path belongs in `executable`."""
+    p = clip(path, 1024)
+    if not p:
+        return None
+    return clip(p.replace("\\", "/").rstrip("/").rsplit("/", 1)[-1])
+
+
 def _first(value: Any) -> str | None:
     if isinstance(value, list):
         return clip(value[0]) if value else None
@@ -425,9 +434,9 @@ def _oat(raw: dict[str, Any]) -> list[EventIn]:
             "message": clip(f"Observed attack technique: {names}" if names else "Observed attack technique", 1024),
             "host": _host(d.get("endpointHostName"), d.get("endpointIp")),
             "process": {
-                "name": clip(d.get("processName")),
+                "name": _base(d.get("processName") or d.get("processFilePath")),
                 "command_line": text(d.get("processCmd")),
-                "executable": clip(d.get("processFilePath"), 1024),
+                "executable": clip(d.get("processFilePath") or d.get("processName"), 1024),
                 "pid": integer(d.get("processPid")),
             },
             "tags": _tags("oat", techniques, *[r or None for r in dict.fromkeys(risks)]),
@@ -447,8 +456,8 @@ _PROTO = {"6": "tcp", "17": "udp"}
 
 def _actor(raw: dict[str, Any]) -> dict[str, Any]:
     return {
-        "name": clip(raw.get("processName")),
-        "executable": clip(raw.get("processFilePath"), 1024),
+        "name": _base(raw.get("processName") or raw.get("processFilePath")),
+        "executable": clip(raw.get("processFilePath") or raw.get("processName"), 1024),
         "command_line": text(raw.get("processCmd")),
         "pid": integer(raw.get("processPid")),
         "hash": hashes(raw.get("processFileHashMd5"), raw.get("processFileHashSha1"), raw.get("processFileHashSha256")),
@@ -483,15 +492,15 @@ def _endpoint_activity(raw: dict[str, Any]) -> list[EventIn]:
             "event_type": "process_creation",
             "action": "process_create",
             "process": {
-                "name": clip(raw.get("objectName")),
-                "executable": clip(raw.get("objectFilePath"), 1024),
+                "name": _base(raw.get("objectName") or raw.get("objectFilePath")),
+                "executable": clip(raw.get("objectFilePath") or raw.get("objectName"), 1024),
                 "command_line": text(raw.get("objectCmd")),
                 "pid": integer(raw.get("objectPid")),
                 "hash": hashes(
                     raw.get("objectFileHashMd5"), raw.get("objectFileHashSha1"), raw.get("objectFileHashSha256")
                 ),
                 "parent": {
-                    "name": clip(raw.get("processName")),
+                    "name": _base(raw.get("processName") or raw.get("processFilePath")),
                     "command_line": text(raw.get("processCmd")),
                     "pid": integer(raw.get("processPid")),
                 },

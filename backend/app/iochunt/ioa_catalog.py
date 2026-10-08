@@ -1,13 +1,15 @@
 """Built-in indicators of attack (IOAs): attacker *behaviours*, each tied to an ATT&CK technique.
 
 An IOA is a boolean `Condition` tree over the canonical event schema (the same engine detection rules use), so it is evaluated identically
-by OpenSearch and by the local evaluator, and every upstream result can be re-verified against it. `trend` is an optional equivalent
-TMV1-Query for Trend Vision One endpoint telemetry, where `processName`/`processCmd` are the *creating* (parent) process and
-`objectName`/`objectCmd` the *new* process. Behaviour alone is weaker evidence than a known-bad indicator, so IOA matches raise a case for
-review rather than a verdict; `severity` is the weight of the behaviour, not of the threat.
+by OpenSearch and by the local evaluator, and every upstream result is re-verified against it. `trend` is an optional equivalent TMV1-Query
+for Trend Vision One endpoint telemetry, where `processName`/`processCmd` are the *creating* (parent) process and `objectName`/`objectCmd`
+the *new* process. Behaviour alone is weaker evidence than a known-bad indicator, so IOA matches raise a case for review rather than a
+verdict; `severity` is the weight of the behaviour, not of the threat.
 
-Text fields (command lines, registry keys) are matched with `contains` per token: an any-of list on a text field means *equals*, which would
-never match a real command line."""
+Two traps this module is built around (both found on live data):
+* Text fields (command lines, registry keys) are matched with `contains` per token: an any-of list on a text field means *equals*, which
+  would never match a real command line.
+* Vision One reports process names as FULL PATHS, so an exact `objectName:"x.exe"` matches nothing; `tn()` emits the suffix form."""
 
 from dataclasses import dataclass
 from typing import Any
@@ -16,8 +18,6 @@ from app.events.search.query import Condition
 
 OFFICE = ["winword.exe", "excel.exe", "powerpnt.exe", "outlook.exe"]
 SCRIPT = ["powershell.exe", "cmd.exe", "wscript.exe", "cscript.exe", "mshta.exe", "rundll32.exe"]
-_OFFICE_T = " OR ".join(f'processName:"{n}"' for n in OFFICE)
-_SCRIPT_T = " OR ".join(f'objectName:"{n}"' for n in SCRIPT)
 
 
 def F(field: str, op: str, value: Any = None) -> dict[str, Any]:  # noqa: N802
@@ -45,6 +45,25 @@ def cmd_all(*tokens: str) -> dict[str, Any]:
     return ALL(*[F("process.command_line", "contains", t) for t in tokens])
 
 
+# ---- Trend Vision One query builders ---------------------------------------------------------------------
+def tn(field: str, *names: str) -> str:
+    """Process by file name. Names are full paths in Vision One, so match the path suffix: objectName:"*\\powershell.exe"."""
+    parts = [f'{field}:"*\\{n}"' for n in names]
+    return parts[0] if len(parts) == 1 else "(" + " OR ".join(parts) + ")"
+
+
+def tc(field: str, *tokens: str) -> str:
+    """Command line contains any of these tokens."""
+    parts = [f'{field}:"*{t}*"' for t in tokens]
+    return parts[0] if len(parts) == 1 else "(" + " OR ".join(parts) + ")"
+
+
+def proc(names: tuple[str, ...], *tokens: str) -> str:
+    """New process `names`, optionally with a command line containing any of `tokens`."""
+    q = f"eventId:1 AND {tn('objectName', *names)}"
+    return q + (f" AND {tc('objectCmd', *tokens)}" if tokens else "")
+
+
 @dataclass(frozen=True)
 class IoaDef:
     name: str
@@ -66,7 +85,7 @@ CATALOG: tuple[IoaDef, ...] = (
         "PowerShell launched with an encoded (base64) command line, a common way to hide a payload.",
         ALL(name_in("powershell.exe"), cmd_has("enc", "encodedcommand")),
         "process powershell.exe AND command line contains -enc / -encodedcommand",
-        'eventId:1 AND objectName:"powershell.exe" AND (objectCmd:"*-enc*" OR objectCmd:"*-encodedcommand*")',
+        proc(("powershell.exe",), "-enc", "-encodedcommand"),
         "HIGH",
     ),
     IoaDef(
@@ -78,7 +97,7 @@ CATALOG: tuple[IoaDef, ...] = (
             cmd_has("downloadstring", "downloadfile", "invoke-webrequest", "webclient", "iwr"),
         ),
         "process powershell.exe AND command line contains downloadstring / downloadfile / invoke-webrequest / webclient",
-        'eventId:1 AND objectName:"powershell.exe" AND (objectCmd:"*downloadstring*" OR objectCmd:"*downloadfile*" OR objectCmd:"*invoke-webrequest*" OR objectCmd:"*webclient*")',
+        proc(("powershell.exe",), "downloadstring", "downloadfile", "invoke-webrequest", "webclient"),
         "HIGH",
     ),
     IoaDef(
@@ -87,16 +106,32 @@ CATALOG: tuple[IoaDef, ...] = (
         "Word/Excel/PowerPoint/Outlook starting PowerShell, cmd, a script host, mshta or rundll32: the classic malicious-document pattern.",
         ALL(F("process.parent.name", "in", OFFICE), name_in(*SCRIPT)),
         f"parent in {OFFICE} AND process in {SCRIPT}",
-        f"eventId:1 AND ({_OFFICE_T}) AND ({_SCRIPT_T})",
+        f"eventId:1 AND {tn('processName', *OFFICE)} AND {tn('objectName', *SCRIPT)}",
         "HIGH",
     ),
     IoaDef(
         "LSASS memory dump",
         "T1003.001",
-        "A process dumping LSASS memory (comsvcs MiniDump, procdump) to steal credentials.",
-        ANY(cmd_has("minidump"), ALL(name_in("procdump.exe", "procdump64.exe"), cmd_has("lsass"))),
-        "command line contains minidump OR procdump against lsass",
-        'eventId:1 AND (objectCmd:"*minidump*" OR (objectName:"procdump.exe" AND objectCmd:"*lsass*"))',
+        "A process dumping LSASS memory (comsvcs.dll MiniDump, procdump against lsass) to steal credentials. Crash handlers that merely mention a minidump are not matched.",
+        ANY(
+            ALL(cmd_has("comsvcs"), cmd_has("minidump")),
+            ALL(name_in("procdump.exe", "procdump64.exe"), cmd_has("lsass")),
+            ALL(name_in("rundll32.exe"), cmd_has("minidump")),
+        ),
+        "comsvcs.dll AND MiniDump, OR procdump against lsass, OR rundll32 with MiniDump",
+        "eventId:1 AND (("
+        + tc("objectCmd", "comsvcs")
+        + " AND "
+        + tc("objectCmd", "minidump")
+        + ") OR ("
+        + tn("objectName", "procdump.exe", "procdump64.exe")
+        + " AND "
+        + tc("objectCmd", "lsass")
+        + ") OR ("
+        + tn("objectName", "rundll32.exe")
+        + " AND "
+        + tc("objectCmd", "minidump")
+        + "))",
         "CRITICAL",
     ),
     IoaDef(
@@ -105,7 +140,7 @@ CATALOG: tuple[IoaDef, ...] = (
         "vssadmin/wbadmin deleting backups or shadow copies: a ransomware precursor.",
         ALL(name_in("vssadmin.exe", "wbadmin.exe"), cmd_has("delete")),
         "vssadmin.exe / wbadmin.exe AND command line contains delete",
-        'eventId:1 AND (objectName:"vssadmin.exe" OR objectName:"wbadmin.exe") AND objectCmd:"*delete*"',
+        proc(("vssadmin.exe", "wbadmin.exe"), "delete"),
         "CRITICAL",
     ),
     IoaDef(
@@ -114,7 +149,7 @@ CATALOG: tuple[IoaDef, ...] = (
         "bcdedit disabling recovery or ignoring boot failures: a ransomware precursor.",
         ALL(name_in("bcdedit.exe"), cmd_has("recoveryenabled", "ignoreallfailures")),
         "bcdedit.exe AND command line contains recoveryenabled / ignoreallfailures",
-        'eventId:1 AND objectName:"bcdedit.exe" AND (objectCmd:"*recoveryenabled*" OR objectCmd:"*ignoreallfailures*")',
+        proc(("bcdedit.exe",), "recoveryenabled", "ignoreallfailures"),
         "HIGH",
     ),
     IoaDef(
@@ -123,7 +158,7 @@ CATALOG: tuple[IoaDef, ...] = (
         "wevtutil clearing event logs to remove traces.",
         ALL(name_in("wevtutil.exe"), cmd_has("cl", "clear-log")),
         "wevtutil.exe AND command line contains cl",
-        'eventId:1 AND objectName:"wevtutil.exe" AND objectCmd:"*cl*"',
+        proc(("wevtutil.exe",), " cl ", "clear-log"),
         "HIGH",
     ),
     IoaDef(
@@ -132,7 +167,7 @@ CATALOG: tuple[IoaDef, ...] = (
         "schtasks creating a task, a common persistence and execution mechanism.",
         ALL(name_in("schtasks.exe"), cmd_has("create")),
         "schtasks.exe AND command line contains create",
-        'eventId:1 AND objectName:"schtasks.exe" AND objectCmd:"*/create*"',
+        proc(("schtasks.exe",), "/create"),
         "MEDIUM",
     ),
     IoaDef(
@@ -141,7 +176,7 @@ CATALOG: tuple[IoaDef, ...] = (
         "Living-off-the-land download of a payload with certutil -urlcache or bitsadmin /transfer.",
         ALL(name_in("certutil.exe", "bitsadmin.exe"), cmd_has("urlcache", "transfer", "http", "https")),
         "certutil.exe / bitsadmin.exe AND command line contains urlcache / transfer / http",
-        'eventId:1 AND (objectName:"certutil.exe" OR objectName:"bitsadmin.exe") AND (objectCmd:"*urlcache*" OR objectCmd:"*transfer*" OR objectCmd:"*http*")',
+        proc(("certutil.exe", "bitsadmin.exe"), "urlcache", "transfer", "http"),
         "HIGH",
     ),
     IoaDef(
@@ -150,7 +185,7 @@ CATALOG: tuple[IoaDef, ...] = (
         "mshta.exe executing content from a URL or a javascript:/vbscript: string.",
         ALL(name_in("mshta.exe"), cmd_has("http", "https", "javascript", "vbscript")),
         "mshta.exe AND command line contains http / javascript / vbscript",
-        'eventId:1 AND objectName:"mshta.exe" AND (objectCmd:"*http*" OR objectCmd:"*javascript*" OR objectCmd:"*vbscript*")',
+        proc(("mshta.exe",), "http", "javascript", "vbscript"),
         "HIGH",
     ),
     IoaDef(
@@ -159,17 +194,17 @@ CATALOG: tuple[IoaDef, ...] = (
         "regsvr32 loading a remote scriptlet (scrobj.dll / /i:http) to run code.",
         ALL(name_in("regsvr32.exe"), cmd_has("scrobj", "http", "https")),
         "regsvr32.exe AND command line contains scrobj / http",
-        'eventId:1 AND objectName:"regsvr32.exe" AND (objectCmd:"*scrobj*" OR objectCmd:"*http*")',
+        proc(("regsvr32.exe",), "scrobj", "http"),
         "HIGH",
     ),
     IoaDef(
         "rundll32 proxy execution",
         "T1218.011",
-        "rundll32 running script, remote content or comsvcs.",
-        ALL(name_in("rundll32.exe"), cmd_has("javascript", "http", "https", "comsvcs", "mshtml")),
-        "rundll32.exe AND command line contains javascript / http / comsvcs / mshtml",
-        'eventId:1 AND objectName:"rundll32.exe" AND (objectCmd:"*javascript*" OR objectCmd:"*http*" OR objectCmd:"*comsvcs*" OR objectCmd:"*mshtml*")',
-        "HIGH",
+        "rundll32 running script (javascript / RunHTMLApplication), comsvcs or mshtml. A plain URL handler (url.dll) is legitimate and not matched.",
+        ALL(name_in("rundll32.exe"), cmd_has("javascript", "runhtmlapplication", "comsvcs", "mshtml")),
+        "rundll32.exe AND command line contains javascript / RunHTMLApplication / comsvcs / mshtml",
+        proc(("rundll32.exe",), "javascript", "runhtmlapplication", "comsvcs", "mshtml"),
+        "MEDIUM",
     ),
     IoaDef(
         "Run-key persistence",
@@ -198,7 +233,7 @@ CATALOG: tuple[IoaDef, ...] = (
         "PsExec or its service executable running: remote command execution / lateral movement.",
         name_in("psexec.exe", "psexesvc.exe", "paexec.exe"),
         "process psexec.exe / psexesvc.exe / paexec.exe",
-        'eventId:1 AND (objectName:"psexec.exe" OR objectName:"psexesvc.exe" OR objectName:"paexec.exe")',
+        proc(("psexec.exe", "psexesvc.exe", "paexec.exe")),
         "HIGH",
     ),
     IoaDef(
@@ -207,7 +242,7 @@ CATALOG: tuple[IoaDef, ...] = (
         "net user /add or net localgroup administrators /add.",
         ALL(name_in("net.exe", "net1.exe"), cmd_all("user", "add")),
         "net.exe / net1.exe AND command line contains user AND add",
-        'eventId:1 AND (objectName:"net.exe" OR objectName:"net1.exe") AND objectCmd:"*user*" AND objectCmd:"*add*"',
+        f"{proc(('net.exe', 'net1.exe'))} AND {tc('objectCmd', 'user')} AND {tc('objectCmd', 'add')}",
         "HIGH",
     ),
     IoaDef(
@@ -216,7 +251,7 @@ CATALOG: tuple[IoaDef, ...] = (
         "AnyDesk / ngrok / rclone-class tools often used for access, tunnelling or exfiltration.",
         name_in("anydesk.exe", "ngrok.exe", "rclone.exe", "teamviewer.exe", "screenconnect.clientservice.exe"),
         "process anydesk.exe / ngrok.exe / rclone.exe / teamviewer.exe",
-        'eventId:1 AND (objectName:"anydesk.exe" OR objectName:"ngrok.exe" OR objectName:"rclone.exe" OR objectName:"teamviewer.exe")',
+        proc(("anydesk.exe", "ngrok.exe", "rclone.exe", "teamviewer.exe")),
         "MEDIUM",
     ),
 )

@@ -756,3 +756,80 @@ def test_severity_follows_evidence_not_feed_enthusiasm():
     assert threats._severity(40, set(), 3) == "LOW"  # ...but only if the intelligence is credible
     assert threats._severity(50, {"ransomware"}, 0) == "CRITICAL"
     assert threats.is_generic("threatfox") and threats.is_generic("urlhaus")
+
+
+def test_trend_ioa_queries_match_full_path_names_and_the_lsass_rule_is_specific():
+    for d in ioa_catalog.CATALOG:
+        if not d.trend:
+            continue
+        # Vision One names are full paths: an exact objectName/processName match returns nothing, the suffix form is required
+        assert not __import__("re").search(r'(objectName|processName):"[A-Za-z0-9_.-]+\.exe"', d.trend), d.name
+        assert d.trend.startswith("eventId:1"), d.name
+    lsass = next(d for d in ioa_catalog.CATALOG if d.name == "LSASS memory dump").condition()
+    crash = {
+        "process": {
+            "name": "RobloxCrashHandler.exe",
+            "command_line": "RobloxCrashHandler.exe --no-rate-limit --database=C:\\x --minidump-dir=C:\\crash",
+        }
+    }
+    assert not hunting.ioa_matches(crash, lsass)  # Chromium-style crash handlers merely mention a minidump
+    assert hunting.ioa_matches(
+        {
+            "process": {
+                "name": "rundll32.exe",
+                "command_line": "rundll32.exe C:\\Windows\\System32\\comsvcs.dll, MiniDump 612 C:\\t\\x.dmp full",
+            }
+        },
+        lsass,
+    )
+    assert hunting.ioa_matches(
+        {"process": {"name": "procdump.exe", "command_line": "procdump -ma lsass.exe lsass.dmp"}}, lsass
+    )
+    assert not hunting.ioa_matches(
+        {"process": {"name": "procdump.exe", "command_line": "procdump -ma myapp.exe"}}, lsass
+    )
+    rundll = next(d for d in ioa_catalog.CATALOG if d.name == "rundll32 proxy execution").condition()
+    assert not hunting.ioa_matches(
+        {
+            "process": {
+                "name": "rundll32.exe",
+                "command_line": "rundll32.exe url.dll,FileProtocolHandler https://example.org",
+            }
+        },
+        rundll,
+    )
+
+
+async def test_updating_a_hunted_bulletin_rescans_the_full_lookback(client, make, app, attack_software):
+    t, _, h = await _admin(client, make)
+    await make.index(
+        t,
+        [
+            ev(
+                30,
+                event_type="process_creation",
+                process={"name": "powershell.exe", "command_line": "powershell.exe -enc AAA"},
+                host={"hostname": "WS-61"},
+            )
+        ],
+    )
+    await seed(app, t, [row(t, "198.51.100.190", threat_name="QakBot", malware="QakBot")])
+    tid = await _threat_id(client, h, "QakBot")
+    first = (await client.post(f"{API}/threats/{tid}/validate", headers=h, json={"lookback_days": 7})).json()
+    await runner.process_pending(app.state.sessionmaker, app.state.search, get_settings())
+    await seed(
+        app, t, [row(t, "198.51.100.191", threat_name="QakBot", malware="QakBot")]
+    )  # a new indicator arrives later
+    again = (await client.post(f"{API}/threats/{tid}/validate", headers=h, json={"lookback_days": 14})).json()
+    assert (
+        again["mode"] == "rehunt"
+        and again["case_id"] == (await client.get(f"{API}/hunts/{first['id']}", headers=h)).json()["case_id"]
+    )
+    async with app.state.sessionmaker() as db:
+        sig = (await db.execute(select(IocHunt.signals).where(IocHunt.id == uuid.UUID(again["id"])))).scalar_one()
+    assert sig["full_window"] is True
+    await runner.process_pending(app.state.sessionmaker, app.state.search, get_settings())
+    done = (await client.get(f"{API}/hunts/{again['id']}", headers=h)).json()
+    assert done["status"] in ("COMPLETED", "PARTIAL") and (done["window_end"] and done["window_start"])
+    span = (datetime.fromisoformat(done["window_end"]) - datetime.fromisoformat(done["window_start"])).days
+    assert span == 14

@@ -983,3 +983,40 @@ async def test_tm_new_datasets_use_the_right_endpoints_and_query_header(wire):
         seen.clear()
         await _collect(tm(ds, query="userId:abc"))
         assert seen[0].url.path.endswith(f"/v3.0/search/{path}") and seen[0].headers["tmv1-query"] == "userId:abc"
+
+
+def test_tm_process_names_are_file_names_and_paths_go_to_executable():
+    """Vision One reports names as full paths. The canonical process.name must be the file name or name-based rules never match."""
+    raw = {
+        **EP_BASE,
+        "eventId": "1",
+        "eventSubId": 2,
+        "objectName": "C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe",
+        "objectFilePath": "C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe",
+        "objectCmd": "powershell -enc AAA",
+        "processName": "C:\\Program Files\\Microsoft Office\\root\\Office16\\WINWORD.EXE",
+        "processFilePath": "C:\\Program Files\\Microsoft Office\\root\\Office16\\WINWORD.EXE",
+    }
+    [e] = tm("endpoint_activity").normalize(raw)
+    assert e.process.name == "powershell.exe" and e.process.executable.endswith("v1.0\\powershell.exe")
+    assert e.process.parent.name == "WINWORD.EXE"
+    net = tm("endpoint_activity").normalize(
+        {
+            **EP_BASE,
+            "eventId": "3",
+            "src": "10.0.0.1",
+            "dst": "8.8.8.8",
+            "processName": "C:\\Users\\x\\evil.exe",
+            "processFilePath": "C:\\Users\\x\\evil.exe",
+        }
+    )[0]
+    assert net.process.name == "evil.exe" and net.process.executable == "C:\\Users\\x\\evil.exe"
+    oat = tm("oat").normalize(
+        {
+            "uuid": "o-9",
+            "detectedDateTime": "2026-10-08T09:00:00Z",
+            "filters": [],
+            "detail": {"endpointHostName": "H", "processName": "/usr/bin/curl", "processCmd": "curl x"},
+        }
+    )[0]
+    assert oat.process.name == "curl"

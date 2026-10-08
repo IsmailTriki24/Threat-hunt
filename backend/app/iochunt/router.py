@@ -969,7 +969,7 @@ async def validate_threat(
             requested_by=principal.user_id,
             case_id=th.case_id,
             threat_id=th.id,
-            signals={"ioa_ids": [str(i.id) for i in ioas], "ttps": ttps},
+            signals={"ioa_ids": [str(i.id) for i in ioas], "ttps": ttps, "full_window": True},
             hypothesis=runner.threat_hypothesis(
                 "the organisation", th, batch, len(ioas), len(ttps), body.lookback_days
             ),

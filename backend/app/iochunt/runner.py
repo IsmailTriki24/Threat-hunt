@@ -98,9 +98,12 @@ async def run_hunt(session: AsyncSession, backend: SearchBackend, settings: Sett
     hunt.window_end = now
     if hunt.mode == "rehunt":
         # indicators never hunted yet (a large threat is worked through in batches) need the full lookback; the rest only the new window
+        full = bool(
+            (hunt.signals or {}).get("full_window")
+        )  # an analyst asked for a fresh look, not just the new window
         last = (
             None
-            if any(i.last_hunted_at is None for i in iocs)
+            if full or any(i.last_hunted_at is None for i in iocs)
             else min(i.last_hunted_at for i in iocs if i.last_hunted_at)
         )
         hunt.window_start = (last - REHUNT_OVERLAP) if last else now - timedelta(days=hunt.lookback_days)
