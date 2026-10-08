@@ -48,3 +48,6 @@ __all__ += [
 from app.detections.models import Alert, DetectionRule, DetectionRun, RuleTestCase, RuleVersion  # noqa: E402
 
 __all__ += ["Alert", "DetectionRule", "DetectionRun", "RuleTestCase", "RuleVersion"]
+from app.ai.models import AiRun  # noqa: E402
+
+__all__ += ["AiRun"]

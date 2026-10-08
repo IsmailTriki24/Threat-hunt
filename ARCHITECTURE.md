@@ -1,6 +1,6 @@
 # Architecture
 
-> Status: **Milestones 1 (foundation), 2 (hunting), 3 (investigation), 4 (threat intel + ATT&CK) and 5 (detection engineering) implemented.** Sections marked *(planned)* are designed for but not yet built.
+> Status: **Milestones 1 (foundation), 2 (hunting), 3 (investigation), 4 (threat intel + ATT&CK) 5 (detection engineering) and 6 (AI hunting) implemented.** Sections marked *(planned)* are designed for but not yet built.
 
 ## 1. Goals
 A SOC/CERT threat-hunting and investigation platform that evolves from manual hunting → assisted → AI-assisted →
@@ -38,7 +38,7 @@ and, later, the AI planner use), and **connectors** (all integrations behind one
 | `seed/` | deterministic synthetic telemetry (phishing → PowerShell → C2 → persistence → LSASS dump → lateral movement) |
 | `api/` | `/health`, `/ready`, `/metrics`, router assembly |
 
-Planned packages (same conventions): `ai/`.
+
 
 ## 4. Request lifecycle & authorisation
 1. Middleware: body-size cap (streamed bodies counted), request id, security headers, metrics, structured access log.
@@ -65,9 +65,9 @@ Roles (`SUPER_ADMIN`, `TENANT_ADMIN`, `SOC_ANALYST`, `THREAT_HUNTER`, `INCIDENT_
 | 3 Investigation | cases, evidence, IOC extraction, assets, audit views, reports, DataSource entity, ingest keys, SSRF-safe pull connector, Zeek/Suricata/Wazuh/WinEvt connectors | **done** (MinIO file export deferred) |
 | 4 Threat intel | IOC entities, enrichment adapters (MISP, ThreatFox/abuse.ch, OTX, VT…) with graceful degradation, scoring, ATT&CK | **done** |
 | 5 Detection engineering | Sigma → query compiler, rule lifecycle/testing, hunt→detection, scheduled evaluation, alerts | **done** (ADR 0010) |
-| 6 AI hunting | provider abstraction, tool system, planner/validator/analyzer, evidence-cited conclusions | planned |
+| 6 AI hunting | provider abstraction, tool system, agent loop, evidence-validated conclusions, NL→query | **done** (ADR 0011) |
 
-## 7. AI design constraints (for Milestone 6)
+## 7. AI design constraints (implemented in `app/ai/`, ADR 0011)
 The model never receives credentials or shell access. It can only call registered **tools** (`search_events`, `get_event`,
 `lookup_ioc`, …) that: take Pydantic-typed input, execute as the *invoking user's* `Principal` (so tenant isolation and RBAC
 apply unchanged), are rate- and size-limited, and write audit records. Model-generated queries are parsed into `EventQuery`

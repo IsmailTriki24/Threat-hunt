@@ -1,5 +1,6 @@
 from fastapi import APIRouter
 
+from app.ai.router import router as ai_router
 from app.assets.router import router as assets_router
 from app.audit.router import router as audit_router
 from app.auth.router import router as auth_router
@@ -31,5 +32,6 @@ for r in (
     intel_router,
     mitre_router,
     detections_router,
+    ai_router,
 ):
     api_router.include_router(r)

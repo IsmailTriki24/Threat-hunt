@@ -1,9 +1,9 @@
 # Threat Hunting & Investigation Platform
 
 Multi-tenant SOC/CERT platform: **hypothesis → hunt → query → evidence → investigation → enrichment → ATT&CK → detection → case**.
-Milestones 1–5 are implemented (foundation, hunting, investigation, threat intelligence + MITRE ATT&CK, detection engineering): auth, tenants, RBAC, canonical event model, ingestion, OpenSearch-backed
+Milestones 1–6 are implemented (foundation, hunting, investigation, threat intelligence + MITRE ATT&CK, detection engineering, AI hunting): auth, tenants, RBAC, canonical event model, ingestion, OpenSearch-backed
 event search with aggregations, event investigation (pivots, raw view), audit trail, health/metrics, seed data, tests.
-See [ARCHITECTURE.md](ARCHITECTURE.md) for the roadmap (AI hunting is *not built yet*).
+See [ARCHITECTURE.md](ARCHITECTURE.md) for the roadmap (AI hunting is optional: set `AI_PROVIDER`/`ANTHROPIC_API_KEY`; disabled by default).
 
 ## Quick start
 ```bash

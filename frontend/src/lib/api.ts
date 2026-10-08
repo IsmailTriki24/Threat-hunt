@@ -1,3 +1,4 @@
+import type { AiRun, AiStatus } from "./ai";
 import type { Alert, AlertStatus, Backtest, DetectionOverview, Rule, RuleStatus, TestCase, TestResult } from "./detections";
 import type {
   EventDetail, EventQueryBody, FieldInfo, MemberOut, ReadyResponse, SearchResult, TenantOut, TokenResponse,
@@ -214,6 +215,11 @@ export const api = {
   listAlerts: (qs = "") => request<Alert[]>(`/api/v1/detections/alerts${qs}`),
   updateAlert: (id: string, status: AlertStatus) => request<Alert>(`/api/v1/detections/alerts/${enc(id)}`, { method: "PATCH", body: { status } }),
   alertToCase: (id: string) => request<Alert>(`/api/v1/detections/alerts/${enc(id)}/case`, J({})),
+  aiStatus: () => request<AiStatus>("/api/v1/ai/status"),
+  aiTranslate: (question: string) => request<{ query: string | null; note: string }>("/api/v1/ai/translate", J({ question })),
+  aiRuns: () => request<AiRun[]>("/api/v1/ai/runs"),
+  aiRun: (b: { goal: string; hunt_id?: string; hours_back: number }) => request<AiRun>("/api/v1/ai/runs", J(b)),
+  aiSave: (id: string, finding_indexes: number[], hunt_id?: string) => request<AiRun>(`/api/v1/ai/runs/${enc(id)}/save`, J({ finding_indexes, ...(hunt_id ? { hunt_id } : {}) })),
   intelLookup: (b: LookupBody) => request<IntelDetail>("/api/v1/intel/lookup", J(b)),
   listEntities: (qs = "") => request<IntelEntity[]>(`/api/v1/intel/entities${qs}`),
   getEntity: (id: string) => request<IntelDetail>(`/api/v1/intel/entities/${enc(id)}`),

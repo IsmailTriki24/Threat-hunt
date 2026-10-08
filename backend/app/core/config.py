@@ -46,6 +46,15 @@ class Settings(BaseSettings):
 
     retention_days: int = 90
 
+    # AI hunting. Provider credentials live only in the environment (never in the DB, never sent to the browser).
+    ai_provider: Literal["none", "anthropic"] = "none"
+    anthropic_api_key: str = Field(default="", repr=False)
+    ai_model: str = "claude-sonnet-5-5"
+    ai_base_url: str = "https://api.anthropic.com"  # operator-controlled (gateway/proxy); never user input
+    ai_max_steps: int = Field(default=8, ge=1, le=20)
+    ai_max_tool_calls: int = Field(default=20, ge=1, le=60)
+    ai_timeout_s: int = Field(default=120, ge=10, le=600)
+
     seed_demo_data: bool = False
     seed_password: str = Field(default="", repr=False)
 

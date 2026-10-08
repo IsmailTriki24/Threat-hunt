@@ -38,6 +38,7 @@ class Permission(StrEnum):
     DETECTIONS_READ = "detections:read"
     DETECTIONS_WRITE = "detections:write"  # author / test / backtest rules, triage alerts
     DETECTIONS_MANAGE = "detections:manage"  # activate, disable, delete rules
+    AI_USE = "ai:use"
     TENANTS_MANAGE = "tenants:manage"  # platform-wide: create/disable tenants
 
 
@@ -56,6 +57,7 @@ _ANALYST = {
     Permission.MITRE_WRITE,
     Permission.DETECTIONS_READ,
     Permission.DETECTIONS_WRITE,
+    Permission.AI_USE,
 }
 
 ROLE_PERMISSIONS: dict[Role, frozenset[Permission]] = {
@@ -97,6 +99,7 @@ ROLE_PERMISSIONS: dict[Role, frozenset[Permission]] = {
             Permission.DETECTIONS_READ,
             Permission.DETECTIONS_WRITE,
             Permission.DETECTIONS_MANAGE,
+            Permission.AI_USE,
         }
     ),
     Role.SUPER_ADMIN: frozenset(Permission),
