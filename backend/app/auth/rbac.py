@@ -35,6 +35,9 @@ class Permission(StrEnum):
     INTEL_MANAGE = "intel:manage"
     MITRE_READ = "mitre:read"
     MITRE_WRITE = "mitre:write"
+    DETECTIONS_READ = "detections:read"
+    DETECTIONS_WRITE = "detections:write"  # author / test / backtest rules, triage alerts
+    DETECTIONS_MANAGE = "detections:manage"  # activate, disable, delete rules
     TENANTS_MANAGE = "tenants:manage"  # platform-wide: create/disable tenants
 
 
@@ -51,6 +54,8 @@ _ANALYST = {
     Permission.INTEL_WRITE,
     Permission.MITRE_READ,
     Permission.MITRE_WRITE,
+    Permission.DETECTIONS_READ,
+    Permission.DETECTIONS_WRITE,
 }
 
 ROLE_PERMISSIONS: dict[Role, frozenset[Permission]] = {
@@ -62,10 +67,11 @@ ROLE_PERMISSIONS: dict[Role, frozenset[Permission]] = {
             Permission.ASSETS_READ,
             Permission.INTEL_READ,
             Permission.MITRE_READ,
+            Permission.DETECTIONS_READ,
         }
     ),
     Role.SOC_ANALYST: frozenset(_ANALYST),
-    Role.THREAT_HUNTER: frozenset(_ANALYST | {Permission.HUNTS_DELETE}),
+    Role.THREAT_HUNTER: frozenset(_ANALYST | {Permission.HUNTS_DELETE, Permission.DETECTIONS_MANAGE}),
     Role.INCIDENT_RESPONDER: frozenset(_ANALYST),
     Role.TENANT_ADMIN: frozenset(
         {
@@ -88,6 +94,9 @@ ROLE_PERMISSIONS: dict[Role, frozenset[Permission]] = {
             Permission.INTEL_MANAGE,
             Permission.MITRE_READ,
             Permission.MITRE_WRITE,
+            Permission.DETECTIONS_READ,
+            Permission.DETECTIONS_WRITE,
+            Permission.DETECTIONS_MANAGE,
         }
     ),
     Role.SUPER_ADMIN: frozenset(Permission),

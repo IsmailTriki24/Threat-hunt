@@ -1,6 +1,6 @@
 # Architecture
 
-> Status: **Milestones 1 (foundation), 2 (hunting), 3 (investigation) and 4 (threat intel + ATT&CK) implemented.** Sections marked *(planned)* are designed for but not yet built.
+> Status: **Milestones 1 (foundation), 2 (hunting), 3 (investigation), 4 (threat intel + ATT&CK) and 5 (detection engineering) implemented.** Sections marked *(planned)* are designed for but not yet built.
 
 ## 1. Goals
 A SOC/CERT threat-hunting and investigation platform that evolves from manual hunting → assisted → AI-assisted →
@@ -38,7 +38,7 @@ and, later, the AI planner use), and **connectors** (all integrations behind one
 | `seed/` | deterministic synthetic telemetry (phishing → PowerShell → C2 → persistence → LSASS dump → lateral movement) |
 | `api/` | `/health`, `/ready`, `/metrics`, router assembly |
 
-Planned packages (same conventions): `detections/`, `mitre/`, `ai/`.
+Planned packages (same conventions): `ai/`.
 
 ## 4. Request lifecycle & authorisation
 1. Middleware: body-size cap (streamed bodies counted), request id, security headers, metrics, structured access log.
@@ -63,8 +63,8 @@ Roles (`SUPER_ADMIN`, `TENANT_ADMIN`, `SOC_ANALYST`, `THREAT_HUNTER`, `INCIDENT_
 | 1 Foundation | compose stack, auth, tenants, RBAC, migrations, health, canonical schema, ingest, search API, search UI, seed | **done** |
 | 2 Hunting | hunts/hypotheses, hunt query language, saved queries, history, findings, notes, export, pivots, timeline from telemetry | **done** |
 | 3 Investigation | cases, evidence, IOC extraction, assets, audit views, reports, DataSource entity, ingest keys, SSRF-safe pull connector, Zeek/Suricata/Wazuh/WinEvt connectors | **done** (MinIO file export deferred) |
-| 4 Threat intel | IOC entities, enrichment adapters (MISP, ThreatFox/abuse.ch, OTX, VT…) with graceful degradation, scoring, ATT&CK | planned |
-| 5 Detection engineering | Sigma → query compiler, rule lifecycle/testing, hunt→detection | planned |
+| 4 Threat intel | IOC entities, enrichment adapters (MISP, ThreatFox/abuse.ch, OTX, VT…) with graceful degradation, scoring, ATT&CK | **done** |
+| 5 Detection engineering | Sigma → query compiler, rule lifecycle/testing, hunt→detection, scheduled evaluation, alerts | **done** (ADR 0010) |
 | 6 AI hunting | provider abstraction, tool system, planner/validator/analyzer, evidence-cited conclusions | planned |
 
 ## 7. AI design constraints (for Milestone 6)

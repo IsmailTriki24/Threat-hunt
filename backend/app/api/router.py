@@ -6,6 +6,7 @@ from app.auth.router import router as auth_router
 from app.cases.router import router as cases_router
 from app.datasources.router import ingest_router
 from app.datasources.router import router as datasources_router
+from app.detections.router import router as detections_router
 from app.events.router import router as events_router
 from app.hunts.router import router as hunts_router
 from app.intel.router import router as intel_router
@@ -29,5 +30,6 @@ for r in (
     ingest_router,
     intel_router,
     mitre_router,
+    detections_router,
 ):
     api_router.include_router(r)

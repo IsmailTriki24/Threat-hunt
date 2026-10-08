@@ -68,6 +68,15 @@ async def collect_datasources(ctx: dict[str, Any]) -> None:
             await session.commit()
 
 
+async def run_detections(ctx: dict[str, Any]) -> None:
+    """Evaluate ACTIVE detection rules against newly ingested telemetry and raise (deduplicated) alerts."""
+    from app.detections import service as det_service
+
+    summary = await det_service.run_scheduled(ctx["sessionmaker"], ctx["search"])
+    if summary["alerts"] or summary["errors"]:
+        log.info("detections evaluated", extra=summary)
+
+
 def _redis_settings() -> RedisSettings:
     return RedisSettings.from_dsn(get_settings().redis_url)
 
@@ -75,10 +84,11 @@ def _redis_settings() -> RedisSettings:
 class WorkerSettings:
     on_startup = startup
     on_shutdown = shutdown
-    functions = [enforce_retention, collect_datasources]
+    functions = [enforce_retention, collect_datasources, run_detections]
     cron_jobs = [
         cron(heartbeat, second={0, 30}, run_at_startup=True),
         cron(enforce_retention, hour={3}, minute={15}),
+        cron(run_detections, minute={2, 7, 12, 17, 22, 27, 32, 37, 42, 47, 52, 57}, timeout=240),
         cron(collect_datasources, minute={0, 5, 10, 15, 20, 25, 30, 35, 40, 45, 50, 55}, timeout=240),
     ]
     redis_settings = _redis_settings()

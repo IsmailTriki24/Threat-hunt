@@ -110,6 +110,10 @@ function Workspace({ hunt }: { hunt: Hunt }) {
     mutationFn: () => api.saveQuery({ name: saveName.trim(), description: saveDesc, hunt_id: huntId, query: buildBody(text, range, filters, 0, 50, null, false) }),
     onSuccess: () => { setShowSave(false); setSaveName(""); setSaveDesc(""); void qc.invalidateQueries({ queryKey: ["saved", huntId] }); void qc.invalidateQueries({ queryKey: ["hunt", huntId] }); },
   });
+  const toRule = useMutation({
+    mutationFn: () => api.ruleFromQuery({ title: `${hunt.title}: ${text.trim().slice(0, 60)}`, text: text.trim(), severity: "MEDIUM", hunt_id: huntId }),
+    onSuccess: () => router.push("/detections"),
+  });
   const delSaved = useMutation({ mutationFn: (sid: string) => api.deleteSavedQuery(sid), onSuccess: () => qc.invalidateQueries({ queryKey: ["saved", huntId] }) });
   const load = (q: Partial<EventQueryBody>) => {
     setText(q.text ?? "");
@@ -232,12 +236,15 @@ function Workspace({ hunt }: { hunt: Hunt }) {
             <button className="btn btn-primary" onClick={() => doRun()}>Run <span className="text-muted text-xs">Ctrl+Enter</span></button>
             <button className="btn" disabled={!canWrite} onClick={() => setShowSave((s) => !s)}>Save query</button>
             <button className="btn" onClick={openTimelineFromQuery}>Timeline</button>
+            <button className="btn" disabled={!can("detections:write") || !text.trim() || toRule.isPending} onClick={() => toRule.mutate()}
+              title="Create a DRAFT detection from the query text (filter chips are not included)">Promote to detection</button>
             <span className="ml-auto flex items-center gap-1">
               <button className="btn" onClick={() => void doExport("csv")}>Export CSV</button>
               <button className="btn" onClick={() => void doExport("json")}>Export JSON</button>
               <span className="text-xs text-muted">max {EXPORT_CAP.toLocaleString()} rows</span>
             </span>
           </div>
+          {toRule.error && <p role="alert" className="text-red-400 text-xs">{toRule.error instanceof Error ? toRule.error.message : "Could not create detection"}</p>}
           <FilterChips filters={filters} onRemove={(i) => setFilters((fs) => fs.filter((_, j) => j !== i))} />
           {exportErr && <p role="alert" className="text-red-400 text-xs">{exportErr}</p>}
           {showSave && (

@@ -14,6 +14,7 @@ from app.events.search.base import Distinct, IndexResult
 from app.events.search.query import (
     AggregationResult,
     Bucket,
+    Condition,
     EventQuery,
     Filter,
     SearchResult,
@@ -71,6 +72,21 @@ def translate_query(q: str) -> str:
             out.append(("-" + tok) if negate else tok)
             negate = False
     return " ".join(out)
+
+
+def to_lucene_wildcard(pattern: str) -> str:
+    """Our pattern dialect (backslash escapes only * ? \\) -> Lucene's (backslash escapes anything)."""
+    out: list[str] = []
+    i = 0
+    while i < len(pattern):
+        c = pattern[i]
+        if c == "\\" and i + 1 < len(pattern) and pattern[i + 1] in "*?\\":
+            out.append("\\" + pattern[i + 1])
+            i += 2
+            continue
+        out.append("\\\\" if c == "\\" else c)
+        i += 1
+    return "".join(out)
 
 
 def pick_interval(tr: TimeRange, target_buckets: int = 60) -> str:
@@ -162,6 +178,8 @@ class OpenSearchBackend:
             negate = negate != f.negate
             (user_must_not if negate else user_filter).append(clause)
         user_must: list[dict[str, Any]] = []
+        if query.where is not None:
+            user_filter.append(self.compile_condition(query.where))
         effective_q = query.effective_q()
         if effective_q:
             user_must.append(
@@ -218,6 +236,20 @@ class OpenSearchBackend:
             }
         return {"terms": {"field": FIELDS[agg.field].exact_path, "size": agg.size}}
 
+    @classmethod
+    def compile_condition(cls, cond: Condition) -> dict[str, Any]:
+        if cond.filter is not None:
+            clause, negate = cls._compile_filter(cond.filter)
+            negate = negate != cond.filter.negate
+            return {"bool": {"must_not": [clause]}} if negate else clause
+        if cond.all is not None:
+            return {"bool": {"filter": [cls.compile_condition(c) for c in cond.all]}}
+        if cond.any is not None:
+            return {"bool": {"should": [cls.compile_condition(c) for c in cond.any], "minimum_should_match": 1}}
+        if cond.not_ is None:
+            raise ValueError("empty condition node")
+        return {"bool": {"must_not": [cls.compile_condition(cond.not_)]}}
+
     @staticmethod
     def _compile_filter(f: Filter) -> tuple[dict[str, Any], bool]:
         """Returns (clause, negated)."""
@@ -241,6 +273,10 @@ class OpenSearchBackend:
                     return {"match_phrase": {spec.name: str(f.value)}}, False
                 return {
                     "wildcard": {path: {"value": f"*{_escape_wildcard(str(f.value))}*", "case_insensitive": True}}
+                }, False
+            case "wildcard":
+                return {
+                    "wildcard": {path: {"value": to_lucene_wildcard(str(f.value)), "case_insensitive": True}}
                 }, False
             case "gt" | "gte" | "lt" | "lte":
                 return {"range": {path: {f.op: f.value}}}, False

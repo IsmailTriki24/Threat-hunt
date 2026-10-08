@@ -14,11 +14,11 @@ MAX_WINDOW = 10_000
 MAX_Q_LEN = 512
 
 Scalar = str | int | float | bool
-Op = Literal["eq", "neq", "in", "exists", "not_exists", "prefix", "contains", "gt", "gte", "lt", "lte"]
+Op = Literal["eq", "neq", "in", "exists", "not_exists", "prefix", "contains", "wildcard", "gt", "gte", "lt", "lte"]
 
 _OPS_BY_KIND: dict[str, set[str]] = {
-    "keyword": {"eq", "neq", "in", "exists", "not_exists", "prefix", "contains"},
-    "text": {"eq", "neq", "in", "exists", "not_exists", "contains"},
+    "keyword": {"eq", "neq", "in", "exists", "not_exists", "prefix", "contains", "wildcard"},
+    "text": {"eq", "neq", "in", "exists", "not_exists", "prefix", "contains", "wildcard"},
     "ip": {"eq", "neq", "in", "exists", "not_exists"},
     "integer": {"eq", "neq", "in", "exists", "not_exists", "gt", "gte", "lt", "lte"},
     "long": {"eq", "neq", "in", "exists", "not_exists", "gt", "gte", "lt", "lte"},
@@ -104,7 +104,62 @@ class Filter(_Strict):
         self.value = _coerce(spec.kind, self.value)
         if self.op in ("prefix", "contains") and not 1 <= len(str(self.value)) <= 128:
             raise ValueError("pattern must be 1-128 characters")
+        if self.op == "wildcard":
+            pattern = str(self.value)
+            wild = sum(1 for i, c in enumerate(pattern) if c in "*?" and (i == 0 or pattern[i - 1] != "\\"))
+            if not 1 <= len(pattern) <= 512 or wild > 10 or not pattern.replace("*", "").replace("?", ""):
+                raise ValueError(
+                    "wildcard pattern must be 1-512 chars, have at most 10 wildcards and some literal text"
+                )
         return self
+
+
+MAX_COND_DEPTH = 8
+MAX_COND_NODES = 300
+
+
+class Condition(_Strict):
+    """Boolean tree over validated Filters: exactly one of all (AND) / any (OR) / not / filter.
+    Detections (Sigma) compile to this, and it is evaluated identically by OpenSearch and by the local evaluator."""
+
+    model_config = ConfigDict(extra="forbid", populate_by_name=True)
+
+    all: "list[Condition] | None" = Field(default=None, max_length=100)
+    any: "list[Condition] | None" = Field(default=None, max_length=100)
+    not_: "Condition | None" = Field(default=None, alias="not")
+    filter: Filter | None = None
+
+    @model_validator(mode="after")
+    def _one_kind(self) -> "Condition":
+        set_ = [x for x in (self.all, self.any, self.not_, self.filter) if x is not None]
+        if len(set_) != 1:
+            raise ValueError("a condition node needs exactly one of: all, any, not, filter")
+        if (self.all is not None and not self.all) or (self.any is not None and not self.any):
+            raise ValueError("all/any need at least one child")
+        return self
+
+    def children(self) -> "list[Condition]":
+        return [*(self.all or []), *(self.any or []), *([self.not_] if self.not_ else [])]
+
+    def stats(self) -> tuple[int, int]:
+        """(depth, node count)"""
+        depth, nodes = 1, 1
+        for c in self.children():
+            d, n = c.stats()
+            depth, nodes = max(depth, d + 1), nodes + n
+        return depth, nodes
+
+    def filters(self) -> list[Filter]:
+        out = [self.filter] if self.filter else []
+        for c in self.children():
+            out.extend(c.filters())
+        return out
+
+
+def validate_condition_size(cond: Condition) -> None:
+    depth, nodes = cond.stats()
+    if depth > MAX_COND_DEPTH or nodes > MAX_COND_NODES:
+        raise ValueError(f"condition too large (depth<={MAX_COND_DEPTH}, nodes<={MAX_COND_NODES})")
 
 
 class Sort(_Strict):
@@ -143,6 +198,7 @@ class EventQuery(_Strict):
     text: Annotated[str, StringConstraints(max_length=2000)] | None = None
     time_range: TimeRange | None = None  # defaults to the last 24 hours
     filters: list[Filter] = Field(default_factory=list, max_length=25)
+    where: Condition | None = None  # boolean tree (used by detections); ANDed with q / text / filters
     sort: list[Sort] = Field(default_factory=list, max_length=3)
     offset: int = Field(default=0, ge=0)
     limit: int = Field(default=50, ge=1, le=200)
@@ -159,6 +215,8 @@ class EventQuery(_Strict):
                 self._parsed = parse(self.text)
             except QueryParseError as exc:
                 raise ValueError(f"query text: {exc}") from None
+        if self.where is not None:
+            validate_condition_size(self.where)
         if len(self.filters) + len(self._parsed[1]) > 25:
             raise ValueError("too many filters (max 25)")
         if self.offset + self.limit > MAX_WINDOW:
@@ -196,3 +254,7 @@ class SearchResult(BaseModel):
     hits: list[dict[str, Any]]
     aggregations: dict[str, AggregationResult] = Field(default_factory=dict)
     time_range: TimeRange
+
+
+Condition.model_rebuild()
+EventQuery.model_rebuild()

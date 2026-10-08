@@ -1,5 +1,5 @@
-import { Placeholder } from "@/components/placeholder";
+import { DetectionsView } from "@/components/detections-view";
 
 export default function Page() {
-  return <Placeholder title="Detections" milestone="Milestone 5" summary="Sigma rules, lifecycle, testing and the hunt-to-detection workflow." />;
+  return <DetectionsView />;
 }
