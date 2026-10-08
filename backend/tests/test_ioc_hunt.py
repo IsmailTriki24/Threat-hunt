@@ -440,16 +440,28 @@ async def test_logrhythm_upstream_search_uses_console_captured_templates(client,
     await _run(app)
     done = (await client.get(f"{API}/hunts/{hunt['id']}", headers=h)).json()
     cov = {c["kind"]: c for c in done["coverage"]}
-    assert cov["logrhythm"]["status"] == "ok" and cov["logrhythm"]["iocs_searched"] == 1 and done["match_count"] == 1
     assert (
-        sent and sent[0]["filterGroup"]["filterItems"][0]["values"][0]["value"] == C2
+        cov["logrhythm"]["status"] == "ok" and cov["logrhythm"]["iocs_searched"] == 2 and done["match_count"] == 1
+    )  # the typed template for ip + the built-in filter for the domain
+    assert any(
+        f["filterGroup"]["filterItems"][0].get("values", [{}])[0].get("value") == C2 for f in sent
     )  # $IOC replaced, only for the typed template
     case = await _case(client, h, done["case_id"])
     assert case["evidence_count"] == 1 and "mallory" in case["description"]
 
 
-async def test_logrhythm_without_templates_is_reported_as_a_coverage_note(client, make, app):
+async def test_logrhythm_needs_no_templates_and_can_be_switched_off(client, make, app, wire):
     t, _, h = await _admin(client, make)
+    sent = []
+
+    def handler(request):
+        body = json.loads(request.content)
+        if request.url.path.endswith("search-task"):
+            sent.append(body["queryFilter"])
+            return httpx.Response(200, json={"TaskId": "t"})
+        return httpx.Response(200, json={"TaskStatus": "Completed", "Items": []})
+
+    wire(handler)
     await client.post(
         "/api/v1/data-sources",
         headers=h,
@@ -466,12 +478,31 @@ async def test_logrhythm_without_templates_is_reported_as_a_coverage_note(client
     await _run(app)
     done = (await client.get(f"{API}/hunts/{hunt['id']}", headers=h)).json()
     lr = next(c for c in done["coverage"] if c["kind"] == "logrhythm")
-    assert lr["status"] == "skipped" and "ioc_filter_templates" in lr["detail"]
-    assert done["status"] == "COMPLETED"  # a documented limitation is not a failure...
-    case = await _case(client, h, done["case_id"])
     assert (
-        case["status"] == "OPEN" and "Coverage gaps" in case["description"]
-    )  # ...but it does keep the 'no evidence' verdict honest
+        lr["status"] == "ok" and lr["iocs_searched"] == 1 and sent
+    )  # searched the whole SIEM with the built-in filter, no template needed
+    assert (
+        "hostname" not in str(sent[0])
+        and sent[0]["filterGroup"]["filterItems"][0]["filterItems"][0]["filterType"] == 17
+    )  # not limited to the ingest host
+    case = await _case(client, h, done["case_id"])
+    assert case["status"] == "CLOSED"  # complete coverage and nothing found: closes
+    # a source can opt out: then the report says LogRhythm was only covered through ingested data
+    ds_id = (await client.get("/api/v1/data-sources", headers=h)).json()[0]["id"]
+    await client.patch(
+        f"/api/v1/data-sources/{ds_id}",
+        headers=h,
+        json={"config": {"base_url": "https://lr.example", "hostname": "dc1", "ioc_search": False}},
+    )
+    b = await _add(client, h, "ip", "198.51.100.106")
+    hunt2 = await _validate(client, h, [b["id"]])
+    await _run(app)
+    lr2 = next(
+        c
+        for c in (await client.get(f"{API}/hunts/{hunt2['id']}", headers=h)).json()["coverage"]
+        if c["kind"] == "logrhythm"
+    )
+    assert lr2["status"] == "skipped" and "switched off" in lr2["detail"]
 
 
 # ---- watch list / re-hunt -----------------------------------------------------------------------------

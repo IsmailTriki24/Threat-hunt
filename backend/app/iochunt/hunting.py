@@ -438,6 +438,70 @@ def _split_clauses(query: str) -> list[str]:
 
 
 # ---- LogRhythm upstream (template based) ---------------------------------------------------------------------
+def raw_values(raw: dict[str, Any]) -> list[tuple[str, str]]:
+    """(field, lower-cased text) of every scalar in a vendor record: LogRhythm field names vary by log source, so attribution scans the log."""
+    out: list[tuple[str, str]] = []
+    for k, v in raw.items():
+        if isinstance(v, str | int) and not isinstance(v, bool):
+            out.append((k, str(v).lower()))
+    return out
+
+
+def _is_ip_text(value: str) -> bool:
+    import ipaddress
+
+    try:
+        ipaddress.ip_address(value)
+    except ValueError:
+        return False
+    return True
+
+
+def attribute_raw(raw: dict[str, Any], iocs: list[Ioc]) -> list[tuple[Ioc, str]]:
+    """Which indicators does this vendor log actually contain? (a loose vendor filter can never create a false match)"""
+    vals = raw_values(raw)
+    found: list[tuple[Ioc, str]] = []
+    for ioc in iocs:
+        needle = ioc.value.lower()
+        if ioc.type == "url":
+            needle = needle.split("://", 1)[-1].rstrip("/")
+        pat = _bounded(needle, ip=ioc.type == "ip") if ioc.type in ("ip", "domain") else None
+        for fld, text in vals:
+            if pat.search(text) if pat else needle in text:
+                found.append((ioc, f"logrhythm:{fld}"))
+                break
+    return found
+
+
+async def absorb_logs(
+    conn: Any,
+    backend: SearchBackend,
+    tenant_id: uuid.UUID,
+    hits: dict[tuple[str, str], Hit],
+    logs: list[dict[str, Any]],
+    candidates: list[Ioc],
+) -> None:
+    """Attribute vendor logs to the indicators they really contain, import those logs as events, and record the hits."""
+    matched: list[tuple[Event, Ioc, str]] = []
+    for raw in logs[:5000]:
+        attrib = attribute_raw(raw, candidates)
+        if not attrib:
+            continue
+        try:
+            events = [Event.from_input(e, tenant_id) for e in conn.normalize(raw)]
+        except NormalizationError:
+            continue
+        for ev in events:
+            matched += [(ev, ioc, fld) for ioc, fld in attrib]
+    if matched:
+        await backend.index_events(list({m[0].id: m[0] for m in matched}.values()))
+    for ev, ioc, fld in matched:
+        hits.setdefault((str(ioc.id), ev.id), Hit(ioc, ev.to_document(), fld, "logrhythm"))
+
+
+LR_BUDGET_S = 540
+
+
 async def search_logrhythm(
     session: AsyncSession,
     backend: SearchBackend,
@@ -447,7 +511,9 @@ async def search_logrhythm(
     start: datetime,
     end: datetime,
 ) -> AdapterResult:
-    from app.connectors.logrhythm import search_ioc
+    """Search the whole LogRhythm SIEM for the indicators with the built-in, verified filters (batched per type), then attribute every returned
+    log to the exact indicator it contains. Matched logs are imported so cases can cite them."""
+    from app.connectors.logrhythm import ioc_query_filter, search_ioc_batch
 
     result = AdapterResult()
     sources = (
@@ -461,45 +527,94 @@ async def search_logrhythm(
     )
     for ds in sources:
         cov = Coverage("LogRhythm SIEM", "logrhythm")
-        templates = (ds.config or {}).get("ioc_filter_templates") or {}
-        if not templates:
-            cov.status = "skipped"
-            cov.detail = "no ioc_filter_templates configured: only already-ingested LogRhythm events were searched (see 'Ingested telemetry')"
+        cfg_in = ds.config or {}
+        if cfg_in.get("ioc_search") is False:
+            cov.status, cov.detail = (
+                "skipped",
+                "IOC search is switched off for this source: only already-ingested LogRhythm events were searched",
+            )
             result.coverage.append(cov)
             continue
         t0 = time.monotonic()
         try:
             secrets = {k: str(v) for k, v in decrypt_json(settings, ds.secrets_enc).items()} if ds.secrets_enc else {}
             conn: Any = connectors.build("logrhythm", ds.config, secrets)
-            searchable = [i for i in iocs if i.type in templates][:25]  # bound the load on the SIEM
-            cov.iocs_searched = len(searchable)
+            templates = conn.cfg.ioc_filter_templates or {}
+            supported = [
+                i
+                for i in iocs
+                if i.type in ("ip", "domain", "url", "md5", "sha1", "sha256", "email") or i.type in templates
+            ]
+            ordered = sorted(supported, key=lambda i: (-i.seen_count, -i.confidence))
+            chosen = ordered[: conn.cfg.ioc_search_max]
             hits: dict[tuple[str, str], Hit] = {}
-            deadline = time.monotonic() + ADAPTER_BUDGET_S
-            for ioc in searchable:
-                if time.monotonic() > deadline:
-                    cov.status = "truncated"
+            deadline = time.monotonic() + LR_BUDGET_S
+            # kind -> value searched -> indicators that value stands for. A URL is searched through its host, then verified against the full URL.
+            plan: dict[str, dict[str, list[Ioc]]] = {}
+            patterns: list[Ioc] = []
+            for i in chosen:
+                if i.type in templates:
+                    plan.setdefault(f"tpl:{i.type}", {}).setdefault(i.value, []).append(i)
+                elif i.type == "url":
+                    host = _host_of(i.value)
+                    if host:
+                        plan.setdefault("ip" if _is_ip_text(host) else "domain", {}).setdefault(host, []).append(i)
+                    patterns.append(i)
+                else:
+                    plan.setdefault(i.type, {}).setdefault(i.value, []).append(i)
+            patterns += [i for i in chosen if i.type == "domain" and i not in patterns]
+            covered: set[uuid.UUID] = set()
+            searches, cut = 0, False
+
+            for kind, by_value in plan.items():
+                values = list(by_value)
+                for k in range(0, len(values), conn.cfg.ioc_batch):
+                    if time.monotonic() > deadline:
+                        cut = True
+                        break
+                    vals = values[k : k + conn.cfg.ioc_batch]
+                    candidates = [i for v in vals for i in by_value[v]]
+                    if kind.startswith("tpl:"):
+                        logs = await search_ioc_batch(conn, kind[4:], vals, start, end)
+                    else:
+                        conn._filter_override = ioc_query_filter(kind, vals)
+                        try:
+                            logs = await conn._search_window(start, end)
+                        finally:
+                            conn._filter_override = None
+                    searches += 1
+                    covered |= {i.id for i in candidates}
+                    await absorb_logs(conn, backend, tenant_id, hits, logs, candidates)
+                if cut:
                     break
-                logs = await search_ioc(conn, ioc.type, ioc.value, start, end)
-                events: list[Event] = []
-                for raw in logs[:2000]:
-                    try:
-                        events += [Event.from_input(e, tenant_id) for e in conn.normalize(raw)]
-                    except NormalizationError:
-                        continue
-                matched = [(ev, ev.to_document()) for ev in events]
-                matched = [(ev, d) for ev, d in matched if attribute(d, [ioc])]
-                if matched:
-                    await backend.index_events([m[0] for m in matched])
-                for _ev, doc in matched:
-                    hits.setdefault((str(ioc.id), doc["id"]), Hit(ioc, doc, "logrhythm", "logrhythm"))
+            for ioc in patterns[: conn.cfg.url_pattern_max]:
+                if cut or time.monotonic() > deadline:
+                    cut = True
+                    break
+                conn._filter_override = ioc_query_filter("url_pattern", [ioc.value])
+                try:
+                    logs = await conn._search_window(start, end)
+                finally:
+                    conn._filter_override = None
+                searches += 1
+                covered.add(ioc.id)
+                await absorb_logs(conn, backend, tenant_id, hits, logs, [ioc])
+            cov.iocs_searched = len(covered)
             if hits:
                 await backend.refresh()
             result.hits += list(hits.values())
             cov.hits = len(hits)
-            if len([i for i in iocs if i.type in templates]) > 25:
-                cov.status, cov.detail = "truncated", "only the first 25 indicators were sent to LogRhythm"
-            elif not cov.detail:
-                cov.detail = f"{cov.iocs_searched} filtered searches"
+            cov.detail = f"{searches} search(es) over the whole SIEM, {(end - start).days or 1} day(s)"
+            skipped_types = sorted({i.type for i in iocs} - {i.type for i in supported})
+            if len(supported) > len(chosen) or cut:
+                cov.status = "truncated"
+                cov.detail += f"; {len(covered)} of {len(supported)} indicators searched (highest priority first)"
+            if len([i for i in chosen if i.type == "url"]) > conn.cfg.url_pattern_max:
+                cov.detail += (
+                    f"; URLs were searched via their host, only the top {conn.cfg.url_pattern_max} also by exact URL"
+                )
+            if skipped_types:
+                cov.detail += f"; no LogRhythm filter for: {', '.join(skipped_types)}"
         except (SourceError, ValueError) as exc:
             cov.status, cov.detail = "error", str(exc)[:240]
         cov.ms = int((time.monotonic() - t0) * 1000)

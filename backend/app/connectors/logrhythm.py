@@ -57,6 +57,23 @@ class LogRhythmConfig(BaseModel):
         default=None,
         description='Per IOC type (ip|domain|url|sha256|sha1|md5|email), a queryFilter captured from the Web Console with the searched value replaced by the string "$IOC". Enables IOC hunts to search LogRhythm itself instead of only ingested data',
     )
+    ioc_search: bool = Field(
+        default=True,
+        description="Let IOC hunts search the whole SIEM with the built-in, verified filters (no template needed)",
+    )
+    ioc_search_max: int = Field(
+        default=200,
+        ge=1,
+        le=2000,
+        description="Most indicators one hunt sends to LogRhythm (each batch of 25 costs about a minute over 7 days)",
+    )
+    ioc_batch: int = Field(default=25, ge=1, le=100, description="Indicators of one type combined into a single search")
+    url_pattern_max: int = Field(
+        default=10,
+        ge=0,
+        le=100,
+        description="Most exact URL-pattern searches per hunt (LogRhythm allows one URL pattern per search)",
+    )
     allow_unfiltered: bool = Field(
         default=False,
         description="Collect with no filter. Real SIEMs often exceed 30,000 logs/minute; leave off unless yours is small",
@@ -391,6 +408,93 @@ async def search_ioc(
     if tpl is None:
         raise SourceError(f"no ioc_filter_templates entry for '{ioc_type}'")
     connector._filter_override = _substitute(tpl, value)
+    try:
+        return await connector._search_window(start, end)
+    finally:
+        connector._filter_override = None
+
+
+# ---- IOC filters: verified against a production LogRhythm 7.x Search API (see docs/adr/0015) ------------------------------
+# FieldFilterTypeEnum values come from the gateway's own swagger (/lr-search-api/swagger-json). Encodings were confirmed with positive and
+# negative controls: an IP is valueType 5 with a PLAIN string (sending it as a string-typed value makes the search fail after ~35 s);
+# strings are {matchType, value} with matchType 0 = exact, 1 = SQL pattern; several values in one filter are OR'd; fieldOperator 2 = Or.
+FT_IP, FT_HOSTNAME, FT_URL, FT_HASH, FT_SENDER, FT_RECIPIENT = 17, 23, 42, 138, 31, 32
+VT_STRING, VT_IP = 4, 5
+EXACT, PATTERN = 0, 1
+
+
+def _scheme_free(url: str) -> str:
+    return re.sub(r"^[a-z][a-z0-9+.-]*://", "", url, flags=re.I)
+
+
+def _item(filter_type: int, value_type: int, values: list[Any]) -> dict[str, Any]:
+    return {
+        "filterItemType": 0,
+        "fieldOperator": 0,
+        "filterMode": 1,
+        "filterType": filter_type,
+        "values": [{"filterType": filter_type, "valueType": value_type, "value": v} for v in values],
+    }
+
+
+def _str(v: str, match: int) -> dict[str, Any]:
+    return {"matchType": match, "value": v}
+
+
+def ioc_query_filter(kind: str, values: list[str]) -> dict[str, Any]:
+    """A queryFilter finding any of `values` (all of one `kind`) anywhere in the SIEM: items are OR'd inside one group.
+
+    kinds: ip | domain (hostname itself or anything under it) | md5 | sha1 | sha256 | email | url_pattern (exactly ONE value: a group with
+    several URL-pattern items makes LogRhythm fail the search, verified on the live API)."""
+    vs = list(dict.fromkeys(v for v in values if v))
+    if not vs:
+        raise ValueError("no values")
+    items: list[dict[str, Any]]
+    if kind == "ip":
+        items = [_item(FT_IP, VT_IP, vs)]
+    elif kind == "domain":
+        items = [
+            _item(FT_HOSTNAME, VT_STRING, [_str(v, EXACT) for v in vs]),  # the host itself
+            _item(FT_HOSTNAME, VT_STRING, [_str(f"%.{v}", PATTERN) for v in vs]),  # ... or any host under it
+        ]
+    elif kind == "url_pattern":
+        if len(vs) != 1:
+            raise ValueError("a URL-pattern search takes exactly one value")
+        items = [_item(FT_URL, VT_STRING, [_str(f"%{_scheme_free(vs[0])}%", PATTERN)])]
+    elif kind in ("md5", "sha1", "sha256"):
+        items = [_item(FT_HASH, VT_STRING, [_str(c, EXACT) for v in vs for c in dict.fromkeys((v.lower(), v.upper()))])]
+    elif kind == "email":
+        items = [
+            _item(FT_SENDER, VT_STRING, [_str(v, EXACT) for v in vs]),
+            _item(FT_RECIPIENT, VT_STRING, [_str(v, EXACT) for v in vs]),
+        ]
+    else:
+        raise ValueError(f"no LogRhythm filter for '{kind}'")
+    return {
+        "msgFilterType": 2,
+        "isSavedFilter": False,
+        "filterGroup": {
+            "filterItemType": 1,
+            "fieldOperator": 1,
+            "filterMode": 1,
+            "filterGroupOperator": 0,
+            "filterItems": [{"filterItemType": 1, "fieldOperator": 2, "filterMode": 1, "filterItems": items}],
+        },
+    }
+
+
+async def search_ioc_batch(
+    connector: "LogRhythmConnector", ioc_type: str, values: list[str], start: datetime, end: datetime
+) -> list[dict[str, Any]]:
+    """One search for up to `ioc_batch` indicators of one type. A console-captured template (if the source has one for this type) is used for
+    single values instead of the built-in filter."""
+    templates = connector.cfg.ioc_filter_templates or {}
+    out: list[dict[str, Any]] = []
+    if ioc_type in templates:
+        for v in values:
+            out += await search_ioc(connector, ioc_type, v, start, end)
+        return out
+    connector._filter_override = ioc_query_filter(ioc_type, values)
     try:
         return await connector._search_window(start, end)
     finally:
