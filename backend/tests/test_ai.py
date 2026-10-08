@@ -29,7 +29,7 @@ class Scripted:
         self.script = list(script)
         self.calls: list[dict[str, Any]] = []
 
-    async def complete(self, system, messages, tools, max_tokens=2048):
+    async def complete(self, system, messages, tools, max_tokens=2048, force_tool=None):
         self.calls.append(
             {
                 "system": system,

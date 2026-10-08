@@ -12,6 +12,7 @@ import httpx
 from app.core.config import Settings
 
 RETRY_DELAYS_S = (0, 3, 8, 15)
+MIN_TOKENS = 4096  # reasoning models spend the budget thinking; a tiny cap would leave an empty answer
 
 
 class ProviderUnavailable(Exception):
@@ -44,7 +45,12 @@ class LLMProvider(Protocol):
     model: str
 
     async def complete(
-        self, system: str, messages: list[dict[str, Any]], tools: list[dict[str, Any]], max_tokens: int = 2048
+        self,
+        system: str,
+        messages: list[dict[str, Any]],
+        tools: list[dict[str, Any]],
+        max_tokens: int = 2048,
+        force_tool: str | None = None,
     ) -> LLMResponse: ...
 
 
@@ -58,11 +64,18 @@ class AnthropicProvider:
         self._timeout = settings.ai_timeout_s
 
     async def complete(
-        self, system: str, messages: list[dict[str, Any]], tools: list[dict[str, Any]], max_tokens: int = 2048
+        self,
+        system: str,
+        messages: list[dict[str, Any]],
+        tools: list[dict[str, Any]],
+        max_tokens: int = 2048,
+        force_tool: str | None = None,
     ) -> LLMResponse:
         body: dict[str, Any] = {"model": self.model, "max_tokens": max_tokens, "system": system, "messages": messages}
         if tools:
             body["tools"] = tools
+            if force_tool:
+                body["tool_choice"] = {"type": "tool", "name": force_tool}
         try:
             async with httpx.AsyncClient(timeout=self._timeout) as client:
                 resp = await client.post(
@@ -146,13 +159,21 @@ class OpenRouterProvider:
         self._timeout = settings.ai_timeout_s
 
     async def complete(
-        self, system: str, messages: list[dict[str, Any]], tools: list[dict[str, Any]], max_tokens: int = 2048
+        self,
+        system: str,
+        messages: list[dict[str, Any]],
+        tools: list[dict[str, Any]],
+        max_tokens: int = 2048,
+        force_tool: str | None = None,
     ) -> LLMResponse:
         body: dict[str, Any] = {
             "model": self.model,
-            "max_tokens": max_tokens,
+            "max_tokens": max(max_tokens, MIN_TOKENS),
+            "reasoning": {"effort": "low"},
             "messages": _to_openai_messages(system, messages),
         }
+        if tools and force_tool:
+            body["tool_choice"] = {"type": "function", "function": {"name": force_tool}}
         if tools:
             body["tools"] = [
                 {
