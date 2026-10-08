@@ -271,13 +271,7 @@ def _distinctive_segment(url: str) -> str | None:
         path = urlsplit(url).path
     except ValueError:
         return None
-    segs = [
-        s
-        for s in path.split("/")
-        if _SEGMENT.fullmatch(s)
-        and not s.lower().endswith((".exe", ".dll"))
-        or (_SEGMENT.fullmatch(s) and s.lower().endswith((".exe", ".dll")))
-    ]
+    segs = [s for s in path.split("/") if _SEGMENT.fullmatch(s)]
     return max(segs, key=len) if segs else None
 
 
