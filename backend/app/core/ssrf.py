@@ -135,8 +135,10 @@ async def fetch(
     transport: httpx.AsyncBaseTransport | None = None,
     resolver: Resolver = default_resolver,
     sni_hostname: str | None = None,
+    max_bytes: int | None = None,
 ) -> httpx.Response:
     """SSRF-safe single-shot HTTP request with manual, re-validated redirects and a response size cap."""
+    limit = max_bytes if max_bytes is not None else MAX_RESPONSE_BYTES
     safe = SafeTransport(transport, resolver, sni_hostname)
     async with httpx.AsyncClient(transport=safe, timeout=timeout_s, follow_redirects=False) as client:
         for _ in range(MAX_REDIRECTS + 1):
@@ -155,7 +157,7 @@ async def fetch(
                 body = bytearray()
                 async for chunk in resp.aiter_bytes():
                     body.extend(chunk)
-                    if len(body) > MAX_RESPONSE_BYTES:
+                    if len(body) > limit:
                         raise SsrfError("response too large")
                 resp._content = bytes(body)  # noqa: SLF001
                 return resp

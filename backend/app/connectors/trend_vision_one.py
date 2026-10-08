@@ -231,6 +231,35 @@ class TrendVisionOneConnector(Connector):
             mid = start + (end - start) / 2
             return [*await self._window(start, mid, deadline), *await self._window(mid, end, deadline)]
 
+    async def search_query(
+        self, query: str, start: datetime, end: datetime, *, max_events: int = 3000, deadline: float | None = None
+    ) -> tuple[list[dict[str, Any]], bool]:
+        """Run an ad-hoc TMV1-Query over [start, end) on this source's dataset (hunting, not collection). Follows `nextLink` until the
+        search reports completion; returns (raw records, truncated)."""
+        if self.cfg.dataset not in SEARCH_DATASETS:
+            raise SourceError(f"dataset '{self.cfg.dataset}' cannot be searched by query")
+        key = self.secrets.get("api_key")
+        if not key:
+            raise SourceError("no API key configured for this data source")
+        headers = {"Authorization": f"Bearer {key}", "Accept": "application/json", "TMV1-Query": query}
+        url: str | None = REGIONS[self.cfg.region] + PATHS[self.cfg.dataset]
+        params: dict[str, Any] | None = {"startDateTime": _iso(start), "endDateTime": _iso(end), "top": self._top}
+        out: list[dict[str, Any]] = []
+        for _ in range(200):
+            if not url:
+                return out, False
+            if deadline is not None and time.monotonic() > deadline:
+                return out, True
+            body = await request_json("GET", url, headers=headers, params=params, timeout_s=self.cfg.timeout_s)
+            if not isinstance(body, dict):
+                raise SourceError("unexpected response shape")
+            out.extend(i for i in body.get("items", []) if isinstance(i, dict))
+            nxt = body.get("nextLink")
+            url, params = (nxt if isinstance(nxt, str) else None), None
+            if len(out) >= max_events:
+                return out[:max_events], url is not None
+        return out, True
+
     async def collect(self, since: datetime | None = None, limit: int = 20_000) -> AsyncIterator[dict[str, Any]]:
         c = self.cfg
         now = datetime.now(UTC).replace(microsecond=0)

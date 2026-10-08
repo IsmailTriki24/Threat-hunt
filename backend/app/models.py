@@ -51,3 +51,6 @@ __all__ += ["Alert", "DetectionRule", "DetectionRun", "RuleTestCase", "RuleVersi
 from app.ai.models import AiRun  # noqa: E402
 
 __all__ += ["AiRun"]
+from app.iochunt.models import Ioc, IocAllow, IocFeed, IocHunt, IocMatch  # noqa: E402
+
+__all__ += ["Ioc", "IocAllow", "IocFeed", "IocHunt", "IocMatch"]

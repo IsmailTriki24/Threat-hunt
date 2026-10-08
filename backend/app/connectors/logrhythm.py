@@ -53,6 +53,10 @@ class LogRhythmConfig(BaseModel):
         default=None,
         description="Raw LogRhythm queryFilter object, e.g. copied from a Web Console search (browser dev tools). Overrides hostname",
     )
+    ioc_filter_templates: dict[str, dict[str, Any]] | None = Field(
+        default=None,
+        description='Per IOC type (ip|domain|url|sha256|sha1|md5|email), a queryFilter captured from the Web Console with the searched value replaced by the string "$IOC". Enables IOC hunts to search LogRhythm itself instead of only ingested data',
+    )
     allow_unfiltered: bool = Field(
         default=False,
         description="Collect with no filter. Real SIEMs often exceed 30,000 logs/minute; leave off unless yours is small",
@@ -68,6 +72,14 @@ class LogRhythmConfig(BaseModel):
     def _filter_size(self) -> "LogRhythmConfig":
         if self.query_filter is not None and (not self.query_filter or len(json.dumps(self.query_filter)) > 20_000):
             raise ValueError("query_filter must be a non-empty JSON object under 20 KB")
+        if self.ioc_filter_templates is not None:
+            if len(json.dumps(self.ioc_filter_templates)) > 40_000:
+                raise ValueError("ioc_filter_templates too large")
+            for k, tpl in self.ioc_filter_templates.items():
+                if k not in ("ip", "domain", "url", "sha256", "sha1", "md5", "email") or "$IOC" not in json.dumps(tpl):
+                    raise ValueError(
+                        f"ioc_filter_templates[{k!r}] must be a known IOC type and contain the $IOC placeholder"
+                    )
         return self
 
 
@@ -81,6 +93,8 @@ class LogRhythmConnector(Connector):
     supports_collect = True
     config_model = LogRhythmConfig
     collect_limit = 20_000
+
+    _filter_override: dict[str, Any] | None = None
 
     @property
     def cfg(self) -> LogRhythmConfig:
@@ -123,17 +137,21 @@ class LogRhythmConnector(Connector):
                     ],
                 }
             )
-        query_filter: dict[str, Any] = self.cfg.query_filter or {
-            "msgFilterType": 2,
-            "isSavedFilter": False,
-            "filterGroup": {
-                "filterItemType": 1,
-                "filterGroupOperator": 0,
-                "filterMode": 1,
-                "filterType": 1000,
-                "filterItems": items,
-            },
-        }
+        query_filter: dict[str, Any] = (
+            self._filter_override
+            or self.cfg.query_filter
+            or {
+                "msgFilterType": 2,
+                "isSavedFilter": False,
+                "filterGroup": {
+                    "filterItemType": 1,
+                    "filterGroupOperator": 0,
+                    "filterMode": 1,
+                    "filterType": 1000,
+                    "filterItems": items,
+                },
+            }
+        )
         return {
             "maxMsgsToQuery": MAX_MSGS,
             "logCacheSize": 10000,
@@ -352,3 +370,28 @@ def _normalize(raw: dict[str, Any], shift_hours: int) -> list[EventIn]:
 def _port(value: Any) -> int | None:
     p = integer(value)
     return p if p is not None and 0 <= p <= 65535 else None
+
+
+def _substitute(node: Any, value: str) -> Any:
+    if isinstance(node, str):
+        return node.replace("$IOC", value)
+    if isinstance(node, list):
+        return [_substitute(n, value) for n in node]
+    if isinstance(node, dict):
+        return {k: _substitute(v, value) for k, v in node.items()}
+    return node
+
+
+async def search_ioc(
+    connector: "LogRhythmConnector", ioc_type: str, value: str, start: datetime, end: datetime
+) -> list[dict[str, Any]]:
+    """Search LogRhythm itself for one indicator using the source's captured filter template for that type."""
+    templates = connector.cfg.ioc_filter_templates or {}
+    tpl = templates.get(ioc_type)
+    if tpl is None:
+        raise SourceError(f"no ioc_filter_templates entry for '{ioc_type}'")
+    connector._filter_override = _substitute(tpl, value)
+    try:
+        return await connector._search_window(start, end)
+    finally:
+        connector._filter_override = None

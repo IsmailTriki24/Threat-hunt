@@ -39,6 +39,9 @@ class Permission(StrEnum):
     DETECTIONS_WRITE = "detections:write"  # author / test / backtest rules, triage alerts
     DETECTIONS_MANAGE = "detections:manage"  # activate, disable, delete rules
     AI_USE = "ai:use"
+    IOCHUNT_READ = "iochunt:read"
+    IOCHUNT_VALIDATE = "iochunt:validate"  # approve/reject IOCs -> launches the automatic hunt
+    IOCHUNT_MANAGE = "iochunt:manage"  # feeds and allow-list
     TENANTS_MANAGE = "tenants:manage"  # platform-wide: create/disable tenants
 
 
@@ -58,6 +61,7 @@ _ANALYST = {
     Permission.DETECTIONS_READ,
     Permission.DETECTIONS_WRITE,
     Permission.AI_USE,
+    Permission.IOCHUNT_READ,
 }
 
 ROLE_PERMISSIONS: dict[Role, frozenset[Permission]] = {
@@ -70,6 +74,7 @@ ROLE_PERMISSIONS: dict[Role, frozenset[Permission]] = {
             Permission.INTEL_READ,
             Permission.MITRE_READ,
             Permission.DETECTIONS_READ,
+            Permission.IOCHUNT_READ,
         }
     ),
     Role.SOC_ANALYST: frozenset(_ANALYST),
@@ -100,6 +105,9 @@ ROLE_PERMISSIONS: dict[Role, frozenset[Permission]] = {
             Permission.DETECTIONS_WRITE,
             Permission.DETECTIONS_MANAGE,
             Permission.AI_USE,
+            Permission.IOCHUNT_READ,
+            Permission.IOCHUNT_VALIDATE,
+            Permission.IOCHUNT_MANAGE,
         }
     ),
     Role.SUPER_ADMIN: frozenset(Permission),

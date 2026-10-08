@@ -36,7 +36,7 @@ def tls_transport(verify_tls: bool, ca_pem: str | None) -> httpx.AsyncBaseTransp
     return httpx.AsyncHTTPTransport(retries=0, verify=ctx)
 
 
-async def request_json(
+async def request_raw(
     method: str,
     url: str,
     *,
@@ -48,7 +48,9 @@ async def request_json(
     tls_server_name: str | None = None,
     timeout_s: float = 60.0,
     attempts: int = 4,
-) -> Any:
+    max_bytes: int | None = None,
+) -> httpx.Response:
+    """SSRF-guarded request with retry/backoff on 429/5xx. Returns a successful response or raises SourceError."""
     transport = tls_transport(verify_tls, ca_pem)
     last = "no response"
     for attempt in range(attempts):
@@ -63,6 +65,7 @@ async def request_json(
                 transport=transport,
                 resolver=RESOLVER,
                 sni_hostname=tls_server_name,
+                max_bytes=max_bytes,
             )
         except ssrf.SsrfError as exc:
             raise SourceError(f"blocked by outbound policy: {exc}") from None
@@ -80,12 +83,21 @@ async def request_json(
                 continue
             if resp.status_code >= 400:
                 raise SourceError(f"HTTP {resp.status_code}: {_error_text(resp)}")
-            try:
-                return resp.json()
-            except ValueError:
-                raise SourceError("response is not valid JSON") from None
+            return resp
         await asyncio.sleep(min(2**attempt, 30))
     raise SourceError(f"upstream unavailable ({last})")
+
+
+async def request_json(method: str, url: str, **kwargs: Any) -> Any:
+    resp = await request_raw(method, url, **kwargs)
+    try:
+        return resp.json()
+    except ValueError:
+        raise SourceError("response is not valid JSON") from None
+
+
+async def request_text(method: str, url: str, **kwargs: Any) -> str:
+    return (await request_raw(method, url, **kwargs)).text
 
 
 def _error_text(resp: httpx.Response) -> str:
