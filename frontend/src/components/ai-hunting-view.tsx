@@ -1,14 +1,13 @@
 "use client";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import Link from "next/link";
 import { useCallback, useState } from "react";
 import { api } from "@/lib/api";
-import { AI_DISCLAIMER, canSave, type AiMode, type AiRun } from "@/lib/ai";
-import { itemsFromSteps } from "@/lib/ai-stream";
-import { useAuth } from "@/lib/auth";
+import type { AiMode } from "@/lib/ai";
 import { fmtTime } from "@/lib/query";
 import { ErrorLine } from "./badges";
-import { Board, Feed, Icon, useHuntStream } from "./ai-live";
+import { liveFromRun } from "@/lib/ai-stream";
+import { useHuntStream } from "./ai-live";
+import { AgentWindow, WindowPill } from "./ai-window";
 
 const EXAMPLES = [
   "Is anything abnormal in the last day?",
@@ -42,69 +41,6 @@ function Translate() {
   );
 }
 
-const SEV: Record<string, string> = { CRITICAL: "border-l-red-500", HIGH: "border-l-orange-400", MEDIUM: "border-l-amber-300", LOW: "border-l-sky-400", INFO: "border-l-slate-500" };
-
-function Confidence({ level }: { level: string }) {
-  const n = level === "HIGH" ? 3 : level === "MEDIUM" ? 2 : 1;
-  return (
-    <span className="inline-flex items-center gap-1.5 text-xs text-muted" aria-label={`Confidence ${level}`}>
-      <span className="flex gap-0.5">{[1, 2, 3].map((i) => <span key={i} className={`h-2 w-5 rounded-sm transition-all duration-700 ${i <= n ? (n === 3 ? "bg-emerald-400" : n === 2 ? "bg-amber-400" : "bg-rose-400") : "bg-line"}`} />)}</span>
-      {level}
-    </span>
-  );
-}
-
-function RunResult({ run }: { run: AiRun }) {
-  const { can } = useAuth();
-  const qc = useQueryClient();
-  const save = useMutation({
-    mutationFn: (i: number) => api.aiSave(run.id, [i]),
-    onSuccess: () => { void qc.invalidateQueries({ queryKey: ["ai-runs"] }); },
-  });
-  const c = run.conclusion;
-  return (
-    <section className="panel animate-feed-in space-y-3 border-ai/40 p-4" aria-label="AI run result">
-      <div className="flex flex-wrap items-center gap-2 text-xs">
-        <span className={`ai-chip ${run.status === "COMPLETED" ? "border-emerald-400/40 bg-emerald-400/10 text-emerald-300" : "border-amber-400/40 bg-amber-400/10 text-amber-300"}`}><Icon name={run.status === "COMPLETED" ? "check" : "alert"} className="h-3 w-3" />{run.status}</span>
-        <span className="text-muted">{run.provider}/{run.model} · {run.input_tokens + run.output_tokens} tokens · {fmtTime(run.created_at)}</span>
-      </div>
-      <p className="text-xs text-muted">Goal: <span className="text-slate-300">{run.goal}</span></p>
-      {run.error && <p role="alert" className="text-xs text-red-400">{run.error}</p>}
-      {c && (
-        <div className="space-y-3">
-          <p className="whitespace-pre-wrap text-sm leading-6 text-slate-100">{c.summary}</p>
-          <div className="flex flex-wrap items-center gap-3"><Confidence level={c.confidence} />{c.model_confidence !== c.confidence && <span className="text-xs text-muted">model claimed {c.model_confidence}</span>}<span className="text-xs text-muted">{c.events_reviewed} event(s) reviewed</span></div>
-          {c.validation_notes.map((n) => <p key={n} className="text-xs text-orange-300">{n}</p>)}
-          {c.findings.map((f, i) => (
-            <div key={i} className={`space-y-1.5 rounded-md border border-line border-l-4 bg-bg/50 p-3 ${SEV[f.severity] ?? "border-l-slate-500"}`}>
-              <div className="flex flex-wrap items-center gap-2"><b>{f.title}</b><span className="text-xs text-muted">{f.severity}</span>
-                {!f.supported && <span className="text-xs text-red-400">no verified evidence</span>}</div>
-              <p className="whitespace-pre-wrap text-xs leading-5">{f.description}</p>
-              {f.event_ids.length > 0 && <p className="text-xs">Evidence: {f.event_ids.map((id) => <Link key={id} className="mr-2 font-mono underline" href={`/events?id=${id}`}>{id.slice(0, 8)}</Link>)}</p>}
-              {f.rejected_event_ids.length > 0 && <p className="text-xs text-orange-300">{f.rejected_event_ids.length} cited id(s) discarded: never retrieved from your data.</p>}
-              {f.techniques.length > 0 && <p className="text-xs">ATT&amp;CK: {f.techniques.join(", ")}</p>}
-              <button className="btn" disabled={!canSave(f, run) || !run.hunt_id || !can("hunts:write") || save.isPending}
-                title={!run.hunt_id ? "Start the run from a hunt to save findings into it" : !f.supported ? "No verified evidence" : ""} onClick={() => save.mutate(i)}>Save as hunt finding</button>
-            </div>
-          ))}
-          {c.next_steps.length > 0 && <div><h3 className="mb-1 text-[11px] font-medium uppercase tracking-wider text-muted">Next steps</h3><ul className="list-disc space-y-0.5 pl-4 text-xs">{c.next_steps.map((n) => <li key={n}>{n}</li>)}</ul></div>}
-        </div>
-      )}
-      <p className="text-xs text-orange-300">{AI_DISCLAIMER}</p>
-      <ErrorLine error={save.error} fallback="Could not save" />
-    </section>
-  );
-}
-
-function Replay({ run }: { run: AiRun }) {
-  return (
-    <details className="panel p-3" open>
-      <summary className="mb-3 cursor-pointer text-xs font-semibold">Investigation trace ({run.steps.length} steps)</summary>
-      <Feed items={itemsFromSteps(run.steps)} animate={false} />
-    </details>
-  );
-}
-
 export function AiHuntingView() {
   const qc = useQueryClient();
   const status = useQuery({ queryKey: ["ai-status"], queryFn: () => api.aiStatus() });
@@ -115,15 +51,25 @@ export function AiHuntingView() {
   const [hours, setHours] = useState(24);
   const [mode, setMode] = useState<AiMode>("standard");
   const [openId, setOpenId] = useState<string | null>(null);
-  const [focused, setFocused] = useState(false);
+  const [stopping, setStopping] = useState(false);
+  const [winOpen, setWinOpen] = useState(false);
   const refresh = useCallback(() => { void qc.invalidateQueries({ queryKey: ["ai-runs"] }); }, [qc]);
   const live = useHuntStream(refresh);
   const { state } = live;
   const busy = state.phase === "connecting" || state.phase === "running";
   const enabled = status.data?.enabled === true;
   const history = openId ? runs.data?.find((r) => r.id === openId) : undefined;
-  const go = () => { setOpenId(null); void live.start({ goal: goal.trim(), hours_back: hours, mode, ...(huntId ? { hunt_id: huntId } : {}) }); };
-  const showLive = !history && state.phase !== "idle";
+  const histEvidence = useQuery({ queryKey: ["ai-evidence", history?.id], queryFn: () => api.aiRunEvidence(history?.id ?? ""), enabled: !!history });
+  const go = () => { setOpenId(null); setStopping(false); setWinOpen(true); void live.start({ goal: goal.trim(), hours_back: hours, mode, ...(huntId ? { hunt_id: huntId } : {}) }); };
+  const stop = () => { setStopping(true); void live.stop(); };
+  const resume = () => {
+    const run = history ?? state.run;
+    if (!run) return;
+    const ev = history ? (histEvidence.data ?? []) : state.evidence;
+    setOpenId(null); setStopping(false); setWinOpen(true);
+    void live.resume(run, ev);
+  };
+  const closeWindow = useCallback(() => { setWinOpen(false); setOpenId(null); }, []);
   return (
     <section className="space-y-4">
       <div className="flex flex-wrap items-end justify-between gap-2">
@@ -135,11 +81,11 @@ export function AiHuntingView() {
       </div>
       {status.data && !enabled && <p role="status" className="panel p-3 text-xs text-orange-300">AI hunting is not configured. Set AI_PROVIDER and the provider key on the server; nothing else in the platform depends on it.</p>}
 
-      <div className="ai-glow" data-active={busy || focused}>
+      <div className="ai-glow" data-active={busy}>
         <span className="ai-glow-spin" aria-hidden="true" />
         <div className="ai-glow-body space-y-3 p-3">
           <textarea aria-label="Hunting goal" className="input h-20 w-full resize-none border-transparent bg-bg/70 text-sm" placeholder="Describe what to hunt for, e.g. Is any host running encoded PowerShell outside of admin accounts?"
-            value={goal} onChange={(e) => setGoal(e.target.value)} onFocus={() => setFocused(true)} onBlur={() => setFocused(false)} disabled={!enabled || busy}
+            value={goal} onChange={(e) => setGoal(e.target.value)} disabled={!enabled || busy}
             onKeyDown={(e) => { if ((e.metaKey || e.ctrlKey) && e.key === "Enter" && enabled && !busy && goal.trim().length >= 5) go(); }} />
           {!busy && state.phase === "idle" && (
             <div className="flex flex-wrap gap-1.5">{EXAMPLES.map((x) => <button key={x} type="button" className="ai-chip border-line bg-bg/60 text-muted transition hover:border-ai/60 hover:text-violet-200" disabled={!enabled} onClick={() => setGoal(x)}>{x}</button>)}</div>
@@ -156,25 +102,15 @@ export function AiHuntingView() {
             </select>
             <label>Window <input aria-label="Hours back" type="number" min={1} max={720} className="input w-20" value={hours} disabled={busy} onChange={(e) => setHours(Math.max(1, Math.min(720, Number(e.target.value) || 24)))} /> h</label>
             <span className="ml-auto flex items-center gap-2">
-              {busy && <button type="button" className="btn" onClick={live.detach} title="Stop watching - the investigation keeps running on the server and is saved when it finishes">Stop watching</button>}
               <button className="ai-btn" disabled={!enabled || goal.trim().length < 5 || busy} onClick={go}>{busy ? "Investigating…" : "Investigate"}</button>
             </span>
           </div>
         </div>
       </div>
 
-      {showLive && (
-        <div className="grid gap-4 lg:grid-cols-[minmax(0,1fr)_320px]">
-          <div className="min-w-0 space-y-4">
-            <Feed items={state.items} state={state} animate />
-            {state.phase === "error" && <p role="alert" className="panel border-red-400/40 p-3 text-xs text-red-300">{state.error}</p>}
-            {state.phase === "detached" && <p role="status" className="panel border-amber-400/40 p-3 text-xs text-amber-200">Stopped watching. The investigation keeps running on the server; open it from Previous runs when it finishes.</p>}
-            {state.run && <RunResult run={state.run} />}
-          </div>
-          <Board state={state} />
-        </div>
-      )}
-      {history && <><RunResult run={history} /><Replay run={history} /></>}
+      {winOpen && history && <AgentWindow state={liveFromRun(history, histEvidence.data ?? [])} onClose={closeWindow} onResume={resume} />}
+      {winOpen && !history && state.phase !== "idle" && <AgentWindow state={state} onClose={closeWindow} onStop={stop} stopping={stopping} onResume={resume} onRetry={() => void live.retry()} />}
+      {!winOpen && !history && state.phase !== "idle" && <WindowPill state={state} onOpen={() => setWinOpen(true)} onDismiss={live.reset} />}
 
       {enabled && <Translate />}
       {runs.data && runs.data.length > 0 && (
@@ -182,7 +118,7 @@ export function AiHuntingView() {
           <h2 className="text-xs font-semibold">Previous runs</h2>
           <div className="grid gap-1.5 sm:grid-cols-2">
             {runs.data.map((r) => (
-              <button key={r.id} onClick={() => setOpenId(r.id)} className={`panel flex items-center gap-2 px-3 py-2 text-left text-xs transition hover:border-ai/60 ${r.id === openId ? "border-ai/60" : ""}`}>
+              <button key={r.id} onClick={() => { setOpenId(r.id); setWinOpen(true); }} className={`panel flex items-center gap-2 px-3 py-2 text-left text-xs transition hover:border-ai/60 ${r.id === openId ? "border-ai/60" : ""}`}>
                 <span className={`h-2 w-2 shrink-0 rounded-full ${r.status === "COMPLETED" ? "bg-emerald-400" : r.status === "FAILED" ? "bg-red-400" : "bg-amber-400"}`} />
                 <span className="min-w-0 flex-1 truncate">{r.goal}</span><span className="shrink-0 text-muted">{fmtTime(r.created_at)}</span>
               </button>

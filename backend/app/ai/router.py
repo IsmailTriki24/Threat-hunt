@@ -2,7 +2,7 @@ import asyncio
 import json
 import logging
 import uuid
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Awaitable, Callable
 from typing import Any
 
 from fastapi import APIRouter, Depends, Request
@@ -107,33 +107,51 @@ async def _drive(
     mode: str,
     state: st.Investigation | None = None,
     sink: Sink | None = None,
+    stop: asyncio.Event | None = None,
 ) -> Outcome:
     backend: SearchBackend = request.app.state.search
     ctx = ToolContext(session=session, backend=backend, principal=principal, ledger=Ledger())
     lim = _limits(mode, settings)
     holder: list[st.Investigation] = []
     outcome = Outcome(mode=mode, sink=sink)
-    try:
-        # the agent enforces its own wall-clock budget; this is only the backstop for a stuck provider/tool call
-        await asyncio.wait_for(
-            run_agent(
-                ctx,
-                provider,
-                goal,
-                hours_back=hours_back,
-                mode=mode,
-                limits=lim,
-                state=state,
-                holder=holder,
-                outcome=outcome,
-            ),
-            timeout=lim.wall_s + 45,
+    agent = asyncio.create_task(
+        run_agent(
+            ctx,
+            provider,
+            goal,
+            hours_back=hours_back,
+            mode=mode,
+            limits=lim,
+            state=state,
+            holder=holder,
+            outcome=outcome,
         )
-    except TimeoutError:
-        outcome.status, outcome.error = "INCOMPLETE", "The investigation hit its time limit"
+    )
+    waiters: set[asyncio.Task[Any]] = {agent}
+    if stop is not None:
+        waiters.add(asyncio.create_task(stop.wait()))
+    try:
+        # the agent enforces its own wall-clock budget; the timeout is only the backstop for a stuck provider/tool call
+        await asyncio.wait(waiters, timeout=lim.wall_s + 45, return_when=asyncio.FIRST_COMPLETED)
+    except asyncio.CancelledError:
+        agent.cancel()
+        raise
+    finally:
+        for w in waiters - {agent}:
+            w.cancel()
+    if not agent.done():
+        stopped = stop is not None and stop.is_set()
+        agent.cancel()
+        await asyncio.gather(agent, return_exceptions=True)
+        outcome.status = "INCOMPLETE"
+        outcome.error = "Stopped by the analyst" if stopped else "The investigation hit its time limit"
         if holder:
             outcome.state = holder[0].to_dict()
-            outcome.conclusion = holder[0].interim_report("budget_time (hard timeout)")
+            outcome.conclusion = holder[0].interim_report(
+                "stopped_by_analyst" if stopped else "budget_time (hard timeout)"
+            )
+    else:
+        agent.result()  # run_agent reports its own failures through the outcome; anything else propagates
     return outcome
 
 
@@ -180,23 +198,31 @@ def _sse(event: str, data: Any) -> bytes:
     return f"event: {event}\ndata: {json.dumps(data, default=str)}\n\n".encode()
 
 
-@router.post("/runs/stream")
-async def stream_run(
-    body: RunCreate,
+def _active(request: Request) -> dict[str, tuple[uuid.UUID, uuid.UUID | None, asyncio.Event]]:
+    """Running streamed investigations: run id -> (tenant, owner, stop flag)."""
+    return request.app.state.__dict__.setdefault("ai_active", {})
+
+
+async def _stream(
     request: Request,
-    principal: Principal = USE,
-    settings: Settings = Depends(get_settings),
+    principal: Principal,
+    settings: Settings,
+    provider: LLMProvider,
+    *,
+    goal: str,
+    hours_back: int,
+    mode: str,
+    run_id: uuid.UUID,
+    persist: Callable[[AsyncSession, Outcome], Awaitable[AiRun]],
+    state: st.Investigation | None = None,
+    start_extra: dict[str, Any] | None = None,
 ) -> StreamingResponse:
-    """Same investigation as `POST /runs`, but narrated live over Server-Sent Events: `start`, then `thinking` / `step` / `tool_start`
-    / `progress` as the agent works, and finally `done` (the saved run) or `error`. The investigation runs in its own task with its own
-    DB session, so a closed tab does not lose it - the run is still saved and appears in the run list."""
-    provider = _need_provider(request)
+    """Run an investigation in its own task (own DB session) and narrate it as Server-Sent Events. Shared by new runs and resumes."""
     maker = request.app.state.sessionmaker
-    if body.hunt_id:
-        async with maker() as check:
-            await _hunt(check, principal, body.hunt_id)
-    await enforce(request, f"ai-run:{principal.user_id}", 6, 60)
     queue: asyncio.Queue[tuple[str, Any] | None] = asyncio.Queue()
+    stop = asyncio.Event()
+    active = _active(request)
+    active[run_id] = (principal.tid, principal.user_id, stop)
 
     def sink(kind: str, data: dict[str, Any]) -> None:
         queue.put_nowait((kind, data))
@@ -206,37 +232,10 @@ async def stream_run(
             async with maker() as session:
                 try:
                     outcome = await _drive(
-                        request,
-                        principal,
-                        session,
-                        provider,
-                        settings,
-                        goal=body.goal,
-                        hours_back=body.hours_back,
-                        mode=body.mode,
-                        sink=sink,
-                    )
-                    run = AiRun(
-                        tenant_id=principal.tid,
-                        user_id=principal.user_id,
-                        hunt_id=body.hunt_id,
-                        goal=body.goal,
-                        status=outcome.status,
-                        provider=provider.name,
-                        model=provider.model,
-                        hours_back=body.hours_back,
-                        mode=body.mode,
-                        steps=list(outcome.steps),
-                        conclusion=outcome.conclusion,
-                        state=outcome.state,
-                        input_tokens=outcome.input_tokens,
-                        output_tokens=outcome.output_tokens,
-                        error=outcome.error[:300],
-                    )
-                    session.add(run)
-                    await session.flush()
-                    await session.refresh(run)
-                    await _audit_run(request, principal, run, "ai.run")
+                        request, principal, session, provider, settings,
+                        goal=goal, hours_back=hours_back, mode=mode, state=state, sink=sink, stop=stop,
+                    )  # fmt: skip
+                    run = await persist(session, outcome)
                     await session.commit()
                     queue.put_nowait(("done", RunOut.model_validate(run).model_dump(mode="json")))
                 except Exception:
@@ -246,6 +245,7 @@ async def stream_run(
             log.exception("ai stream run failed")
             queue.put_nowait(("error", {"message": "The investigation failed unexpectedly"}))
         finally:
+            active.pop(run_id, None)
             queue.put_nowait(None)
 
     tasks: set[asyncio.Task[None]] = request.app.state.__dict__.setdefault("ai_tasks", set())
@@ -254,16 +254,18 @@ async def stream_run(
     task.add_done_callback(tasks.discard)
 
     async def events() -> AsyncIterator[bytes]:
-        lim = _limits(body.mode, settings)
+        lim = _limits(mode, settings)
         yield _sse(
             "start",
             {
-                "goal": body.goal,
-                "mode": body.mode,
-                "hours_back": body.hours_back,
+                "run_id": str(run_id),
+                "goal": goal,
+                "mode": mode,
+                "hours_back": hours_back,
                 "provider": provider.name,
                 "model": provider.model,
                 "limits": {"steps": lim.max_steps, "tool_calls": lim.max_tool_calls, "seconds": lim.wall_s},
+                **(start_extra or {}),
             },
         )
         while True:
@@ -281,6 +283,121 @@ async def stream_run(
         media_type="text/event-stream",
         headers={"Cache-Control": "no-cache, no-transform", "X-Accel-Buffering": "no", "Connection": "keep-alive"},
     )
+
+
+@router.post("/runs/stream")
+async def stream_run(
+    body: RunCreate,
+    request: Request,
+    principal: Principal = USE,
+    settings: Settings = Depends(get_settings),
+) -> StreamingResponse:
+    """Same investigation as `POST /runs`, narrated live over Server-Sent Events: `start`, then `thinking` / `step` / `tool_start`
+    / `evidence` / `progress` as the agent works, and finally `done` (the saved run) or `error`. The investigation runs in its own
+    task with its own DB session, so a closed tab does not lose it - the run is still saved and appears in the run list."""
+    provider = _need_provider(request)
+    if body.hunt_id:
+        async with request.app.state.sessionmaker() as check:
+            await _hunt(check, principal, body.hunt_id)
+    await enforce(request, f"ai-run:{principal.user_id}", 6, 60)
+    run_id = uuid.uuid4()
+
+    async def persist(session: AsyncSession, outcome: Outcome) -> AiRun:
+        run = AiRun(
+            id=run_id,
+            tenant_id=principal.tid,
+            user_id=principal.user_id,
+            hunt_id=body.hunt_id,
+            goal=body.goal,
+            status=outcome.status,
+            provider=provider.name,
+            model=provider.model,
+            hours_back=body.hours_back,
+            mode=body.mode,
+            steps=list(outcome.steps),
+            conclusion=outcome.conclusion,
+            state=outcome.state,
+            input_tokens=outcome.input_tokens,
+            output_tokens=outcome.output_tokens,
+            error=outcome.error[:300],
+        )
+        session.add(run)
+        await session.flush()
+        await session.refresh(run)
+        await _audit_run(request, principal, run, "ai.run")
+        return run
+
+    return await _stream(
+        request, principal, settings, provider,
+        goal=body.goal, hours_back=body.hours_back, mode=body.mode, run_id=run_id, persist=persist,
+    )  # fmt: skip
+
+
+@router.post("/runs/{run_id}/resume/stream")
+async def stream_resume(
+    run_id: uuid.UUID,
+    body: ResumeIn,
+    request: Request,
+    principal: Principal = USE,
+    settings: Settings = Depends(get_settings),
+) -> StreamingResponse:
+    """Continue an interrupted investigation, narrated live (see `resume_run`). The same run row is updated when it finishes."""
+    provider = _need_provider(request)
+    async with request.app.state.sessionmaker() as check:
+        run = await _run(check, principal, run_id)
+        if run.status == "COMPLETED" or not run.state:
+            raise Conflict("Only an interrupted investigation with saved state can be resumed")
+        goal, hours_back, saved_state = run.goal, run.hours_back, run.state
+        mode = body.mode or (run.mode if run.mode in st.MODES else "standard")
+        offset = len(run.steps) + 1  # the resume marker is step `len(run.steps)`
+    if run_id in _active(request):
+        raise Conflict("This investigation is already running")
+    await enforce(request, f"ai-run:{principal.user_id}", 6, 60)
+
+    async def persist(session: AsyncSession, outcome: Outcome) -> AiRun:
+        run = await _run(session, principal, run_id)
+        run.status, run.mode = outcome.status, mode
+        run.steps = [*run.steps, {"type": "resume", "mode": mode}, *outcome.steps]
+        run.conclusion = outcome.conclusion
+        run.state = outcome.state
+        run.input_tokens += outcome.input_tokens
+        run.output_tokens += outcome.output_tokens
+        run.error = outcome.error[:300]
+        await session.flush()
+        await session.refresh(run)
+        await _audit_run(request, principal, run, "ai.resume")
+        return run
+
+    return await _stream(
+        request, principal, settings, provider,
+        goal=goal, hours_back=hours_back, mode=mode, run_id=run_id, persist=persist,
+        state=st.Investigation.from_dict(saved_state), start_extra={"resumed": True, "step_offset": offset},
+    )  # fmt: skip
+
+
+@router.post("/runs/{run_id}/stop", status_code=202)
+async def stop_run(run_id: uuid.UUID, request: Request, principal: Principal = USE) -> dict[str, str]:
+    """Ask a running streamed investigation to stop. Whatever it found so far is saved as an INCOMPLETE, resumable run."""
+    entry = _active(request).get(run_id)
+    if (
+        entry is None
+        or entry[0] != principal.tid
+        or (entry[1] != principal.user_id and not principal.has(Permission.USERS_MANAGE))
+    ):
+        raise NotFound("No such running investigation")
+    entry[2].set()
+    return {"status": "stopping"}
+
+
+@router.get("/runs/{run_id}/evidence")
+async def run_evidence(
+    run_id: uuid.UUID, principal: Principal = USE, session: AsyncSession = Depends(get_session)
+) -> list[dict[str, Any]]:
+    """Every event the investigation reviewed (compact), for the evidence timeline. Time-ordered."""
+    run = await _run(session, principal, run_id)
+    ev = ((run.state or {}).get("evidence") or {}).values()
+    keep = ("id", "timestamp", "host", "user", "event_type", "summary")
+    return sorted(({k: e.get(k) for k in keep} for e in ev), key=lambda e: str(e.get("timestamp") or ""))
 
 
 async def _audit_run(request: Request, principal: Principal, run: AiRun, action: str) -> None:

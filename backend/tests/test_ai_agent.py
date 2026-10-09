@@ -452,3 +452,61 @@ async def test_stream_rejects_without_a_provider_and_for_unprivileged_users(clie
     r = await client.post(f"{A}/runs/stream", headers=h, json={"goal": "hunt something odd", "mode": "quick"})
     assert r.status_code in (502, 503)  # plain JSON error, not an event stream
     assert not r.headers["content-type"].startswith("text/event-stream")
+
+
+async def test_stream_emits_evidence_and_exposes_it_per_run(client, make, llm, app):
+    _, h = await _seeded(make, app)
+    llm(Scripted(nb(H1), tool("search_events", query="process.name:powershell.exe"), conclude([])))
+    r = await client.post(f"{A}/runs/stream", headers=h, json={"goal": "hunt encoded powershell and what it led to", "mode": "quick"})
+    ev_ = _parse_sse(r.text)
+    start, done = ev_[0][1], ev_[-1][1]
+    assert start["run_id"] == done["id"]  # the id is known up front so the run can be stopped
+    seen = [e for k, d in ev_ if k == "evidence" for e in d["events"]]
+    assert len(seen) == len({e["id"] for e in seen}) >= 4  # each reviewed event announced exactly once
+    assert {"id", "timestamp", "host", "event_type", "summary"} <= set(seen[0])
+    stored = (await client.get(f"{A}/runs/{done['id']}/evidence", headers=h)).json()
+    assert {e["id"] for e in stored} == {e["id"] for e in seen}
+    assert [e["timestamp"] for e in stored] == sorted(e["timestamp"] for e in stored)
+
+
+async def test_stop_saves_partial_work_as_a_resumable_run_and_resume_streams_it_to_completion(client, make, llm, app):
+    _, h = await _seeded(make, app)
+    gate = asyncio.Event()  # set once the second model turn starts: the run is then in flight
+
+    class Slow(Scripted):
+        async def complete(self, *a, **k):
+            if len(self.calls) >= 2:
+                gate.set()
+                await asyncio.sleep(30)
+            return await super().complete(*a, **k)
+
+    llm(Slow(nb(H1), tool("search_events", query="process.name:powershell.exe"), conclude([])))
+
+    async def consume():
+        r = await client.post(f"{A}/runs/stream", headers=h, json={"goal": "hunt encoded powershell and what it led to", "mode": "quick"})
+        return _parse_sse(r.text)
+
+    t = asyncio.create_task(consume())
+    await asyncio.wait_for(gate.wait(), 10)
+    runs = None
+    for _ in range(50):  # the id is only known from the stream; find it through the active registry
+        reg = getattr(app.state, "ai_active", {})
+        if reg:
+            runs = next(iter(reg))
+            break
+        await asyncio.sleep(0.05)
+    assert runs
+    assert (await client.post(f"{A}/runs/{runs}/stop", headers=h)).status_code == 202
+    ev_ = await asyncio.wait_for(t, 15)
+    done = ev_[-1][1]
+    assert ev_[-1][0] == "done" and done["status"] == "INCOMPLETE" and "Stopped" in done["error"] and done["resumable"] is True
+    assert done["conclusion"] is not None  # what was found so far is reported, not thrown away
+    assert (await client.post(f"{A}/runs/{runs}/stop", headers=h)).status_code == 404  # finished runs cannot be stopped
+
+    llm(Scripted(nb({"op": "note", "text": "resuming"}), conclude([])))
+    r = await client.post(f"{A}/runs/{runs}/resume/stream", headers=h, json={})
+    ev2 = _parse_sse(r.text)
+    assert ev2[0][1]["resumed"] is True and ev2[0][1]["step_offset"] == len(done["steps"]) + 1
+    final = ev2[-1][1]
+    assert ev2[-1][0] == "done" and final["id"] == done["id"] and final["status"] == "COMPLETED"
+    assert any(s["type"] == "resume" for s in final["steps"])

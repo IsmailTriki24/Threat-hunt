@@ -454,10 +454,29 @@ async def run_agent(
         if out.sink is not None:
             out.sink(kind, data)
 
+    sent_ev: set[str] = set()
+
     def progress() -> None:
         """A compact snapshot of the investigation for the live view (hypotheses, counters, remaining budget)."""
         if out.sink is None:
             return
+        fresh = [e for i, e in inv.evidence.items() if i not in sent_ev]
+        if fresh:
+            sent_ev.update(e["id"] for e in fresh)
+            emit(
+                "evidence",
+                events=[
+                    {
+                        "id": e["id"],
+                        "timestamp": e.get("timestamp"),
+                        "host": e.get("host"),
+                        "user": e.get("user"),
+                        "event_type": e.get("event_type"),
+                        "summary": (e.get("summary") or "")[:140],
+                    }
+                    for e in fresh
+                ],
+            )
         emit(
             "progress",
             hypotheses=[
