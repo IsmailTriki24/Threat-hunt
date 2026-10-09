@@ -57,9 +57,13 @@ class Settings(BaseSettings):
     openrouter_base_url: str = "https://openrouter.ai/api/v1"  # operator-controlled; never user input
     ai_model: str = "claude-sonnet-5-5"
     ai_base_url: str = "https://api.anthropic.com"  # operator-controlled (gateway/proxy); never user input
-    ai_max_steps: int = Field(default=8, ge=1, le=20)
-    ai_max_tool_calls: int = Field(default=20, ge=1, le=60)
-    ai_timeout_s: int = Field(default=120, ge=10, le=600)
+    # Operator ceilings. A run's effective budget is its mode's (quick/standard/deep) clamped by these; they are not turn counts the
+    # model can be cut off by mid-investigation - hitting one triggers a final conclusion turn / interim report (see ai/agent.py).
+    ai_max_steps: int = Field(default=48, ge=1, le=200)
+    ai_max_tool_calls: int = Field(default=120, ge=1, le=400)
+    ai_token_budget: int = Field(default=2_000_000, ge=10_000, le=20_000_000)
+    ai_run_timeout_s: int = Field(default=540, ge=20, le=1800)  # wall-clock for one run
+    ai_timeout_s: int = Field(default=120, ge=10, le=600)  # one provider HTTP call
 
     seed_demo_data: bool = False
     seed_password: str = Field(default="", repr=False)

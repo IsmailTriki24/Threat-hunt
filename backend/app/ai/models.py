@@ -25,6 +25,10 @@ class AiRun(Base):
     provider: Mapped[str] = mapped_column(String(32), default="")
     model: Mapped[str] = mapped_column(String(64), default="")
     hours_back: Mapped[int] = mapped_column(Integer, default=24)
+    mode: Mapped[str] = mapped_column(String(10), default="standard")
+    state: Mapped[dict[str, Any] | None] = mapped_column(
+        JSONB, nullable=True
+    )  # structured investigation state (resumable)
     steps: Mapped[list[dict[str, Any]]] = mapped_column(JSONB, default=list)
     conclusion: Mapped[dict[str, Any] | None] = mapped_column(JSONB, nullable=True)
     saved_findings: Mapped[list[str]] = mapped_column(JSONB, default=list)  # hunt finding ids created from this run
@@ -32,3 +36,7 @@ class AiRun(Base):
     output_tokens: Mapped[int] = mapped_column(Integer, default=0)
     error: Mapped[str] = mapped_column(String(300), default="")
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), index=True)
+
+    @property
+    def resumable(self) -> bool:
+        return self.status != "COMPLETED" and bool(self.state)

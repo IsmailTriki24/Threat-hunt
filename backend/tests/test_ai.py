@@ -56,6 +56,7 @@ def conclude(ids: Any, **extra: Any) -> Any:
             "title": "Encoded PowerShell",
             "description": "seen",
             "severity": "high",
+            "classification": "confirmed",
             "event_ids": found,
             "techniques": ["T1059.001", "T9999"],
             **extra,
@@ -65,9 +66,35 @@ def conclude(ids: Any, **extra: Any) -> Any:
     return make
 
 
+def nb(*ops: dict[str, Any]) -> LLMResponse:
+    return tool("update_notebook", ops=list(ops))
+
+
+def results(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Every parsed tool-result envelope the model has been shown so far."""
+    out = []
+    for m in messages:
+        if isinstance(m["content"], list):
+            for b in m["content"]:
+                if b.get("type") == "tool_result":
+                    try:
+                        out.append(json.loads(b["content"]))
+                    except ValueError:
+                        pass
+    return out
+
+
 def seen_ids(messages: list[dict[str, Any]]) -> list[str]:
-    last = messages[-1]["content"][0]["content"]
-    return [e["id"] for e in json.loads(last)["data"]["events"]]
+    ids: list[str] = []
+    for r in results(messages):
+        for e in (r.get("data") or {}).get("events", []):
+            if e["id"] not in ids:
+                ids.append(e["id"])
+    return ids
+
+
+def real_steps(run: dict[str, Any]) -> list[dict[str, Any]]:
+    return [s for s in run["steps"] if s["type"] == "tool" and not s.get("auto")]
 
 
 @pytest.fixture
@@ -93,10 +120,18 @@ async def test_investigation_with_verified_evidence_and_save(client, make, llm):
     hunt = (await client.post("/api/v1/hunts", headers=h, json={"title": "ps"})).json()
     p = llm(
         Scripted(
-            tool("search_events", query="process.name:powershell.exe"), conclude(lambda m: [*seen_ids(m), "f" * 32])
+            nb({"op": "add_hypothesis", "statement": "Encoded PowerShell is being run on a workstation"}),
+            tool("search_events", query="process.name:powershell.exe", hypothesis="H1"),
+            tool("search_events", query="process.name:cmd.exe", hypothesis="H1", purpose="refute"),
+            lambda m, t: nb(
+                {"op": "update_hypothesis", "id": "H1", "status": "supported", "supporting_event_ids": seen_ids(m)[:1]}
+            ),
+            conclude(lambda m: [*seen_ids(m)[:1], "f" * 32]),
         )
     )
-    r = await client.post(f"{A}/runs", headers=h, json={"goal": "find encoded powershell", "hunt_id": hunt["id"]})
+    r = await client.post(
+        f"{A}/runs", headers=h, json={"goal": "find encoded powershell", "hunt_id": hunt["id"], "mode": "quick"}
+    )
     assert r.status_code == 201, r.text
     run = r.json()
     assert run["status"] == "COMPLETED" and run["provider"] == "scripted"
@@ -105,10 +140,12 @@ async def test_investigation_with_verified_evidence_and_save(client, make, llm):
     assert f["supported"] and len(f["event_ids"]) == 1 and f["rejected_event_ids"] == ["f" * 32]
     assert f["techniques"] == ["T1059.001"] and f["rejected_techniques"] == ["T9999"]
     assert c["confidence"] == "HIGH" and any("discarded" in n for n in c["validation_notes"])
-    assert [s["type"] for s in run["steps"]] == ["tool"] and run["steps"][0]["name"] == "search_events"
-    assert run["input_tokens"] > 0
+    assert run["steps"][0]["name"] == "data_coverage" and run["steps"][0]["auto"]  # scoping happens before the first model turn
+    assert [s["name"] for s in real_steps(run)] == ["update_notebook", "search_events", "search_events", "update_notebook"]
+    assert run["input_tokens"] > 0 and run["mode"] == "quick"
+    assert c["hypotheses"][0]["status"] == "supported" and f["classification"] == "confirmed" and f["queries"]
     # results reached the model inside the untrusted-data envelope
-    tool_msg = p.calls[1]["messages"][-1]["content"][0]["content"]
+    tool_msg = p.calls[2]["messages"][-1]["content"][0]["content"]
     assert json.loads(tool_msg)["untrusted_data"] is True
     # save -> a real hunt finding with an evidence snapshot
     s = await client.post(f"{A}/runs/{run['id']}/save", headers=h, json={"finding_indexes": [0]})
@@ -122,11 +159,12 @@ async def test_fabricated_citations_are_unsupported(client, make, llm):
     hunt = (await client.post("/api/v1/hunts", headers=h, json={"title": "x"})).json()
     llm(Scripted(conclude(["a" * 32])))  # concludes without ever searching
     run = (
-        await client.post(f"{A}/runs", headers=h, json={"goal": "anything suspicious?", "hunt_id": hunt["id"]})
+        await client.post(f"{A}/runs", headers=h, json={"goal": "anything suspicious?", "hunt_id": hunt["id"], "mode": "quick"})
     ).json()
     f = run["conclusion"]["findings"][0]
     assert not f["supported"] and f["event_ids"] == []
     assert run["conclusion"]["confidence"] == "LOW" and run["conclusion"]["model_confidence"] == "HIGH"
+    assert f["classification"] == "unverified" and run["conclusion"]["forced"]  # concluded without investigating
     assert (
         await client.post(f"{A}/runs/{run['id']}/save", headers=h, json={"finding_indexes": [0]})
     ).status_code == 409
@@ -142,15 +180,15 @@ async def test_cannot_cite_another_tenants_events(client, make, llm, app):
         )
     ).hits[0]["id"]
     llm(Scripted(conclude([other])))
-    run = (await client.post(f"{A}/runs", headers=ha, json={"goal": "look for anything odd"})).json()
+    run = (await client.post(f"{A}/runs", headers=ha, json={"goal": "look for anything odd", "mode": "quick"})).json()
     assert (
         run["conclusion"]["findings"][0]["rejected_event_ids"] == [other]
         and not run["conclusion"]["findings"][0]["supported"]
     )
     # tool access is tenant scoped too
     llm(Scripted(tool("get_event", event_id=other), conclude([])))
-    run = (await client.post(f"{A}/runs", headers=ha, json={"goal": "fetch that foreign event"})).json()
-    assert run["steps"][0]["error"] == "event not found"
+    run = (await client.post(f"{A}/runs", headers=ha, json={"goal": "fetch that foreign event", "mode": "quick"})).json()
+    assert real_steps(run)[0]["error"] == "event not found"
 
 
 async def test_model_mistakes_are_tool_errors_not_crashes(client, make, llm):
@@ -166,26 +204,23 @@ async def test_model_mistakes_are_tool_errors_not_crashes(client, make, llm):
             conclude([]),
         )
     )
-    run = (await client.post(f"{A}/runs", headers=h, json={"goal": "exercise the tools"})).json()
-    errs = [s["error"] for s in run["steps"]]
+    run = (await client.post(f"{A}/runs", headers=h, json={"goal": "exercise the tools", "mode": "quick"})).json()
+    errs = [s["error"] for s in real_steps(run)]
     assert "not available" in errs[0] and "invalid query" in errs[1] and "invalid arguments" in errs[2]
     assert errs[3] is None and errs[4] is None and run["status"] == "COMPLETED"
-    assert '"known": false' in run["steps"][4]["result_preview"].lower().replace('"known":false', '"known": false')
-    assert p.calls[0]["tools"] == [
-        "search_events",
-        "aggregate_events",
-        "get_event",
-        "lookup_ioc",
-        "mitre_technique",
-        "submit_conclusion",
-    ]
+    assert '"known": false' in real_steps(run)[4]["result_preview"].lower().replace('"known":false', '"known": false')
+    assert {"search_events", "aggregate_events", "get_event", "lookup_ioc", "mitre_technique", "pivot_entity",
+            "events_around", "process_lineage", "data_coverage", "update_notebook", "submit_conclusion"} == set(p.calls[0]["tools"])
+    assert "did you mean" in errs[1] or "unknown field" in errs[1]  # the error tells the model how to repair the query
 
 
 async def test_budget_exhaustion_is_incomplete(client, make, llm):
     _, h = await _setup(make)
     p = llm(Scripted(tool("search_events", query="process.name:cmd.exe")))  # never concludes
     run = (await client.post(f"{A}/runs", headers=h, json={"goal": "loop forever please"})).json()
-    assert run["status"] == "INCOMPLETE" and run["conclusion"] is None and "budget" in run["error"]
+    assert run["status"] == "INCOMPLETE" and "budget" in run["error"]
+    assert run["conclusion"]["interim"] and run["conclusion"]["findings"] == []  # honest interim report, no invented findings
+    assert run["resumable"] and run["conclusion"]["stop_reason"] in ("low_value", "budget_steps")
     assert p.calls[-1]["tools"] == ["submit_conclusion"]  # final turn offers only the conclusion tool
 
 

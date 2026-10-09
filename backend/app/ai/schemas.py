@@ -1,6 +1,6 @@
 import uuid
 from datetime import datetime
-from typing import Any
+from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -13,6 +13,11 @@ class RunCreate(_In):
     goal: str = Field(min_length=5, max_length=2000)
     hunt_id: uuid.UUID | None = None
     hours_back: int = Field(default=24, ge=1, le=720)
+    mode: Literal["quick", "standard", "deep"] = "standard"
+
+
+class ResumeIn(_In):
+    mode: Literal["quick", "standard", "deep"] | None = None  # defaults to the run's own mode
 
 
 class TranslateIn(_In):
@@ -29,6 +34,7 @@ class Status(BaseModel):
     provider: str
     model: str
     max_steps: int
+    modes: dict[str, dict[str, int]] = {}
 
 
 class TranslateOut(BaseModel):
@@ -46,6 +52,8 @@ class RunOut(BaseModel):
     provider: str
     model: str
     hours_back: int
+    mode: str = "standard"
+    resumable: bool = False
     steps: list[dict[str, Any]]
     conclusion: dict[str, Any] | None
     saved_findings: list[str]
