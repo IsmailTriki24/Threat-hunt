@@ -210,7 +210,8 @@ async def test_model_mistakes_are_tool_errors_not_crashes(client, make, llm):
     assert errs[3] is None and errs[4] is None and run["status"] == "COMPLETED"
     assert '"known": false' in real_steps(run)[4]["result_preview"].lower().replace('"known":false', '"known": false')
     assert {"search_events", "aggregate_events", "get_event", "lookup_ioc", "mitre_technique", "pivot_entity",
-            "events_around", "process_lineage", "data_coverage", "update_notebook", "submit_conclusion"} == set(p.calls[0]["tools"])
+            "events_around", "process_lineage", "data_coverage", "update_notebook", "submit_conclusion",
+            "enrich_indicator"} == set(p.calls[0]["tools"])
     assert "did you mean" in errs[1] or "unknown field" in errs[1]  # the error tells the model how to repair the query
 
 

@@ -9,7 +9,7 @@ import { useAuth } from "@/lib/auth";
 import { fmtTime } from "@/lib/query";
 import { ErrorLine } from "./badges";
 import { EvidenceTimeline } from "./ai-evidence";
-import { Feed, Icon } from "./ai-live";
+import { Feed, Icon, VerdictChip } from "./ai-live";
 
 const SEV: Record<string, string> = { CRITICAL: "border-l-red-500", HIGH: "border-l-orange-400", MEDIUM: "border-l-amber-300", LOW: "border-l-sky-400", INFO: "border-l-slate-500" };
 const CLASS: Record<string, string> = {
@@ -121,6 +121,21 @@ export function RunReport({ run, evidence, onResume, resuming, compact }: Report
               </Section>
             )}
 
+            {c.intel && Object.keys(c.intel).length > 0 && (
+              <Section title="Threat intelligence on indicators it met">
+                <ul className="space-y-1">
+                  {Object.entries(c.intel)
+                    .sort(([, a], [, b]) => ["malicious", "suspicious", "unknown", "benign"].indexOf(a.verdict) - ["malicious", "suspicious", "unknown", "benign"].indexOf(b.verdict))
+                    .map(([k, v]) => (
+                      <li key={k} className="flex flex-wrap items-center gap-2 rounded-md border border-line bg-bg/50 px-2.5 py-1.5 text-xs">
+                        <VerdictChip intel={v} /><span className="min-w-0 flex-1 break-all font-mono text-slate-200">{k}</span>
+                        <span className="text-muted">{v.providers.map((p) => `${p.provider}: ${p.summary || p.verdict || p.status}`).join(" · ") || "no provider answered"}{v.web ? ` · ${v.web} web source(s)` : ""}</span>
+                      </li>
+                    ))}
+                </ul>
+                <p className="text-[11px] text-muted">Context from external sources, not evidence from your environment. &quot;Unknown&quot; means no source had an opinion, not that it is safe.</p>
+              </Section>
+            )}
             {(c.hypotheses?.length ?? 0) > 0 && <Section title="Hypotheses tested">{c.hypotheses?.map((h) => <HypothesisCard key={h.id} h={h} onJump={jump} />)}</Section>}
 
             {gaps.length > 0 && (

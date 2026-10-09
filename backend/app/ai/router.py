@@ -11,6 +11,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.ai import state as st
+from app.ai import tools
 from app.ai import translate as translator
 from app.ai.agent import Outcome, Sink, run_agent
 from app.ai.models import AiRun
@@ -27,6 +28,7 @@ from app.core.ratelimit import enforce
 from app.events.search.base import SearchBackend
 from app.events.summary import summarize
 from app.hunts.models import Finding, Hunt
+from app.intel import service as intel_service
 
 log = logging.getLogger("hunt.ai")
 router = APIRouter(prefix="/ai", tags=["ai"])
@@ -45,14 +47,29 @@ def _need_provider(request: Request) -> LLMProvider:
     return p
 
 
+async def _intel_providers(session: AsyncSession, settings: Settings, principal: Principal) -> list[str]:
+    """Threat-intel providers the agent can actually use for this tenant: enabled, configured, and not just the offline heuristics."""
+    if not principal.has(Permission.INTEL_WRITE):
+        return []
+    states = await intel_service.provider_states(session, settings, principal.tid)
+    return sorted(k for k, s in states.items() if s.enabled and s.configured and not s.provider.offline)
+
+
 @router.get("/status", response_model=Status)
-async def status(request: Request, _: Principal = USE, settings: Settings = Depends(get_settings)) -> Status:
+async def status(
+    request: Request,
+    principal: Principal = USE,
+    settings: Settings = Depends(get_settings),
+    session: AsyncSession = Depends(get_session),
+) -> Status:
     p = _provider(request)
     return Status(
         enabled=p is not None,
         provider=p.name if p else "none",
         model=p.model if p else "",
         max_steps=settings.ai_max_steps,
+        web_search=tools.TOOLS["web_search"].enabled(),
+        intel_providers=await _intel_providers(session, settings, principal),
         modes={
             name: {
                 "max_steps": min(m.max_steps, settings.ai_max_steps),

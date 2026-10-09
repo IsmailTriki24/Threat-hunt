@@ -76,6 +76,7 @@ SEVERE = {
     "persistence",
     "lateral_movement",
     "from_flagged_process",
+    "intel_malicious",
 }
 _OFFICE = {"winword.exe", "excel.exe", "outlook.exe", "powerpnt.exe", "onenote.exe", "acrord32.exe"}
 _SHELLS = {
@@ -275,6 +276,8 @@ class Investigation:
     no_progress: int = 0
     stop_reason: str = ""
     resumes: int = 0
+    intel: dict[str, dict[str, Any]] = field(default_factory=dict)  # entity key -> compact enrichment summary
+    enriched: list[str] = field(default_factory=list)  # entity keys already looked up (never twice per run)
     _qseq: int = 0
 
     # ---- construction / persistence -----------------------------------------------------------------------------------------
@@ -307,6 +310,8 @@ class Investigation:
             "event_entities",
             "proc_events",
             "flagged_procs",
+            "intel",
+            "enriched",
         ):
             if k in d:
                 setattr(inv, k, d[k])
@@ -470,7 +475,11 @@ class Investigation:
         return [e for e in self.leads(50) if e.score >= threshold]
 
     def ok_queries(self) -> int:
-        return sum(1 for q in self.queries if q.status != "error" and not q.auto and q.tool not in ("update_notebook",))
+        return sum(
+            1
+            for q in self.queries
+            if q.status != "error" and not q.auto and q.tool not in ("update_notebook", "web_search")
+        )  # web context is not telemetry coverage
 
     def gaps(self) -> list[str]:
         out: list[str] = []
@@ -561,6 +570,29 @@ class Investigation:
                     + (" [named in objective]" if e.from_objective else "")
                     + f" -> pivot_entity(type={e.type}, value={e.value})"
                 )
+        if self.intel:
+            lines.append(
+                "Threat intelligence on indicators you met (looked up automatically in the tenant's providers / public sources; "
+                "context only - 'unknown' is NOT benign, one low-confidence hit is a lead, not proof):"
+            )
+            order = {"malicious": 0, "suspicious": 1, "unknown": 2, "benign": 3}
+            for k, v in sorted(
+                self.intel.items(), key=lambda kv: (order.get(kv[1].get("verdict", "unknown"), 2), kv[0])
+            )[:10]:
+                prov = (
+                    ", ".join(
+                        f"{p['provider']}={p.get('verdict') or p['status']}"
+                        + (f" ({p['summary'][:70]})" if p.get("summary") else "")
+                        for p in v.get("providers", [])
+                    )
+                    or "no provider answered"
+                )
+                miss = f" | not queried: {', '.join(v['unavailable'])}" if v.get("unavailable") else ""
+                lines.append(
+                    f"  {k} -> {str(v.get('verdict', 'unknown')).upper()} (score {v.get('score', 0)}; {prov}{miss}"
+                    + (f"; {v['web']} web source(s)" if v.get("web") else "")
+                    + ")"
+                )
         gaps = self.gaps()
         if gaps:
             lines.append("Known gaps: " + " | ".join(gaps[:5]))
@@ -603,6 +635,7 @@ class Investigation:
     def report_extras(self, stop_reason: str) -> dict[str, Any]:
         return {
             "stop_reason": stop_reason,
+            "intel": self.intel,
             "hypotheses": [
                 {
                     "id": h.id,

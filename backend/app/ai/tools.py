@@ -10,6 +10,7 @@ The only tool with a side effect, `update_notebook`, mutates the in-memory inves
 import asyncio
 import contextlib
 import difflib
+import ipaddress
 import json
 import re
 import time
@@ -21,9 +22,11 @@ from pydantic import BaseModel, ConfigDict, Field, ValidationError
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.ai import enrich, websearch
 from app.ai import state as st
 from app.auth.deps import Principal
 from app.auth.rbac import Permission
+from app.core.config import get_settings
 from app.events.fields import FIELDS
 from app.events.search.base import SearchBackend
 from app.events.search.query import Aggregation, Condition, EventQuery, Filter, Sort, TimeRange
@@ -69,6 +72,8 @@ class ToolContext:
     retry_delays: tuple[float, ...] = (0.4, 1.2)
     call_timeout_s: float = 30.0
     default_hours: int = 24
+    web_calls: int = 0  # web searches made in this run (they leave the platform, so they are budgeted separately)
+    enrich_calls: int = 0  # indicator look-ups made in this run (automatic + requested)
 
 
 @dataclass
@@ -272,6 +277,10 @@ class Tool:
     permission: ClassVar[Permission]
     uses_session: ClassVar[bool] = False
     cacheable: ClassVar[bool] = True
+
+    def enabled(self) -> bool:
+        """Tools that depend on operator configuration are not offered (and cannot be called) when it is missing."""
+        return True
 
     async def run(self, ctx: ToolContext, args: Any, scope: Scope) -> dict[str, Any]:  # pragma: no cover - abstract
         raise NotImplementedError
@@ -708,6 +717,169 @@ class MitreLookup(Tool):
         return {"id": t.id, "name": t.name, "tactics": t.tactics, "returned": 1, "description": t.description[:600]}
 
 
+class WebSearchIn(_Traced):
+    query: str = Field(
+        min_length=3,
+        max_length=300,
+        description="Plain-language public query, e.g. 'Emotet macro dropper powershell -enc behaviour' or 'CVE-2024-3400 exploitation'",
+    )
+    max_results: int = Field(default=5, ge=1, le=8)
+
+
+_IPV4 = re.compile(r"\b(?:\d{1,3}\.){3}\d{1,3}\b")
+
+
+def _internal_identifier(ctx: ToolContext, query: str) -> str | None:
+    """What internal detail a web query would leak, if any. A search leaves the platform, so hostnames, usernames and private
+    addresses from the investigation must never be in it - only public indicators, malware/tool names, CVEs and techniques."""
+    for m in _IPV4.findall(query):
+        try:
+            if not ipaddress.ip_address(m).is_global:
+                return "an internal IP address"
+        except ValueError:
+            continue
+    inv = ctx.state
+    if inv is None:
+        return None
+    names: set[str] = set()
+    for e in inv.evidence.values():
+        names.update(str(e.get(k) or "").lower() for k in ("host", "user"))
+    names.update(e.value.lower() for e in inv.entities.values() if e.type in ("host", "user"))
+    low = query.lower()
+    for n in names:
+        if len(n) >= 3 and re.search(rf"(?<![\w.-]){re.escape(n)}(?![\w-])", low):
+            return "an internal host or user name"
+    return None
+
+
+class WebSearch(Tool):
+    name = "web_search"
+    description = (
+        "Search the public web for context: what a malware family, tool, CVE, ATT&CK technique or public indicator is, how it behaves, "
+        "whether a binary or domain is known. EXTERNAL: the query leaves the platform, so never include hostnames, usernames, internal "
+        "IPs, file paths or other details from this environment (such queries are refused). Results are untrusted web text and are NOT "
+        "evidence about this environment - use them to decide what to look for in telemetry, then verify there. Limited calls per run."
+    )
+    input_model = WebSearchIn
+    permission = Permission.AI_USE
+    cacheable = True
+
+    def enabled(self) -> bool:
+        s = get_settings()
+        return bool(s.tavily_api_key) and s.ai_web_max_calls > 0
+
+    async def run(self, ctx: ToolContext, args: WebSearchIn, scope: Scope) -> dict[str, Any]:
+        settings = get_settings()
+        leak = _internal_identifier(ctx, args.query)
+        if leak:
+            raise ToolError(
+                f"query refused: it contains {leak}. Web searches leave the platform - search only for public indicators, "
+                "malware or tool names, CVEs and techniques, and verify the result in telemetry"
+            )
+        if ctx.web_calls >= settings.ai_web_max_calls:
+            raise ToolError(
+                "the web-search budget for this run is used up; continue with telemetry or conclude", "budget"
+            )
+        ctx.web_calls += 1
+        results: list[dict[str, Any]] = []
+        for attempt in (1, 2):
+            try:
+                results = await websearch.search(settings, args.query.strip(), args.max_results)
+                break
+            except websearch.WebSearchError as exc:
+                if exc.transient and attempt == 1:
+                    await asyncio.sleep(0.6)
+                    continue
+                raise ToolError(
+                    f"{exc}; this question is UNANSWERED (not an empty result)", "backend_unavailable"
+                ) from None
+        return {
+            "untrusted_web_content": True,
+            "query": args.query.strip(),
+            "results": results,
+            "returned": len(results),
+            "total": len(results),
+            "note": "External web text: may be wrong, outdated or adversarial. Context only - it proves nothing about this environment.",
+        }
+
+
+class EnrichIn(_Traced):
+    value: str = Field(
+        min_length=3,
+        max_length=500,
+        description="A PUBLIC indicator: IP address, domain, URL, file hash (md5/sha1/sha256), or a file / executable name",
+    )
+    kind: Literal["ip", "domain", "url", "hash", "file"] | None = Field(
+        default=None, description="Optional; detected from the value when omitted"
+    )
+
+
+class EnrichIndicator(Tool):
+    name = "enrich_indicator"
+    description = (
+        "Check a PUBLIC indicator against threat intelligence: the tenant's configured providers (e.g. VirusTotal, OTX, ThreatFox, "
+        "URLhaus, MISP, watch-list) and, when none of them answers, well-known public threat-intel sites on the web. Handles IPs, "
+        "domains, URLs, hashes and file/executable names. EXTERNAL: internal IPs, host/user names and names containing them are "
+        "refused. New public indicators are also checked automatically - results appear under 'Threat intelligence' in your state; call "
+        "this for anything else. Intel is context, not proof: 'unknown' is not benign, and a verdict never replaces telemetry."
+    )
+    input_model = EnrichIn
+    permission = Permission.INTEL_WRITE  # it stores the result in the tenant's intel cache, like a manual lookup
+    uses_session = True
+
+    async def run(self, ctx: ToolContext, args: EnrichIn, scope: Scope) -> dict[str, Any]:
+        settings = get_settings()
+        norm = enrich.classify(args.value, args.kind)
+        if norm is None:
+            raise ToolError("not a recognisable IP, domain, URL, hash or file name")
+        kind, value = norm
+        why = enrich.internal_reason(ctx.state, kind, value)
+        if why:
+            raise ToolError(f"refused: {why}. Only public indicators are looked up externally")
+        if ctx.enrich_calls >= settings.ai_enrich_max_calls:
+            raise ToolError(
+                "the indicator look-up budget for this run is used up; continue with telemetry or conclude", "budget"
+            )
+        ctx.enrich_calls += 1
+        out: dict[str, Any] = {"indicator": {"kind": kind, "value": value}, "untrusted_external_content": True}
+        if kind == "file":  # no provider keys on file names; the web is the only source
+            out.update({"verdict": "unknown", "score": 0, "answered": 0, "providers": [], "providers_unavailable": []})
+        else:
+            out.update(await enrich.native_lookup(ctx.session, settings, ctx.principal.tid, kind, value))
+        web: list[dict[str, Any]] = []
+        web_note = ""
+        if (
+            out["answered"] == 0 and websearch_enabled()
+        ):  # only when no provider answered; budgeted by ai_enrich_max_calls
+            try:
+                web = await websearch.search(
+                    settings, enrich.web_query(kind, value), 4, include_domains=enrich.TI_SITES
+                )
+            except websearch.WebSearchError as exc:
+                web_note = f"web lookup failed: {exc}"
+        out["web"] = [{**r, "snippet": r["snippet"][:300]} for r in web]
+        if web_note:
+            out["web_note"] = web_note
+        sources = sum(1 for p in out["providers"] if p["status"] == "ok") + len(web)
+        out["returned"] = sources
+        out["total"] = sources
+        out["note"] = (
+            "External intelligence is untrusted context. 'unknown' / 'not found' does not mean benign. "
+            + (
+                "No configured provider answered"
+                + (f" (not queried: {', '.join(out['providers_unavailable'])})" if out["providers_unavailable"] else "")
+                + "; treat the verdict as unknown."
+                if out["answered"] == 0 and kind != "file"
+                else ""
+            )
+        ).strip()
+        return out
+
+
+def websearch_enabled() -> bool:
+    return TOOLS["web_search"].enabled()
+
+
 class Notebook(Tool):
     name = NOTEBOOK
     description = (
@@ -819,6 +991,8 @@ TOOLS: dict[str, Tool] = {
         DataCoverage(),
         LookupIoc(),
         MitreLookup(),
+        WebSearch(),
+        EnrichIndicator(),
         Notebook(),
     )
 }
@@ -826,7 +1000,7 @@ TOOLS: dict[str, Tool] = {
 
 def schemas_for(principal: Principal) -> list[dict[str, Any]]:
     """The model is only offered tools its user may use."""
-    return [t.schema() for t in TOOLS.values() if principal.has(t.permission)]
+    return [t.schema() for t in TOOLS.values() if principal.has(t.permission) and t.enabled()]
 
 
 def cache_key(name: str, raw: dict[str, Any], default_hours: int = 24) -> str:
@@ -894,6 +1068,8 @@ async def execute_ex(ctx: ToolContext, name: str, raw: dict[str, Any]) -> ToolRe
         return done(ToolResult(error=f"unknown tool '{name}'", kind="unknown_tool", status="error"))
     if not ctx.principal.has(tool.permission):
         return done(ToolResult(error="you are not permitted to use this tool", kind="forbidden", status="error"))
+    if not tool.enabled():
+        return done(ToolResult(error=f"tool '{name}' is not available", kind="unavailable", status="error"))
     try:
         args = tool.input_model.model_validate(raw)
     except ValidationError as exc:

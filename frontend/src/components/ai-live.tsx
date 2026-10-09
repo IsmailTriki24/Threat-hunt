@@ -1,7 +1,7 @@
 "use client";
 import { useCallback, useEffect, useReducer, useRef, useState, type ReactNode } from "react";
 import { api, ApiError } from "@/lib/api";
-import type { AiRun, AiRunBody } from "@/lib/ai";
+import type { AiRun, AiRunBody, AiStep } from "@/lib/ai";
 import { initialLive, itemsFromSteps, liveReducer, parseSse, type EvPoint, type FeedItem, type LiveAction, type LiveState, type NotebookOp, type Progress, type StreamEvent } from "@/lib/ai-stream";
 
 /* ───────────── stream hook ───────────── */
@@ -133,6 +133,7 @@ const PATHS: Record<string, string> = {
   x: "M18 6 6 18M6 6l12 12",
   flag: "M4 22V4m0 0h13l-2 4 2 4H4",
   chev: "m6 9 6 6 6-6",
+  globe: "M12 22a10 10 0 1 0 0-20 10 10 0 0 0 0 20zM2 12h20M12 2a15 15 0 0 1 0 20M12 2a15 15 0 0 0 0 20",
   stop: "M6 6h12v12H6z",
   play: "M7 4l13 8-13 8z",
 };
@@ -154,6 +155,8 @@ const TOOLS: Record<string, { label: string; tone: Tone; icon: string; what: str
   process_lineage: { label: "Process tree", tone: "teal", icon: "tree", what: "Walking parent and child processes" },
   data_coverage: { label: "Telemetry coverage", tone: "slate", icon: "db", what: "Checking what data exists" },
   mitre_technique: { label: "ATT&CK lookup", tone: "rose", icon: "shield", what: "Looking up a technique" },
+  web_search: { label: "Web search", tone: "green", icon: "globe", what: "Searching the public web" },
+  enrich_indicator: { label: "Threat intel", tone: "rose", icon: "shield", what: "Checking threat intelligence" },
 };
 const toolMeta = (name: string) => TOOLS[name] ?? { label: name, tone: "slate" as Tone, icon: "sparkle", what: "Running a tool" };
 
@@ -163,6 +166,36 @@ export const fmtClock = (ms: number) => { const s = Math.max(0, Math.floor(ms / 
 function Chip({ tone, children, pop }: { tone: Tone; children: ReactNode; pop?: boolean }) {
   const t = TONE[tone];
   return <span className={`ai-chip ${t.border} ${t.bg} ${t.text} ${pop ? "animate-pop-in" : ""}`}>{children}</span>;
+}
+
+const VERDICT: Record<string, { tone: Tone; label: string }> = {
+  malicious: { tone: "red", label: "malicious" }, suspicious: { tone: "amber", label: "suspicious" }, benign: { tone: "green", label: "benign" }, unknown: { tone: "slate", label: "unknown" },
+};
+
+/** The platform's verdict on an indicator. "unknown" is deliberately not styled as safe. */
+export function VerdictChip({ intel }: { intel: NonNullable<AiStep["intel"]> }) {
+  const v = VERDICT[intel.verdict] ?? VERDICT.unknown;
+  // "unknown" with an answer means the source looked and had no opinion (e.g. 0 detections) - say so, but never style it as safe
+  const label = intel.verdict === "unknown" ? (intel.answered > 0 ? "undetected" : intel.providers.some((p) => p.status === "not_found") ? "never seen" : "no answer") : v.label;
+  return <Chip tone={v.tone}>{label}{intel.verdict !== "unknown" ? ` · ${intel.score}` : ""}</Chip>;
+}
+
+function IntelDetail({ intel }: { intel: NonNullable<AiStep["intel"]> }) {
+  return (
+    <div className="space-y-1.5 text-xs">
+      <div className="flex flex-wrap items-center gap-1.5">
+        {intel.providers.map((p) => (
+          <Chip key={p.provider} tone={p.verdict === "malicious" ? "red" : p.verdict === "suspicious" ? "amber" : p.status === "error" ? "red" : "slate"}>
+            {p.provider}: {p.verdict ?? (p.status === "not_found" ? "not found" : p.status)}
+          </Chip>
+        ))}
+      </div>
+      {intel.providers.filter((p) => p.summary).map((p) => <p key={p.provider} className="text-slate-300"><span className="text-muted">{p.provider}:</span> {p.summary}</p>)}
+      {intel.answered === 0 && <p className="text-muted">No configured provider gave an answer. That is <b>unknown</b>, not benign.</p>}
+      {intel.answered > 0 && intel.verdict === "unknown" && <p className="text-muted">No engine flagged it. That lowers suspicion a little, but a brand-new threat can score 0 - it is not proof of safety.</p>}
+      {intel.unavailable.length > 0 && <p className="text-amber-300/90">Not queried (disabled or no API key): {intel.unavailable.join(", ")}. Configure them under Threat Intel for real verdicts.</p>}
+    </div>
+  );
 }
 
 function Typewriter({ text, animate }: { text: string; animate: boolean }) {
@@ -246,8 +279,10 @@ function ToolCard({ item, open, onToggle }: { item: ToolItem; open: boolean; onT
         <b className={`shrink-0 text-xs ${tone.text}`}>{meta.label}</b>
         <span className="min-w-0 flex-1 truncate font-mono text-xs text-slate-400">{item.running ? `${meta.what}…` : gist(item)}</span>
         {hyp && <Chip tone="amber">{hyp}</Chip>}
+        {item.auto && <Chip tone="violet">auto</Chip>}
         <span className="flex shrink-0 items-center gap-1.5 text-xs">
-          {!item.running && s?.total != null && !failed && <span className="font-mono text-slate-300">{s.returned ?? 0}<span className="text-muted">/{s.total}</span></span>}
+          {!item.running && s?.intel && <VerdictChip intel={s.intel} />}
+          {!item.running && !s?.intel && s?.total != null && !failed && <span className="font-mono text-slate-300">{s.returned ?? 0}<span className="text-muted">/{s.total}</span></span>}
           {empty && <span className="text-muted">no matches</span>}
           {cached && <span className="text-muted">cached</span>}
           {failed && <span className="text-red-300">failed</span>}
@@ -264,9 +299,10 @@ function ToolCard({ item, open, onToggle }: { item: ToolItem; open: boolean; onT
               {args.map(([k, v]) => <span key={k} className="rounded border border-line bg-bg/60 px-1.5 py-0.5 font-mono text-[11px]"><span className="text-muted">{k}=</span>{typeof v === "string" ? v : JSON.stringify(v)}</span>)}
             </div>
           )}
+          {!item.running && s?.intel && <IntelDetail intel={s.intel} />}
           {!item.running && s && (
             <div className="space-y-1.5">
-              {s.total != null && !failed && (
+              {s.total != null && !failed && !s.intel && (
                 <div className="flex items-center gap-2 text-xs">
                   <span className="font-mono text-slate-200">{s.returned ?? 0}<span className="text-muted"> of {s.total} events</span></span>
                   <span className="h-1.5 w-28 overflow-hidden rounded-full bg-line"><span className={`block h-full rounded-full ${tone.dot} transition-all duration-700`} style={{ width: `${pct}%` }} /></span>
@@ -278,6 +314,12 @@ function ToolCard({ item, open, onToggle }: { item: ToolItem; open: boolean; onT
                 {(s.attempts ?? 1) > 1 && <Chip tone="amber">retried ×{(s.attempts ?? 1) - 1}</Chip>}
                 {s.injection_suspected && <Chip tone="red"><Icon name="alert" className="h-3 w-3" />instruction-like text in data - ignored</Chip>}
               </div>
+              {s.sources && s.sources.length > 0 && (
+                <div className="space-y-1">
+                  <p className="text-[11px] text-amber-300/90">External web content - untrusted context, not evidence about your environment.</p>
+                  <ul className="space-y-0.5 text-xs">{s.sources.map((x) => <li key={x.url} className="flex gap-2"><span className="shrink-0 font-mono text-[11px] text-muted">{x.domain}</span><a className="min-w-0 truncate text-sky-300 underline" href={x.url} target="_blank" rel="noopener noreferrer" title={x.url}>{x.title || x.url}</a></li>)}</ul>
+                </div>
+              )}
               {cached && <p className="text-xs text-muted">Identical to an earlier query - answered from memory, no budget spent.</p>}
               {failed && <p className="text-xs text-red-300">{s.error}</p>}
               {s.result_preview && !cached && <pre className="max-h-48 overflow-auto whitespace-pre-wrap break-words rounded border border-line bg-bg/70 p-2 font-mono text-[11px] text-slate-300">{s.result_preview}</pre>}
@@ -289,13 +331,15 @@ function ToolCard({ item, open, onToggle }: { item: ToolItem; open: boolean; onT
   );
 }
 
+const str = (v: unknown): string => (typeof v === "string" ? v : v == null ? "" : JSON.stringify(v));
+
 function opLine(op: NotebookOp): { icon: string; text: string; sub?: string } {
   switch (op.op) {
-    case "add_hypothesis": return { icon: "flag", text: `New hypothesis: ${op.statement ?? ""}`, sub: op.test_plan ?? undefined };
-    case "update_hypothesis": return { icon: "check", text: `${op.id ?? "Hypothesis"} → ${op.status ?? "updated"}`, sub: op.text ?? undefined };
-    case "dismiss_lead": return { icon: "x", text: `Dismissed lead ${op.entity ?? ""}`, sub: op.text ?? undefined };
-    case "declare_gap": return { icon: "alert", text: `Gap: ${op.text ?? ""}` };
-    default: return { icon: "book", text: op.text ?? op.op };
+    case "add_hypothesis": return { icon: "flag", text: `New hypothesis: ${str(op.statement)}`, sub: str(op.test_plan) || undefined };
+    case "update_hypothesis": return { icon: "check", text: `${str(op.id) || "Hypothesis"} → ${str(op.status) || "updated"}`, sub: str(op.text) || undefined };
+    case "dismiss_lead": return { icon: "x", text: `Dismissed lead ${str(op.entity)}`, sub: str(op.text) || undefined };
+    case "declare_gap": return { icon: "alert", text: `Gap: ${str(op.text)}` };
+    default: return { icon: "book", text: str(op.text) || str(op.op) || "Note" };
   }
 }
 
@@ -334,7 +378,7 @@ function Item({ item, animate, open, onToggle, latest, flash }: ItemProps) {
     );
   }
   if (item.kind === "notebook") {
-    const lines = item.ops.map(opLine);
+    const lines = item.ops.length ? item.ops.map(opLine) : [{ icon: "book", text: item.step.error ? "Notebook update was rejected" : "Notebook updated" }];
     const shown = open ? lines : lines.slice(0, 1);
     return (
       <li className={`relative pl-11 ${base}`}>
@@ -487,7 +531,7 @@ export function QueryLog({ items, state }: { items: FeedItem[]; state?: LiveStat
                 <span className="shrink-0 pl-1 text-right text-[11px]">
                   {c.running ? <span className="text-violet-300">running<span className="animate-blink">_</span></span> : (
                     <>
-                      {s?.total != null && <span className="text-slate-300">{s.returned ?? 0}<span className="text-slate-600">/{s.total}</span></span>}
+                      {s?.intel ? <VerdictChip intel={s.intel} /> : s?.total != null && <span className="text-slate-300">{s.returned ?? 0}<span className="text-slate-600">/{s.total}</span></span>}
                       {s?.ms != null && !s.cached && <span className="ml-2 text-slate-500">{fmtMs(s.ms)}</span>}
                     </>
                   )}

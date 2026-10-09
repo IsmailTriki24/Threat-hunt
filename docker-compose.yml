@@ -17,6 +17,7 @@ x-backend-env: &backend-env
   AI_PROVIDER: ${AI_PROVIDER:-none}
   ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
   OPENROUTER_API_KEY: ${OPENROUTER_API_KEY:-}
+  TAVILY_API_KEY: ${TAVILY_API_KEY:-}
   AI_MODEL: ${AI_MODEL:-claude-sonnet-5-5}
 
 services:

@@ -12,7 +12,7 @@ export interface EvPoint { id: string; timestamp: string | null; host: string | 
 export type StreamEvent =
   | { type: "start"; data: StartInfo }
   | { type: "thinking"; data: { step: number; final: boolean; reason: string } }
-  | { type: "tool_start"; data: { ref: string; name: string; input: Record<string, unknown>; purpose?: string | null; hypothesis?: string | null } }
+  | { type: "tool_start"; data: { ref: string; name: string; input: Record<string, unknown>; purpose?: string | null; hypothesis?: string | null; auto?: boolean } }
   | { type: "step"; data: { index: number; step: AiStep } }
   | { type: "progress"; data: Progress }
   | { type: "evidence"; data: { events: EvPoint[] } }
@@ -43,18 +43,22 @@ export interface NotebookOp { op: string; id?: string | null; statement?: string
 
 export type FeedItem =
   | { id: string; kind: "reasoning"; text: string }
-  | { id: string; kind: "tool"; name: string; input: Record<string, unknown>; running: boolean; step?: AiStep; ref?: string; purpose?: string | null; hypothesis?: string | null }
+  | { id: string; kind: "tool"; name: string; input: Record<string, unknown>; running: boolean; step?: AiStep; ref?: string; purpose?: string | null; hypothesis?: string | null; auto?: boolean }
   | { id: string; kind: "notebook"; ops: NotebookOp[]; step: AiStep }
   | { id: string; kind: "gate"; reasons: string[]; attempt: number }
   | { id: string; kind: "marker"; label: string };
+
+/** Model-written arguments are untrusted shapes: anything that is not a plain object becomes empty, so one odd step cannot break the page. */
+const asObject = (v: unknown): Record<string, unknown> => (v && typeof v === "object" && !Array.isArray(v) ? (v as Record<string, unknown>) : {});
+const asOps = (v: unknown): NotebookOp[] => (Array.isArray(v) ? v.filter((o): o is NotebookOp => !!o && typeof o === "object" && !Array.isArray(o)) : []);
 
 export function stepToItem(step: AiStep, index: number): FeedItem {
   const id = `s${index}`;
   if (step.type === "assistant") return { id, kind: "reasoning", text: step.text ?? "" };
   if (step.type === "resume") return { id, kind: "marker", label: `Resumed with a fresh budget (${step.mode ?? "standard"})` };
-  if (step.type === "gate") return { id, kind: "gate", reasons: step.rejected ?? [], attempt: step.attempt ?? 0 };
-  if (step.name === "update_notebook") return { id, kind: "notebook", ops: ((step.input?.ops as NotebookOp[] | undefined) ?? []), step };
-  return { id, kind: "tool", name: step.name ?? "tool", input: step.input ?? {}, running: false, step, ref: step.ref, purpose: step.purpose, hypothesis: step.hypothesis };
+  if (step.type === "gate") return { id, kind: "gate", reasons: Array.isArray(step.rejected) ? step.rejected.map(String) : [], attempt: step.attempt ?? 0 };
+  if (step.name === "update_notebook") return { id, kind: "notebook", ops: asOps(asObject(step.input).ops), step };
+  return { id, kind: "tool", name: step.name ?? "tool", input: asObject(step.input), running: false, step, ref: step.ref, purpose: step.purpose, hypothesis: step.hypothesis, auto: step.auto };
 }
 
 export const itemsFromSteps = (steps: AiStep[]): FeedItem[] => steps.map(stepToItem);
@@ -96,7 +100,7 @@ export function liveReducer(s: LiveState, a: LiveAction): LiveState {
     case "progress": return { ...s, progress: a.data, thinking: null };
     case "tool_start": {
       const d = a.data;
-      const item: FeedItem = { id: `r:${d.ref}`, kind: "tool", name: d.name, input: d.input, running: true, ref: d.ref, purpose: d.purpose, hypothesis: d.hypothesis };
+      const item: FeedItem = { id: `r:${d.ref}`, kind: "tool", name: d.name, input: asObject(d.input), running: true, ref: d.ref, purpose: d.purpose, hypothesis: d.hypothesis, auto: d.auto };
       return { ...s, thinking: null, items: [...s.items, item] };
     }
     case "step": {

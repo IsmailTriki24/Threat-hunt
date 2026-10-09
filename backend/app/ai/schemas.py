@@ -34,6 +34,8 @@ class Status(BaseModel):
     provider: str
     model: str
     max_steps: int
+    web_search: bool = False
+    intel_providers: list[str] = []
     modes: dict[str, dict[str, int]] = {}
 
 

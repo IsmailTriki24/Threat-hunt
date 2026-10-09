@@ -55,6 +55,16 @@ class Settings(BaseSettings):
     anthropic_api_key: str = Field(default="", repr=False)
     openrouter_api_key: str = Field(default="", repr=False)
     openrouter_base_url: str = "https://openrouter.ai/api/v1"  # operator-controlled; never user input
+    # Web search for the agent (Tavily). Off unless a key is set. Queries leave the platform, so the tool refuses queries
+    # containing internal identifiers from the investigation (see ai/tools.py) and each run gets a small call budget.
+    tavily_api_key: str = Field(default="", repr=False)
+    tavily_base_url: str = "https://api.tavily.com"  # operator-controlled; never user input
+    ai_web_max_calls: int = Field(default=6, ge=0, le=30)
+    # Indicator enrichment (tenant's intel providers + public threat-intel sites). Only public indicators ever leave.
+    ai_auto_enrich: bool = True  # the platform looks up new public indicators itself after each turn
+    ai_auto_enrich_max: int = Field(default=10, ge=0, le=50)  # automatic look-ups per run
+    ai_auto_enrich_per_turn: int = Field(default=3, ge=1, le=10)
+    ai_enrich_max_calls: int = Field(default=16, ge=0, le=100)  # look-ups per run, automatic + requested by the model
     ai_model: str = "claude-sonnet-5-5"
     ai_base_url: str = "https://api.anthropic.com"  # operator-controlled (gateway/proxy); never user input
     # Operator ceilings. A run's effective budget is its mode's (quick/standard/deep) clamped by these; they are not turn counts the

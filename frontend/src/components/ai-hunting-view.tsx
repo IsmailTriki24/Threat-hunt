@@ -6,7 +6,8 @@ import type { AiMode } from "@/lib/ai";
 import { fmtTime } from "@/lib/query";
 import { ErrorLine } from "./badges";
 import { liveFromRun } from "@/lib/ai-stream";
-import { useHuntStream } from "./ai-live";
+import { ErrorBoundary } from "./error-boundary";
+import { Icon, useHuntStream } from "./ai-live";
 import { AgentWindow, WindowPill } from "./ai-window";
 
 const EXAMPLES = [
@@ -77,7 +78,15 @@ export function AiHuntingView() {
           <h1 className="bg-gradient-to-r from-violet-300 via-sky-300 to-teal-200 bg-clip-text text-xl font-semibold text-transparent">AI Hunting</h1>
           {enabled && <p className="mt-0.5 text-xs text-muted">Read-only searches as you, inside your tenant. Every conclusion is checked against the events the agent actually retrieved.</p>}
         </div>
-        {enabled && <span className="ai-chip border-emerald-400/30 bg-emerald-400/10 text-emerald-300"><span className="h-1.5 w-1.5 animate-pulse rounded-full bg-emerald-400" />{status.data?.provider}/{status.data?.model}</span>}
+        {enabled && (
+          <span className="flex flex-wrap items-center gap-1.5">
+            <span className="ai-chip border-emerald-400/30 bg-emerald-400/10 text-emerald-300"><span className="h-1.5 w-1.5 animate-pulse rounded-full bg-emerald-400" />{status.data?.provider}/{status.data?.model}</span>
+            {(status.data?.intel_providers?.length ?? 0) > 0
+              ? <span className="ai-chip border-rose-400/30 bg-rose-400/10 text-rose-300" title="Public indicators the agent meets are checked automatically with these providers."><Icon name="shield" className="h-3 w-3" />Intel: {status.data?.intel_providers?.join(", ")}</span>
+              : <span className="ai-chip border-amber-400/30 bg-amber-400/10 text-amber-300" title="No threat-intel provider (VirusTotal, OTX, ...) has an API key for this tenant. Add one under Threat Intel to get real verdicts for the IPs, domains, URLs and hashes the agent finds."><Icon name="alert" className="h-3 w-3" />No intel provider{status.data?.web_search ? " - web fallback" : ""}</span>}
+            {status.data?.web_search && <span className="ai-chip border-sky-400/30 bg-sky-400/10 text-sky-300" title="The agent may search the public web for context. Queries never contain hostnames, usernames or internal IPs from your data."><Icon name="globe" className="h-3 w-3" />Web search on</span>}
+          </span>
+        )}
       </div>
       {status.data && !enabled && <p role="status" className="panel p-3 text-xs text-orange-300">AI hunting is not configured. Set AI_PROVIDER and the provider key on the server; nothing else in the platform depends on it.</p>}
 
@@ -108,8 +117,18 @@ export function AiHuntingView() {
         </div>
       </div>
 
-      {winOpen && history && <AgentWindow state={liveFromRun(history, histEvidence.data ?? [])} onClose={closeWindow} onResume={resume} />}
-      {winOpen && !history && state.phase !== "idle" && <AgentWindow state={state} onClose={closeWindow} onStop={stop} stopping={stopping} onResume={resume} onRetry={() => void live.retry()} />}
+      <ErrorBoundary key={history?.id ?? "live"} fallback={(reset) => (
+        winOpen ? (
+          <div role="alert" className="fixed bottom-4 right-4 z-50 max-w-sm space-y-2 rounded-lg border border-red-400/50 bg-panel p-4 shadow-lg">
+            <p className="text-sm font-medium text-red-300">This investigation could not be displayed.</p>
+            <p className="text-xs text-muted">The run itself is not affected; it is saved and listed under Previous runs. Details are in the browser console.</p>
+            <div className="flex gap-2"><button type="button" className="btn" onClick={reset}>Try again</button><button type="button" className="btn" onClick={() => { closeWindow(); live.reset(); reset(); }}>Close</button></div>
+          </div>
+        ) : null
+      )}>
+        {winOpen && history && <AgentWindow state={liveFromRun(history, histEvidence.data ?? [])} onClose={closeWindow} onResume={resume} />}
+        {winOpen && !history && state.phase !== "idle" && <AgentWindow state={state} onClose={closeWindow} onStop={stop} stopping={stopping} onResume={resume} onRetry={() => void live.retry()} />}
+      </ErrorBoundary>
       {!winOpen && !history && state.phase !== "idle" && <WindowPill state={state} onOpen={() => setWinOpen(true)} onDismiss={live.reset} />}
 
       {enabled && <Translate />}

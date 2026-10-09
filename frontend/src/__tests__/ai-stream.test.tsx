@@ -1,5 +1,6 @@
 import { render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
+import { ErrorBoundary } from "@/components/error-boundary";
 import { EvidenceTimeline } from "@/components/ai-evidence";
 import { Feed, QueryLog } from "@/components/ai-live";
 import { AgentWindow, WindowPill } from "@/components/ai-window";
@@ -237,5 +238,106 @@ describe("AgentWindow", () => {
     expect(screen.getByText(/1 queries · 5 events/)).toBeInTheDocument();
     await userEvent.click(screen.getByRole("button", { name: /open/ }));
     expect(onOpen).toHaveBeenCalled();
+  });
+});
+
+describe("web search steps", () => {
+  const web: AiStep = { type: "tool", name: "web_search", ref: "q4", input: { query: "CVE-2024-3400 exploitation" }, status: "ok", total: 2, returned: 2, ms: 900, result_preview: "{}",
+    sources: [{ title: "Palo Alto advisory", url: "https://example.org/a", domain: "example.org" }, { title: "Analysis", url: "https://blog.example.net/b", domain: "blog.example.net" }] };
+  it("lists the sources as safe external links and labels them untrusted", async () => {
+    render(<Feed items={itemsFromSteps([web])} animate={false} />);
+    expect(screen.getByText("Web search")).toBeInTheDocument();
+    await userEvent.click(screen.getByRole("button", { name: /Web search/ }));
+    const link = screen.getByRole("link", { name: "Palo Alto advisory" });
+    expect(link).toHaveAttribute("href", "https://example.org/a");
+    expect(link).toHaveAttribute("rel", "noopener noreferrer");
+    expect(link).toHaveAttribute("target", "_blank");
+    expect(screen.getByText(/untrusted context, not evidence/)).toBeInTheDocument();
+  });
+  it("appears in the live query log with the exact query sent out", () => {
+    render(<QueryLog items={itemsFromSteps([web])} />);
+    expect(screen.getByText("web_search")).toBeInTheDocument();
+    expect(screen.getByText("CVE-2024-3400 exploitation")).toBeInTheDocument();
+  });
+});
+
+describe("threat-intel enrichment steps", () => {
+  const intel = { kind: "ip", value: "45.77.65.211", verdict: "malicious" as const, score: 81, answered: 1, providers: [{ provider: "virustotal", status: "ok", verdict: "malicious" }], unavailable: ["otx"], web: 0 };
+  const auto: AiStep = { type: "tool", name: "enrich_indicator", auto: true, ref: "q7", input: { kind: "ip", value: "45.77.65.211" }, status: "ok", total: 1, returned: 1, ms: 700, intel };
+  const unknown: AiStep = { type: "tool", name: "enrich_indicator", ref: "q8", input: { kind: "domain", value: "x.example.org" }, status: "empty", total: 0, returned: 0, ms: 90,
+    intel: { ...intel, kind: "domain", value: "x.example.org", verdict: "unknown", score: 0, answered: 0, providers: [] } };
+  it("shows the verdict and the automatic origin on the collapsed line, and the providers when opened", async () => {
+    render(<Feed items={itemsFromSteps([auto])} animate={false} />);
+    expect(screen.getByText("Threat intel")).toBeInTheDocument();
+    expect(screen.getByText("auto")).toBeInTheDocument();
+    expect(screen.getByText("malicious · 81")).toBeInTheDocument();
+    await userEvent.click(screen.getByRole("button", { name: /Threat intel/ }));
+    expect(screen.getByText("virustotal: malicious")).toBeInTheDocument();
+    expect(screen.getByText(/Not queried \(disabled or no API key\): otx/)).toBeInTheDocument();
+  });
+  it("never presents 'unknown' as safe", async () => {
+    render(<Feed items={itemsFromSteps([unknown])} animate={false} />);
+    await userEvent.click(screen.getByRole("button", { name: /Threat intel/ }));
+    expect(screen.getByText("no answer")).toBeInTheDocument(); // neutral, never green
+    expect(screen.getByText(/not benign/)).toBeInTheDocument();
+  });
+  it("shows what a provider actually said when it answered with no detections, and 'never seen' when it did not know the file", async () => {
+    const clean: AiStep = { ...auto, auto: true, input: { kind: "hash", value: "ab" }, ref: "q9",
+      intel: { kind: "hash", value: "ab", verdict: "unknown", score: 0, answered: 1, providers: [{ provider: "virustotal", status: "ok", verdict: "unknown", summary: "0/75 engines flag as malicious" }], unavailable: [], web: 0 } };
+    const unseen: AiStep = { ...auto, ref: "q10", input: { kind: "hash", value: "cd" },
+      intel: { kind: "hash", value: "cd", verdict: "unknown", score: 0, answered: 0, providers: [{ provider: "virustotal", status: "not_found", verdict: null, summary: "Unknown to VirusTotal" }], unavailable: [], web: 4 } };
+    render(<Feed items={itemsFromSteps([clean, unseen])} animate={false} />);
+    expect(screen.getByText("undetected")).toBeInTheDocument();
+    expect(screen.getByText("never seen")).toBeInTheDocument();
+    await userEvent.click(screen.getAllByRole("button", { name: /Threat intel/ })[0]);
+    expect(screen.getByText("0/75 engines flag as malicious")).toBeInTheDocument();
+    expect(screen.getByText(/not proof of safety/)).toBeInTheDocument();
+  });
+  it("is visible in the live query log", () => {
+    render(<QueryLog items={itemsFromSteps([auto])} />);
+    expect(screen.getByText("enrich_indicator")).toBeInTheDocument();
+    expect(screen.getByText("malicious · 81")).toBeInTheDocument();
+  });
+  it("the report lists intel on the indicators met, worst first, with the caveat", () => {
+    const run = { id: "r1", status: "COMPLETED", provider: "p", model: "m", goal: "g", hours_back: 24, steps: [], saved_findings: [], input_tokens: 1, output_tokens: 1, error: "", created_at: "2026-03-01T10:00:00Z",
+      conclusion: { summary: "s", confidence: "LOW", model_confidence: "LOW", findings: [], next_steps: [], validation_notes: [], events_reviewed: 1,
+        intel: { "domain:x.example.org": unknown.intel, "ip:45.77.65.211": intel } } } as unknown as AiRun;
+    renderWithQuery(<RunReport run={run} evidence={[]} />);
+    const rows = screen.getAllByRole("listitem").filter((li) => li.textContent?.includes(":"));
+    expect(rows[0].textContent).toContain("ip:45.77.65.211");
+    expect(rows[0].textContent).toContain("virustotal: malicious");
+    expect(rows[1].textContent).toContain("no provider answered");
+    expect(screen.getByText(/not that it is safe/)).toBeInTheDocument();
+  });
+});
+
+describe("malformed model output cannot break the page", () => {
+  const odd: AiStep[] = [
+    { type: "tool", name: "update_notebook", input: { ops: "add a hypothesis please" } as never },
+    { type: "tool", name: "update_notebook", input: { ops: { op: "note" } } as never },
+    { type: "tool", name: "update_notebook", input: { ops: [null, 7, "x", { op: "add_hypothesis", statement: { nested: true } }, { op: "note", text: ["a"] }] } as never },
+    { type: "tool", name: "update_notebook", input: null as never },
+    { type: "tool", name: "update_notebook", input: "garbage" as never, error: "rejected" },
+    { type: "tool", name: "search_events", input: "not an object" as never, status: "ok" },
+    { type: "tool", name: "search_events", input: ["x"] as never, status: "ok" },
+    { type: "gate", name: "submit_conclusion", rejected: "just one string" as never, attempt: 1 },
+  ];
+  it("sanitises every shape instead of throwing", () => {
+    const items = itemsFromSteps(odd);
+    expect(items).toHaveLength(odd.length);
+    expect(items.filter((i) => i.kind === "notebook").every((i) => Array.isArray(i.ops))).toBe(true);
+    expect((items[2] as { ops: unknown[] }).ops).toHaveLength(2); // only real objects survive
+  });
+  it("renders all of them", () => {
+    render(<Feed items={itemsFromSteps(odd)} animate={false} />);
+    expect(screen.getAllByText(/Notebook (updated|update was rejected)/).length).toBeGreaterThan(0);
+    expect(screen.getByText(/New hypothesis: \{"nested":true\}/)).toBeInTheDocument();
+  });
+  it("an error boundary contains a render failure", async () => {
+    const Boom = () => { throw new Error("boom"); };
+    const spy = vi.spyOn(console, "error").mockImplementation(() => undefined);
+    render(<ErrorBoundary fallback={(reset) => <button onClick={reset}>recover</button>}><Boom /></ErrorBoundary>);
+    expect(screen.getByRole("button", { name: "recover" })).toBeInTheDocument();
+    spy.mockRestore();
   });
 });
