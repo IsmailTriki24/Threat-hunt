@@ -16,6 +16,8 @@ const csp = [
 export default {
   output: "standalone",
   poweredByHeader: false,
+  // AI hunts run synchronously for up to AI_RUN_TIMEOUT_S (540s); the default proxy timeout (~30s) turned finished runs into a 500.
+  experimental: { proxyTimeout: 600_000 },
   async rewrites() {
     return [
       { source: "/api/:path*", destination: `${backend}/api/:path*` },
