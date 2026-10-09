@@ -118,6 +118,8 @@ class ActivityOut(BaseModel):
 class ReportOut(BaseModel):
     id: uuid.UUID
     version: int
+    kind: str = "case"
+    data: dict[str, Any] | None = None
     content: str
     created_by: uuid.UUID | None
     created_at: datetime

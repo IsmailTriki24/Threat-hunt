@@ -1,7 +1,7 @@
 "use client";
 import { useCallback, useEffect, useReducer, useRef, useState, type ReactNode } from "react";
 import { api, ApiError } from "@/lib/api";
-import type { AiRun, AiRunBody, AiStep } from "@/lib/ai";
+import type { AiRun, AiRunBody, AiStep, PlaybookProgress } from "@/lib/ai";
 import { initialLive, itemsFromSteps, liveReducer, parseSse, type EvPoint, type FeedItem, type LiveAction, type LiveState, type NotebookOp, type Progress, type StreamEvent } from "@/lib/ai-stream";
 
 /* ───────────── stream hook ───────────── */
@@ -133,6 +133,12 @@ const PATHS: Record<string, string> = {
   x: "M18 6 6 18M6 6l12 12",
   flag: "M4 22V4m0 0h13l-2 4 2 4H4",
   chev: "m6 9 6 6 6-6",
+  help: "M12 22a10 10 0 1 0 0-20 10 10 0 0 0 0 20zM9.1 9a3 3 0 0 1 5.8 1c0 2-3 2.5-3 4.5M12 17.5h.01",
+  download: "M12 3v12m0 0-4-4m4 4 4-4M4 21h16",
+  print: "M7 9V3h10v6M7 17H5a2 2 0 0 1-2-2v-4a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2v4a2 2 0 0 1-2 2h-2M7 14h10v7H7z",
+  list: "M8 6h13M8 12h13M8 18h13M3 6h.01M3 12h.01M3 18h.01",
+  target: "M12 22a10 10 0 1 0 0-20 10 10 0 0 0 0 20zm0-5a5 5 0 1 0 0-10 5 5 0 0 0 0 10zm0-3a2 2 0 1 0 0-4 2 2 0 0 0 0 4z",
+  layers: "m12 3 9 5-9 5-9-5 9-5zM3 13l9 5 9-5M3 17.5l9 5 9-5",
   globe: "M12 22a10 10 0 1 0 0-20 10 10 0 0 0 0 20zM2 12h20M12 2a15 15 0 0 1 0 20M12 2a15 15 0 0 0 0 20",
   stop: "M6 6h12v12H6z",
   play: "M7 4l13 8-13 8z",
@@ -214,6 +220,53 @@ function PlaybookDetail({ pb }: { pb: NonNullable<AiStep["playbook"]> }) {
         <Chip tone={f.tone}>{f.label}</Chip>
       </div>
       {pb.missing.length > 0 && <p className="text-amber-300/90">This tenant has no {pb.missing.join(", ")} telemetry in the window, so the playbook cannot be fully answered. That is a gap to report, not a clean result.</p>}
+    </div>
+  );
+}
+
+/** A playbook as a checklist: which steps the agent has carried out and which it has not (a skipped refute step is a visible gap). */
+export function PlaybookChecklist({ pb }: { pb: PlaybookProgress }) {
+  const f = FEAS[pb.feasibility] ?? FEAS.unknown;
+  const pct = pb.total ? Math.round((pb.run / pb.total) * 100) : 0;
+  return (
+    <div className="min-w-0 space-y-1.5 rounded-md border border-line bg-bg/50 p-2.5">
+      <div className="flex min-w-0 flex-wrap items-center gap-1.5">
+        <b className="min-w-0 flex-1 text-xs text-slate-100">{pb.title}</b>
+        <Chip tone={f.tone}>{f.label}</Chip>
+      </div>
+      <div className="flex flex-wrap gap-1">{pb.attack.map((a) => <span key={a} className="rounded border border-line px-1 font-mono text-[10px] text-muted">{a}</span>)}</div>
+      <div className="flex items-center gap-2 text-[11px]">
+        <span className="h-1.5 flex-1 overflow-hidden rounded-full bg-line"><span className="block h-full rounded-full bg-gradient-to-r from-amber-400 to-emerald-400 transition-all duration-700" style={{ width: `${pct}%` }} /></span>
+        <span className="font-mono text-slate-300">{pb.run}/{pb.total} steps</span>
+      </div>
+      <ul className="space-y-0.5 text-xs">
+        {pb.steps.map((st, i) => (
+          <li key={i} className={`flex gap-2 ${st.done ? "text-slate-200" : "text-muted"}`}>
+            <span className={`w-3 shrink-0 text-center ${st.done ? "text-emerald-400" : ""}`} aria-label={st.done ? "done" : "not run"}>{st.done ? "✓" : "○"}</span>
+            <span className="min-w-0 flex-1">{st.goal}</span>
+            <span className={`shrink-0 text-[10px] ${!st.done && (st.purpose === "refute" || st.purpose === "scope") ? "text-amber-300" : "text-muted"}`}>{st.purpose}</span>
+          </li>
+        ))}
+      </ul>
+    </div>
+  );
+}
+
+/** The side panel: playbooks the agent opened (live checklist) and those it was offered but has not opened. */
+export function PlaybooksPanel({ state }: { state: LiveState }) {
+  const p = state.progress;
+  const opened = p?.playbooks ?? [];
+  const offered = (p?.suggested ?? []).filter((s) => !opened.some((o) => o.id === s.id));
+  if (!opened.length && !offered.length) return <p className="text-xs text-muted">No playbook yet. When the objective or the alerts match one, the agent is offered it here and you can watch it work through the steps.</p>;
+  return (
+    <div className="space-y-2">
+      {opened.map((pb) => <PlaybookChecklist key={pb.id} pb={pb} />)}
+      {offered.length > 0 && (
+        <div className="space-y-1">
+          <p className="text-[11px] uppercase tracking-wider text-muted">Offered, not opened</p>
+          {offered.map((o) => <p key={o.id} className="flex flex-wrap items-center gap-1.5 text-xs text-muted"><span className="font-mono text-slate-300">{o.id}</span>{o.attack.map((a) => <span key={a} className="rounded border border-line px-1 font-mono text-[10px]">{a}</span>)}</p>)}
+        </div>
+      )}
     </div>
   );
 }
@@ -300,6 +353,7 @@ function ToolCard({ item, open, onToggle }: { item: ToolItem; open: boolean; onT
         <span className="min-w-0 flex-1 truncate font-mono text-xs text-slate-400">{item.running ? `${meta.what}…` : gist(item)}</span>
         {hyp && <Chip tone="amber">{hyp}</Chip>}
         {item.auto && <Chip tone="violet">auto</Chip>}
+        {s?.pb && <Chip tone="amber">playbook step {s.pb.step}/{s.pb.of}</Chip>}
         <span className="flex shrink-0 items-center gap-1.5 text-xs">
           {!item.running && s?.intel && <VerdictChip intel={s.intel} />}
           {!item.running && !s?.intel && s?.total != null && !failed && <span className="font-mono text-slate-300">{s.returned ?? 0}<span className="text-muted">/{s.total}</span></span>}
@@ -321,6 +375,7 @@ function ToolCard({ item, open, onToggle }: { item: ToolItem; open: boolean; onT
           )}
           {!item.running && s?.intel && <IntelDetail intel={s.intel} />}
           {!item.running && s?.playbook && <PlaybookDetail pb={s.playbook} />}
+          {!item.running && s?.pb && <p className="text-xs text-amber-200/90">Carries out step {s.pb.step} of {s.pb.of} ({s.pb.purpose}) of the playbook <span className="font-mono">{s.pb.id}</span>.</p>}
           {!item.running && s && (
             <div className="space-y-1.5">
               {s.total != null && !failed && !s.intel && (
@@ -546,6 +601,7 @@ export function QueryLog({ items, state }: { items: FeedItem[]; state?: LiveStat
                 <Glyph item={c} />
                 <span className="min-w-0 flex-1 break-words">
                   <span className={TONE[meta.tone].text}>{c.name}</span>{" "}
+                  {s?.pb && <span className="mr-1 rounded border border-amber-400/40 px-1 text-[10px] text-amber-300" title={`playbook ${s.pb.id}`}>pb {s.pb.step}/{s.pb.of}</span>}
                   {q ? <Query q={q} /> : <span className="text-slate-300">{rest.map(([k, v]) => `${k}=${typeof v === "string" ? v : JSON.stringify(v)}`).join(" ")}</span>}
                   {q && rest.length > 0 && <span className="text-slate-500"> {rest.map(([k, v]) => `${k}=${typeof v === "string" ? v : JSON.stringify(v)}`).join(" ")}</span>}
                 </span>

@@ -7,11 +7,11 @@ import { useAuth } from "@/lib/auth";
 import { isLocked } from "@/lib/cases";
 import { fmtTime } from "@/lib/query";
 import { ErrorLine, LevelBadge } from "./badges";
-import { AssetsTab, AuditTab, EvidenceTab, IocsTab, JournalTab, OverviewTab, ReportsTab, TimelineTab } from "./case-tabs";
+import { AssetsTab, AuditTab, EvidenceTab, HuntTab, IocsTab, JournalTab, OverviewTab, ReportsTab, TimelineTab } from "./case-tabs";
 import { MitrePanel } from "./mitre-panel";
 import { WorkflowBar } from "./workflow-bar";
 
-type Tab = "overview" | "timeline" | "evidence" | "iocs" | "assets" | "mitre" | "journal" | "reports" | "audit";
+type Tab = "hunt" | "overview" | "timeline" | "evidence" | "iocs" | "assets" | "mitre" | "journal" | "reports" | "audit";
 
 function Header({ c, canEdit }: { c: CaseOut; canEdit: boolean }) {
   const { can } = useAuth();
@@ -72,8 +72,11 @@ function Header({ c, canEdit }: { c: CaseOut; canEdit: boolean }) {
 
 export function CaseWorkspace({ id }: { id: string }) {
   const { can } = useAuth();
-  const [tab, setTab] = useState<Tab>("overview");
+  const [picked, setTab] = useState<Tab | null>(null);
   const c = useQuery({ queryKey: ["case", id], queryFn: () => api.getCase(id), retry: false });
+  const reports = useQuery({ queryKey: ["case-reports", id], queryFn: () => api.caseReports(id), retry: false, enabled: can("cases:read") });
+  const hasHunt = (reports.data ?? []).some((r) => r.kind === "hunt");
+  const tab: Tab = picked ?? (hasHunt ? "hunt" : "overview"); // a case opened from an AI hunt lands on its report
 
   if (c.isLoading) return <p className="text-muted">Loading case…</p>;
   if (c.error || !c.data) {
@@ -84,6 +87,7 @@ export function CaseWorkspace({ id }: { id: string }) {
   const locked = isLocked(kase.status);
   const mutable = canWrite && !locked;
   const tabs: Array<[Tab, string]> = [
+    ...(hasHunt ? [["hunt", "Hunt report"] as [Tab, string]] : []),
     ["overview", "Overview"], ["timeline", "Timeline"], ["evidence", `Evidence (${kase.evidence_count})`], ["iocs", `IOCs (${kase.ioc_count})`],
     ["assets", `Assets (${kase.asset_count})`], ...(can("mitre:read") ? [["mitre", "MITRE"] as [Tab, string]] : []), ["journal", "Notes / Journal"], ["reports", "Reports"],
     ...(can("audit:read") ? [["audit", "Audit"] as [Tab, string]] : []),
@@ -106,6 +110,7 @@ export function CaseWorkspace({ id }: { id: string }) {
         ))}
       </div>
       <div role="tabpanel">
+        {tab === "hunt" && <HuntTab caseId={id} caseNumber={kase.case_id} />}
         {tab === "overview" && <OverviewTab c={kase} />}
         {tab === "timeline" && <TimelineTab caseId={id} />}
         {tab === "evidence" && <EvidenceTab caseId={id} mutable={mutable} />}

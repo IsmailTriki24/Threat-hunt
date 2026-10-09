@@ -117,6 +117,10 @@ class CaseReport(Base):
     tenant_id: Mapped[uuid.UUID] = _tenant()
     case_id: Mapped[uuid.UUID] = _case()
     version: Mapped[int] = mapped_column(Integer)
+    kind: Mapped[str] = mapped_column(String(16), default="case", server_default="case")  # case | hunt (AI hunt report)
+    data: Mapped[dict[str, Any] | None] = mapped_column(
+        JSONB, nullable=True
+    )  # structured form (charts) of a hunt report
     content: Mapped[str] = mapped_column(Text)
     created_by: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())

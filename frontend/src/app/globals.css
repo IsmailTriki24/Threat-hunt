@@ -27,3 +27,15 @@ body { @apply bg-bg text-[#c9d1d9] text-sm antialiased; font-family: ui-sans-ser
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { animation-duration: .01ms !important; animation-iteration-count: 1 !important; transition-duration: .01ms !important; scroll-behavior: auto !important; }
 }
+
+/* Hunt report: print / save as PDF shows only the report, on white, without the app chrome or the interactive controls. */
+.hr-root { color-scheme: dark; }
+@media print {
+  body * { visibility: hidden !important; }
+  .hr-root, .hr-root * { visibility: visible !important; }
+  .hr-root { position: absolute; left: 0; top: 0; width: 100%; display: block !important; }
+  .hr-noprint { display: none !important; }
+  .hr-root { -webkit-print-color-adjust: exact; print-color-adjust: exact; background: #0d1117; padding: 12px; }
+  .hr-card { break-inside: avoid; }
+  details > *:not(summary) { display: block !important; }
+}

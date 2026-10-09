@@ -3,6 +3,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useCallback, useState } from "react";
 import { api } from "@/lib/api";
 import type { AiMode } from "@/lib/ai";
+import { useAuth } from "@/lib/auth";
 import { fmtTime } from "@/lib/query";
 import { ErrorLine } from "./badges";
 import { liveFromRun } from "@/lib/ai-stream";
@@ -52,7 +53,12 @@ export function AiHuntingView() {
   const [hours, setHours] = useState(24);
   const [mode, setMode] = useState<AiMode>("standard");
   const [openId, setOpenId] = useState<string | null>(null);
+  const { can } = useAuth();
   const [stopping, setStopping] = useState(false);
+  const [openCase, setOpenCase] = useState(() => {
+    try { return window.localStorage.getItem("ai-open-case") !== "0"; } catch { return true; }
+  });
+  const toggleCase = (v: boolean) => { setOpenCase(v); try { window.localStorage.setItem("ai-open-case", v ? "1" : "0"); } catch { /* private mode */ } };
   const [winOpen, setWinOpen] = useState(false);
   const refresh = useCallback(() => { void qc.invalidateQueries({ queryKey: ["ai-runs"] }); }, [qc]);
   const live = useHuntStream(refresh);
@@ -61,7 +67,7 @@ export function AiHuntingView() {
   const enabled = status.data?.enabled === true;
   const history = openId ? runs.data?.find((r) => r.id === openId) : undefined;
   const histEvidence = useQuery({ queryKey: ["ai-evidence", history?.id], queryFn: () => api.aiRunEvidence(history?.id ?? ""), enabled: !!history });
-  const go = () => { setOpenId(null); setStopping(false); setWinOpen(true); void live.start({ goal: goal.trim(), hours_back: hours, mode, ...(huntId ? { hunt_id: huntId } : {}) }); };
+  const go = () => { setOpenId(null); setStopping(false); setWinOpen(true); void live.start({ goal: goal.trim(), hours_back: hours, mode, open_case: openCase && can("cases:write"), ...(huntId ? { hunt_id: huntId } : {}) }); };
   const stop = () => { setStopping(true); void live.stop(); };
   const resume = () => {
     const run = history ?? state.run;
@@ -109,6 +115,9 @@ export function AiHuntingView() {
             <select aria-label="Hunt" className="input" value={huntId} onChange={(e) => setHuntId(e.target.value)} disabled={!enabled || busy}>
               <option value="">no hunt (cannot save findings)</option>{hunts.data?.map((h) => <option key={h.id} value={h.id}>{h.title}</option>)}
             </select>
+            <label className={`flex items-center gap-1.5 ${can("cases:write") ? "" : "opacity-50"}`} title={can("cases:write") ? "When the hunt finishes, a case is opened holding the report, the verified evidence and the indicators" : "You need permission to create cases"}>
+              <input type="checkbox" aria-label="Open a case when finished" checked={openCase && can("cases:write")} disabled={!can("cases:write") || busy} onChange={(e) => toggleCase(e.target.checked)} /> Open a case when finished
+            </label>
             <label>Window <input aria-label="Hours back" type="number" min={1} max={720} className="input w-20" value={hours} disabled={busy} onChange={(e) => setHours(Math.max(1, Math.min(720, Number(e.target.value) || 24)))} /> h</label>
             <span className="ml-auto flex items-center gap-2">
               <button className="ai-btn" disabled={!enabled || goal.trim().length < 5 || busy} onClick={go}>{busy ? "Investigating…" : "Investigate"}</button>
@@ -139,7 +148,7 @@ export function AiHuntingView() {
             {runs.data.map((r) => (
               <button key={r.id} onClick={() => { setOpenId(r.id); setWinOpen(true); }} className={`panel flex items-center gap-2 px-3 py-2 text-left text-xs transition hover:border-ai/60 ${r.id === openId ? "border-ai/60" : ""}`}>
                 <span className={`h-2 w-2 shrink-0 rounded-full ${r.status === "COMPLETED" ? "bg-emerald-400" : r.status === "FAILED" ? "bg-red-400" : "bg-amber-400"}`} />
-                <span className="min-w-0 flex-1 truncate">{r.goal}</span><span className="shrink-0 text-muted">{fmtTime(r.created_at)}</span>
+                <span className="min-w-0 flex-1 truncate">{r.goal}</span>{r.case_id && <span className="ai-chip shrink-0 border-emerald-400/30 bg-emerald-400/10 text-emerald-300">case</span>}<span className="shrink-0 text-muted">{fmtTime(r.created_at)}</span>
               </button>
             ))}
           </div>

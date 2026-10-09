@@ -2,7 +2,8 @@ import { render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { ErrorBoundary } from "@/components/error-boundary";
 import { EvidenceTimeline } from "@/components/ai-evidence";
-import { Feed, QueryLog } from "@/components/ai-live";
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { Feed, PlaybookChecklist, PlaybooksPanel, QueryLog } from "@/components/ai-live";
 import { AgentWindow, WindowPill } from "@/components/ai-window";
 import { RunReport } from "@/components/ai-report";
 import type { AiRun, AiStep } from "@/lib/ai";
@@ -215,7 +216,7 @@ describe("AgentWindow", () => {
     expect(screen.getByText("hunt it")).toBeInTheDocument();
     expect(screen.getByLabelText("Live queries")).toBeInTheDocument();
     expect(screen.getByLabelText("Evidence timeline")).toBeInTheDocument();
-    expect(screen.getByText("Hypotheses")).toBeInTheDocument();
+    expect(screen.getByRole("tab", { name: /Hypotheses/ })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Minimize" })).toBeInTheDocument(); // running: hiding is not stopping
     await userEvent.click(screen.getByRole("button", { name: /Stop/ }));
     expect(stop).toHaveBeenCalled();
@@ -382,5 +383,68 @@ describe("threat intelligence list layout", () => {
     expect(lines).toHaveLength(3); // one line per provider
     expect(lines[1].textContent).toContain("virustotal");
     expect(lines[1].textContent).toContain("0/75 engines flag as malicious");
+  });
+});
+
+describe("seeing how the agent uses a playbook", () => {
+  const pbp = { id: "suspicious-powershell-execution", title: "Suspicious PowerShell execution", attack: ["T1059.001", "T1027.010"], feasibility: "ready", total: 3, run: 1,
+    steps: [{ purpose: "test", tool: "search_events", goal: "Find encoded PowerShell", done: true }, { purpose: "scope", tool: "aggregate_events", goal: "Which hosts run PowerShell", done: false }, { purpose: "refute", tool: "search_events", goal: "Rule out management tooling", done: false }] };
+  const credited: AiStep = { type: "tool", name: "search_events", ref: "q5", input: { query: "process.name:*powershell.exe* process.command_line:encodedcommand host.hostname:ws-02" }, status: "ok", total: 4, returned: 4, ms: 30,
+    pb: { id: "suspicious-powershell-execution", step: 1, of: 3, purpose: "test", confidence: 0.67 } };
+
+  it("tags the query that carries out a step, in the timeline and in the live query log", async () => {
+    const { unmount } = render(<Feed items={itemsFromSteps([credited])} animate={false} />);
+    expect(screen.getByText("playbook step 1/3")).toBeInTheDocument();
+    await userEvent.click(screen.getByRole("button", { name: /Search events/ }));
+    expect(screen.getByText(/Carries out step 1 of 3 \(test\)/)).toBeInTheDocument();
+    unmount();
+    render(<QueryLog items={itemsFromSteps([credited])} />);
+    expect(screen.getByText("pb 1/3")).toBeInTheDocument();
+  });
+
+  it("shows a checklist: done steps ticked, the rest open, and a skipped refute/scope step standing out", () => {
+    render(<PlaybookChecklist pb={pbp} />);
+    expect(screen.getByText("1/3 steps")).toBeInTheDocument();
+    expect(screen.getAllByLabelText("done")).toHaveLength(1);
+    expect(screen.getAllByLabelText("not run")).toHaveLength(2);
+    expect(screen.getByText("refute").className).toContain("text-amber-300");
+    expect(screen.getByText("telemetry ready")).toBeInTheDocument();
+  });
+
+  it("lists playbooks that were offered but never opened", () => {
+    let st = liveReducer(initialLive, { type: "begin" });
+    st = liveReducer(st, { type: "progress", data: { ...prog, playbooks: [pbp], suggested: [{ id: "lateral-movement-wmi", title: "WMI", attack: ["T1047"] }, { id: "suspicious-powershell-execution", title: "x", attack: [] }] } });
+    render(<PlaybooksPanel state={st} />);
+    expect(screen.getByText("Suspicious PowerShell execution")).toBeInTheDocument();
+    expect(screen.getByText("Offered, not opened")).toBeInTheDocument();
+    expect(screen.getByText("lateral-movement-wmi")).toBeInTheDocument();
+    expect(screen.queryByText("suspicious-powershell-execution")).toBeNull(); // an opened playbook is not listed as "offered"
+  });
+
+  it("the agent window switches its side panel to the playbook the first time the agent opens one", async () => {
+    let st = liveReducer(initialLive, { type: "begin", at: 0 });
+    st = liveReducer(st, { type: "start", data: { run_id: "r1", goal: "g", mode: "quick", hours_back: 24, provider: "p", model: "m", limits: { steps: 10, tool_calls: 15, seconds: 120 } } });
+    st = liveReducer(st, { type: "progress", data: prog });
+    const { rerender } = renderWithQuery(<AgentWindow state={st} onClose={vi.fn()} />);
+    expect(screen.getByRole("tab", { name: /Hypotheses/ })).toHaveAttribute("aria-selected", "true");
+    st = liveReducer(st, { type: "progress", data: { ...prog, playbooks: [pbp] } });
+    rerender(<QueryClientProvider client={new QueryClient()}><AgentWindow state={st} onClose={vi.fn()} /></QueryClientProvider>);
+    expect(await screen.findByRole("tab", { name: /Playbooks · 1/ })).toHaveAttribute("aria-selected", "true");
+    expect(screen.getByText("Find encoded PowerShell")).toBeInTheDocument();
+  });
+
+  it("the report shows each playbook's checklist and says unrun steps are not a clean result", () => {
+    const run = { id: "r1", status: "COMPLETED", provider: "p", model: "m", goal: "g", hours_back: 24, steps: [], saved_findings: [], input_tokens: 1, output_tokens: 1, error: "", created_at: "2026-03-01T10:00:00Z",
+      conclusion: { summary: "s", confidence: "LOW", model_confidence: "LOW", findings: [], next_steps: [], validation_notes: [], events_reviewed: 1, playbooks_used: [pbp.id], playbooks: [pbp] } } as unknown as AiRun;
+    renderWithQuery(<RunReport run={run} evidence={[]} />);
+    expect(screen.getByText("1/3 steps")).toBeInTheDocument();
+    expect(screen.getByText(/Steps marked ○ were not run/)).toBeInTheDocument();
+    expect(screen.getByText("Rule out management tooling")).toBeInTheDocument();
+  });
+
+  it("a saved run reopens with its playbook progress", () => {
+    const run = { id: "r1", status: "COMPLETED", provider: "p", model: "m", goal: "g", hours_back: 24, mode: "quick", steps: [], saved_findings: [], input_tokens: 1, output_tokens: 1, error: "", created_at: "2026-03-01T10:00:00Z",
+      conclusion: { summary: "s", confidence: "LOW", model_confidence: "LOW", findings: [], next_steps: [], validation_notes: [], events_reviewed: 1, playbooks: [pbp] } } as unknown as AiRun;
+    expect(liveFromRun(run, []).progress?.playbooks).toEqual([pbp]);
   });
 });

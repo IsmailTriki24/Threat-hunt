@@ -239,6 +239,81 @@ def feasibility(pb: Playbook, event_types: dict[str, Any] | None) -> dict[str, A
     }
 
 
+def _signature(query: str) -> frozenset[tuple[str, str, str, bool]]:
+    """A query reduced to its comparable parts (field, operator, value, negated) plus free-text words, order-independent."""
+    text, filters = dsl.parse(query)
+    parts: set[tuple[str, str, str, bool]] = set()
+    for f in filters:
+        vals = f.value if isinstance(f.value, list) else [f.value]
+        parts.add((f.field, f.op, "|".join(sorted(str(v).lower() for v in vals)), f.negate))
+    parts.update(("", "text", w.lower(), False) for w in (text or "").split())
+    return frozenset(parts)
+
+
+def match_step(
+    pbs: list[Playbook], done: dict[str, list[int]], tool: str, query: str | None, field: str | None = None
+) -> tuple[str, int, float] | None:
+    """Which step of an opened playbook is this tool call carrying out? (playbook id, step index, confidence) or None.
+
+    An agent adapts a playbook query (adds a host, narrows a user), so a call matches when it contains the step's whole filter set; a
+    different tool needs a near-exact query. Steps without a query (pivot, lineage, neighbourhood) match by tool, in order."""
+    best: tuple[str, int, float] | None = None
+    sig = None
+    if query:
+        try:
+            sig = _signature(query)
+        except dsl.QueryParseError:
+            return None
+    for pb in pbs:
+        already = set(done.get(pb.id, []))
+        for i, st in enumerate(pb.steps):
+            if st.query is None:
+                if st.tool == tool and i not in already and best is None:
+                    best = (pb.id, i, 0.5)
+                continue
+            if sig is None:
+                continue
+            want = _signature(st.query)
+            if not want:
+                continue
+            overlap = len(want & sig)
+            contained = overlap / len(want)
+            fit = overlap / len(want | sig)  # how closely the call IS the step, not merely contains it
+            if contained < 0.75:
+                continue
+            if st.tool != tool and fit < 0.9:
+                continue
+            if (
+                st.tool == "aggregate_events"
+                and tool == "aggregate_events"
+                and st.field
+                and field
+                and st.field != field
+            ):
+                continue
+            # a broad step ("powershell") is contained in almost any PowerShell query: the most specific matching step wins
+            if best is None or fit > best[2] or (fit == best[2] and i not in already):
+                best = (pb.id, i, round(fit, 2))
+    return best
+
+
+def progress_of(pb: Playbook, done: list[int], event_types: dict[str, Any] | None = None) -> dict[str, Any]:
+    """Where an opened playbook stands: every step with whether the agent has carried it out."""
+    ran = set(done)
+    return {
+        "id": pb.id,
+        "title": pb.title,
+        "attack": pb.attack[:6],
+        "feasibility": feasibility(pb, event_types)["status"],
+        "total": len(pb.steps),
+        "run": len(ran),
+        "steps": [
+            {"purpose": s.purpose, "tool": s.tool, "goal": s.goal[:140], "done": i in ran}
+            for i, s in enumerate(pb.steps)
+        ],
+    }
+
+
 def brief(pb: Playbook, event_types: dict[str, Any] | None = None) -> dict[str, Any]:
     return {
         "id": pb.id,

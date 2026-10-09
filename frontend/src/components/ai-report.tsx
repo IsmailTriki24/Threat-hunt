@@ -9,7 +9,7 @@ import { useAuth } from "@/lib/auth";
 import { fmtTime } from "@/lib/query";
 import { ErrorLine } from "./badges";
 import { EvidenceTimeline } from "./ai-evidence";
-import { Feed, Icon, VerdictChip } from "./ai-live";
+import { Feed, Icon, PlaybookChecklist, VerdictChip } from "./ai-live";
 
 const SEV: Record<string, string> = { CRITICAL: "border-l-red-500", HIGH: "border-l-orange-400", MEDIUM: "border-l-amber-300", LOW: "border-l-sky-400", INFO: "border-l-slate-500" };
 const CLASS: Record<string, string> = {
@@ -107,6 +107,13 @@ export function RunReport({ run, evidence, onResume, resuming, compact }: Report
   const { can } = useAuth();
   const qc = useQueryClient();
   const save = useMutation({ mutationFn: (i: number) => api.aiSave(run.id, [i]), onSuccess: () => { void qc.invalidateQueries({ queryKey: ["ai-runs"] }); } });
+  const [opened, setOpened] = useState<{ case_id: string; number: number } | null>(null);
+  const openCase = useMutation({
+    mutationFn: () => api.aiOpenCase(run.id),
+    onSuccess: (r) => { setOpened({ case_id: r.case_id, number: r.number }); void qc.invalidateQueries({ queryKey: ["ai-runs"] }); void qc.invalidateQueries({ queryKey: ["cases"] }); },
+  });
+  const caseId = opened?.case_id ?? run.case_id ?? null;
+  const caseNumber = opened?.number ?? run.case_number ?? null;
   const [traceOpen, setTraceOpen] = useState(false);
   const [focus, setFocus] = useState<{ ref: string; n: number } | null>(null);
   const jump = (ref: string) => { setTraceOpen(true); setFocus({ ref, n: Date.now() }); };
@@ -125,6 +132,19 @@ export function RunReport({ run, evidence, onResume, resuming, compact }: Report
         </div>
         <p className="text-xs text-muted">Goal: <span className="text-slate-300">{run.goal}</span></p>
         {run.error && <p role="alert" className="text-xs text-amber-300">{run.error}</p>}
+        {caseId ? (
+          <Link href={`/cases/${caseId}`} className="flex items-center gap-2 rounded-md border border-emerald-400/40 bg-emerald-400/10 px-3 py-2 text-xs text-emerald-200 hover:border-emerald-300">
+            <Icon name="check" className="h-3.5 w-3.5" />
+            <span>Case{caseNumber ? ` #${caseNumber}` : ""} opened with this hunt report</span>
+            <span className="ml-auto underline">View case →</span>
+          </Link>
+        ) : c && can("cases:write") ? (
+          <div className="flex flex-wrap items-center gap-2 rounded-md border border-line bg-bg/50 px-3 py-2 text-xs">
+            <span className="min-w-0 flex-1 text-muted">Turn this hunt into a case: the report, the verified evidence and indicators are attached.</span>
+            <button type="button" className="btn btn-primary" disabled={openCase.isPending} onClick={() => openCase.mutate()}>{openCase.isPending ? "Opening…" : "Open case"}</button>
+          </div>
+        ) : null}
+        <ErrorLine error={openCase.error} fallback="Could not open the case" />
 
         {run.resumable && onResume && (
           <div className="flex flex-wrap items-center gap-3 rounded-md border border-amber-400/30 bg-amber-400/5 p-3">
@@ -159,7 +179,12 @@ export function RunReport({ run, evidence, onResume, resuming, compact }: Report
               </Section>
             )}
 
-            {(c.playbooks_used?.length ?? 0) > 0 && (
+            {(c.playbooks?.length ?? 0) > 0 ? (
+              <Section title="Hunt playbooks followed">
+                <div className="grid gap-2 lg:grid-cols-2">{c.playbooks?.map((pb) => <PlaybookChecklist key={pb.id} pb={pb} />)}</div>
+                {c.playbooks?.some((pb) => pb.run < pb.total) && <p className="text-[11px] text-amber-300/90">Steps marked ○ were not run. A skipped refute or scope step means that part of the hunt was not done - it is not a clean result.</p>}
+              </Section>
+            ) : (c.playbooks_used?.length ?? 0) > 0 && (
               <Section title="Hunt playbooks followed">
                 <p className="flex flex-wrap gap-1.5">{c.playbooks_used?.map((id) => <span key={id} className="ai-chip border-amber-400/30 bg-amber-400/10 font-mono text-amber-200">{id}</span>)}</p>
               </Section>

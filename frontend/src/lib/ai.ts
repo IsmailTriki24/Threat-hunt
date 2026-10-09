@@ -1,6 +1,6 @@
 export type AiMode = "quick" | "standard" | "deep";
 export interface AiStatus { enabled: boolean; provider: string; model: string; max_steps: number; web_search?: boolean; intel_providers?: string[]; modes?: Record<string, { max_steps: number; max_tool_calls: number; wall_s: number }> }
-export interface AiRunBody { goal: string; hours_back: number; mode: AiMode; hunt_id?: string }
+export interface AiRunBody { goal: string; hours_back: number; mode: AiMode; hunt_id?: string; open_case?: boolean }
 export interface AiFinding {
   title: string; description: string; severity: string; event_ids: string[]; rejected_event_ids: string[];
   techniques: string[]; rejected_techniques: string[]; supported: boolean;
@@ -10,6 +10,10 @@ export interface AiHypothesis {
   id: string; statement: string; status: "open" | "supported" | "refuted" | "inconclusive"; priority: number;
   supporting_event_ids: string[]; contradicting_event_ids: string[]; alternatives_considered: string[]; queries: string[]; note: string;
 }
+export interface PlaybookProgress {
+  id: string; title: string; attack: string[]; feasibility: string; total: number; run: number;
+  steps: { purpose: string; tool: string; goal: string; done: boolean }[];
+}
 export interface IntelSummary {
   kind?: string | null; value?: string | null; verdict: "malicious" | "suspicious" | "benign" | "unknown"; score: number; answered: number;
   providers: { provider: string; status: string; verdict: string | null; summary?: string }[]; unavailable: string[]; web: number;
@@ -18,15 +22,16 @@ export interface AiCoverage { queries: number; ok: number; empty: number; partia
 export interface AiConclusion {
   summary: string; confidence: "LOW" | "MEDIUM" | "HIGH"; model_confidence: string; findings: AiFinding[];
   next_steps: string[]; validation_notes: string[]; events_reviewed: number;
-  hypotheses?: AiHypothesis[]; unresolved_questions?: string[]; coverage?: AiCoverage; stop_reason?: string; forced?: boolean; intel?: Record<string, IntelSummary>; playbooks_used?: string[];
+  hypotheses?: AiHypothesis[]; unresolved_questions?: string[]; coverage?: AiCoverage; stop_reason?: string; forced?: boolean; intel?: Record<string, IntelSummary>; playbooks_used?: string[]; playbooks?: PlaybookProgress[];
 }
 export interface AiStep {
   type: "tool" | "assistant" | "gate" | "resume"; mode?: string; name?: string; input?: Record<string, unknown>; error?: string | null; result_preview?: string; text?: string; ms?: number;
   ref?: string; status?: string; kind?: string; cached?: boolean; auto?: boolean; total?: number | null; returned?: number; new_events?: number; new_entities?: number;
   attempts?: number; purpose?: string; hypothesis?: string | null; injection_suspected?: boolean; rejected?: string[]; attempt?: number; sources?: { title: string; url: string; domain: string }[]; intel?: IntelSummary; playbook?: { id: string; title: string; attack: string[]; feasibility: string; missing: string[] };
+  pb?: { id: string; step: number; of: number; purpose: string; confidence: number };
 }
 export interface AiRun {
-  id: string; hunt_id: string | null; goal: string; status: "COMPLETED" | "INCOMPLETE" | "FAILED"; provider: string; model: string;
+  id: string; hunt_id: string | null; case_id?: string | null; case_number?: number | null; goal: string; status: "COMPLETED" | "INCOMPLETE" | "FAILED"; provider: string; model: string;
   hours_back: number; mode?: string; resumable?: boolean; steps: AiStep[]; conclusion: AiConclusion | null; saved_findings: string[];
   input_tokens: number; output_tokens: number; error: string; created_at: string;
 }

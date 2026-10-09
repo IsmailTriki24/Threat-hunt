@@ -13,7 +13,7 @@ from app.ai import playbooks
 from app.ai import state as st
 from app.ai.playbooks import Playbook, Step
 from tests.test_ai import conclude, nb, tool
-from tests.test_ai_agent import Scripted, _run, _seeded, real_steps
+from tests.test_ai_agent import A, Scripted, _parse_sse, _run, _seeded, real_steps
 
 UPSTREAM = [x for x in (Path(__file__).parent / "playbook_upstream_sources.txt").read_text().split() if x]
 FILES = sorted(playbooks.DATA.glob("*.yaml"))
@@ -225,3 +225,100 @@ def test_placeholder_values_are_always_flagged_for_replacement():
                 assert re.search(r"(?i)\breplace\b", s.look_for + s.goal), (
                     f"{pb.id}: placeholder query without 'replace' guidance"
                 )
+
+
+# ---- how the agent uses a playbook -----------------------------------------------------
+
+
+def _pb(pid="suspicious-powershell-execution"):
+    return playbooks.catalog()[pid]
+
+
+def test_a_call_is_credited_to_the_playbook_step_it_carries_out():
+    pb = _pb()
+    first = pb.steps[0]
+    assert first.query and first.tool == "search_events"
+    m = playbooks.match_step([pb], {}, "search_events", first.query)
+    assert m and m[:2] == (pb.id, 0) and m[2] == 1.0
+    # the agent narrowed it to one host: still the same step (it contains the step's whole filter set)
+    adapted = playbooks.match_step([pb], {}, "search_events", first.query + " host.hostname:ws-02")
+    assert adapted and adapted[1] == 0
+    # filter order and case do not matter
+    reordered = " ".join(reversed(first.query.split()))
+    assert playbooks.match_step([pb], {}, "search_events", reordered)[1] == 0
+
+
+def test_unrelated_or_partial_queries_are_not_credited():
+    pb = _pb()
+    assert playbooks.match_step([pb], {}, "search_events", "user.name:bob") is None
+    assert playbooks.match_step([pb], {}, "search_events", "process.command_line:encodedcommand") is None  # half a step
+    assert (
+        playbooks.match_step([pb], {}, "search_events", "no_such_field:1") is None
+    )  # unparseable: ignored, never an error
+    assert playbooks.match_step([], {}, "search_events", pb.steps[0].query) is None  # only opened playbooks count
+
+
+def test_aggregate_steps_need_the_same_field_and_non_query_steps_match_by_tool_in_order():
+    pb = _pb()
+    agg = next(i for i, s in enumerate(pb.steps) if s.tool == "aggregate_events")
+    s = pb.steps[agg]
+    ok = playbooks.match_step([pb], {}, "aggregate_events", s.query, s.field)
+    assert ok and ok[1] == agg
+    other_field = "user.name" if s.field != "user.name" else "host.hostname"
+    assert playbooks.match_step([pb], {}, "aggregate_events", s.query, other_field) is None
+    lineage = next(i for i, s2 in enumerate(pb.steps) if s2.tool == "process_lineage")
+    assert playbooks.match_step([pb], {}, "process_lineage", None)[1] == lineage
+    assert playbooks.match_step([pb], {pb.id: [lineage]}, "process_lineage", None) is None  # already done
+
+
+def test_investigation_tracks_only_opened_playbooks_and_survives_a_resume():
+    inv = st.Investigation.new("hunt powershell", 24, "standard")
+    q = _pb().steps[0].query
+    assert inv.note_playbook_step("search_events", q) is None  # not opened yet
+    inv.playbooks_used.append("suspicious-powershell-execution")
+    hit = inv.note_playbook_step("search_events", q)
+    assert hit and hit["step"] == 1 and hit["of"] == len(_pb().steps) and hit["purpose"] == "test"
+    status = inv.playbook_status()[0]
+    assert status["run"] == 1 and status["steps"][0]["done"] and not status["steps"][1]["done"]
+    assert "1/" in inv.brief({"steps": 5}, st.MODES["standard"]) and "Playbook in progress" in inv.brief(
+        {"steps": 5}, st.MODES["standard"]
+    )
+    again = st.Investigation.from_dict(inv.to_dict())
+    assert again.playbook_runs == {"suspicious-powershell-execution": [0]}
+    inv.note_playbook_step("search_events", q)  # the same step twice is counted once
+    assert inv.playbook_runs["suspicious-powershell-execution"] == [0]
+
+
+async def test_the_trace_the_report_and_the_live_stream_show_how_the_playbook_was_followed(client, make, llm, app):
+    _, h = await _seeded(make, app)
+    q = _pb().steps[0].query
+    early = (
+        "process.name:*powershell.exe* process.command_line:downloadstring"  # a playbook query, run BEFORE opening it
+    )
+    llm(
+        Scripted(
+            tool("search_events", query=early),
+            tool("hunt_playbook", action="get", id="suspicious-powershell-execution"),
+            tool("search_events", query=q + " host.hostname:ws-02", purpose="test"),
+            conclude([]),
+        )
+    )
+    r = await client.post(f"{A}/runs/stream", headers=h, json={"goal": "hunt encoded powershell", "mode": "quick"})
+    events = _parse_sse(r.text)
+    done = events[-1][1]
+    tools_ = [s for s in done["steps"] if s["type"] == "tool" and s["name"] == "search_events"]
+    assert "pb" not in tools_[0]  # run before the playbook was opened: not credited
+    pb = tools_[1]["pb"]
+    assert (pb["id"], pb["step"], pb["of"], pb["purpose"]) == (
+        "suspicious-powershell-execution",
+        1,
+        len(_pb().steps),
+        "test",
+    )
+    assert 0.5 <= pb["confidence"] <= 1.0  # the host filter the agent added lowers it a little
+    rep = done["conclusion"]["playbooks"][0]
+    assert rep["id"] == "suspicious-powershell-execution" and rep["run"] == 1 and rep["total"] == len(_pb().steps)
+    assert rep["steps"][0]["done"] is True and all(not x["done"] for x in rep["steps"][1:])
+    live = [d for k, d in events if k == "progress"][-1]
+    assert live["playbooks"][0]["run"] == 1 and live["playbooks"][0]["title"]
+    assert "suggested" in live

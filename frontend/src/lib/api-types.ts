@@ -182,7 +182,7 @@ export interface CaseIoc { id: string; type: IocType; value: string; source: str
 export interface CaseActivity {
   id: string; kind: string; body: string; details: Record<string, unknown>; actor_id: string | null; actor_email: string | null; created_at: string;
 }
-export interface CaseReport { id: string; version: number; content: string; created_by: string | null; created_at: string }
+export interface CaseReport { id: string; version: number; kind?: "case" | "hunt"; data?: Record<string, unknown> | null; content: string; created_by: string | null; created_at: string }
 export interface CaseAssetRef { id: string; type: string; key: string; display_name: string; criticality: string; last_seen: string | null }
 export interface AuditRow {
   id: string; created_at: string; action: string; outcome: string; actor: string | null; actor_id?: string | null;

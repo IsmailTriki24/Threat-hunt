@@ -10,13 +10,13 @@ from fastapi.responses import StreamingResponse
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.ai import casebuilder, tools
 from app.ai import state as st
-from app.ai import tools
 from app.ai import translate as translator
 from app.ai.agent import Outcome, Sink, run_agent
 from app.ai.models import AiRun
 from app.ai.providers import LLMProvider, ProviderUnavailable, build_provider
-from app.ai.schemas import ResumeIn, RunCreate, RunOut, SaveIn, Status, TranslateIn, TranslateOut
+from app.ai.schemas import CaseLinkOut, ResumeIn, RunCreate, RunOut, SaveIn, Status, TranslateIn, TranslateOut
 from app.ai.tools import Ledger, ToolContext
 from app.audit import service as audit
 from app.auth.deps import Principal, require
@@ -208,6 +208,7 @@ async def create_run(
     await session.flush()
     await session.refresh(run)
     await _audit_run(request, principal, run, "ai.run")
+    await _maybe_open_case(request, principal, session, run, body.open_case)
     return run
 
 
@@ -342,6 +343,7 @@ async def stream_run(
         await session.flush()
         await session.refresh(run)
         await _audit_run(request, principal, run, "ai.run")
+        await _maybe_open_case(request, principal, session, run, body.open_case)
         return run
 
     return await _stream(
@@ -383,6 +385,7 @@ async def stream_resume(
         await session.flush()
         await session.refresh(run)
         await _audit_run(request, principal, run, "ai.resume")
+        await _maybe_open_case(request, principal, session, run, body.open_case)
         return run
 
     return await _stream(
@@ -415,6 +418,52 @@ async def run_evidence(
     ev = ((run.state or {}).get("evidence") or {}).values()
     keep = ("id", "timestamp", "host", "user", "event_type", "summary")
     return sorted(({k: e.get(k) for k in keep} for e in ev), key=lambda e: str(e.get("timestamp") or ""))
+
+
+async def _maybe_open_case(
+    request: Request, principal: Principal, session: AsyncSession, run: AiRun, wanted: bool
+) -> None:
+    """Open the run's case (or refresh the one it already has) when asked and permitted. A problem here must never lose the
+    investigation, so it runs in a savepoint and is only logged."""
+    if not (wanted or run.case_id) or not run.conclusion or not principal.has(Permission.CASES_WRITE):
+        return
+    try:
+        async with session.begin_nested():
+            case, created = await casebuilder.open_case(session, request.app.state.search, principal, run)
+            run.__dict__["case_number"] = case.number
+        await audit.record(
+            request,
+            "case.create" if created else "case.report",
+            principal=principal,
+            resource_type="case",
+            resource_id=str(case.id),
+            details={"source": "ai_run", "run": str(run.id), "number": case.number},
+        )
+    except Exception:  # noqa: BLE001 - the run is already saved; the case can be opened by hand from it
+        log.exception("could not open a case for the AI run")
+
+
+@router.post("/runs/{run_id}/case", response_model=CaseLinkOut)
+async def open_case_for_run(
+    run_id: uuid.UUID,
+    request: Request,
+    principal: Principal = USE,
+    session: AsyncSession = Depends(get_session),
+) -> CaseLinkOut:
+    """Open a case holding this investigation's hunt report, or refresh the report of the case it already opened."""
+    if not principal.has(Permission.CASES_WRITE):
+        raise Forbidden("Missing permission: cases:write")
+    run = await _run(session, principal, run_id)
+    case, created = await casebuilder.open_case(session, request.app.state.search, principal, run)
+    await audit.record(
+        request,
+        "case.create" if created else "case.report",
+        principal=principal,
+        resource_type="case",
+        resource_id=str(case.id),
+        details={"source": "ai_run", "run": str(run.id), "number": case.number},
+    )
+    return CaseLinkOut(case_id=case.id, number=case.number, created=created)
 
 
 async def _audit_run(request: Request, principal: Principal, run: AiRun, action: str) -> None:
@@ -471,6 +520,7 @@ async def resume_run(
     await session.flush()
     await session.refresh(run)
     await _audit_run(request, principal, run, "ai.resume")
+    await _maybe_open_case(request, principal, session, run, body.open_case)
     return run
 
 

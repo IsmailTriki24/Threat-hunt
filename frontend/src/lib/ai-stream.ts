@@ -1,4 +1,4 @@
-import type { AiRun, AiStep } from "./ai";
+import type { AiRun, AiStep, PlaybookProgress } from "./ai";
 
 /** One Server-Sent Event as the backend emits it (`POST /ai/runs/stream`). */
 export interface StartInfo { run_id?: string; resumed?: boolean; step_offset?: number; goal: string; mode: string; hours_back: number; provider: string; model: string; limits: { steps: number; tool_calls: number; seconds: number } }
@@ -7,6 +7,8 @@ export interface Progress {
   hypotheses: HypView[]; queries: number; events: number; entities: number; redundant: number; gate_rejections: number; tokens: number;
   remaining: { steps: number; tool_calls: number; tokens: number; seconds: number };
   limits: { steps: number; tool_calls: number; seconds: number };
+  playbooks?: PlaybookProgress[]; // playbooks the agent opened, with the steps it has carried out
+  suggested?: { id: string; title: string; attack: string[] }[]; // playbooks it was offered but has not opened
 }
 export interface EvPoint { id: string; timestamp: string | null; host: string | null; user?: string | null; event_type: string | null; summary: string }
 export type StreamEvent =
@@ -124,7 +126,7 @@ export function liveFromRun(run: AiRun, evidence: EvPoint[]): LiveState {
   const progress: Progress = {
     hypotheses: (c?.hypotheses ?? []).map((h) => ({ id: h.id, statement: h.statement, status: h.status, priority: h.priority, supporting: h.supporting_event_ids.length, contradicting: h.contradicting_event_ids.length })),
     queries: c?.coverage?.queries ?? 0, events: c?.coverage?.events_reviewed ?? evidence.length, entities: 0, redundant: c?.coverage?.redundant_calls ?? 0, gate_rejections: 0,
-    tokens: run.input_tokens + run.output_tokens, remaining: { steps: 0, tool_calls: 0, tokens: 0, seconds: 0 }, limits: { steps: 0, tool_calls: 0, seconds: 0 },
+    playbooks: c?.playbooks ?? [], suggested: [], tokens: run.input_tokens + run.output_tokens, remaining: { steps: 0, tool_calls: 0, tokens: 0, seconds: 0 }, limits: { steps: 0, tool_calls: 0, seconds: 0 },
   };
   const t = Date.parse(run.created_at);
   return { ...initialLive, phase: run.status === "FAILED" ? "error" : "done", items: itemsFromSteps(run.steps), progress, evidence, run, error: run.error || null, runId: run.id, startedAt: t, endedAt: t,

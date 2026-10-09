@@ -20,6 +20,9 @@ class AiRun(Base):
     hunt_id: Mapped[uuid.UUID | None] = mapped_column(
         ForeignKey("hunts.id", ondelete="SET NULL"), nullable=True, index=True
     )
+    case_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("cases.id", ondelete="SET NULL"), nullable=True, index=True
+    )  # the case opened from this run's hunt report
     goal: Mapped[str] = mapped_column(Text)
     status: Mapped[str] = mapped_column(String(12))  # COMPLETED | INCOMPLETE | FAILED
     provider: Mapped[str] = mapped_column(String(32), default="")

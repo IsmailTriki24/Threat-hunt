@@ -281,6 +281,9 @@ class Investigation:
     playbooks_used: list[str] = field(
         default_factory=list
     )  # hunt playbooks the agent opened (provenance for the report)
+    playbook_runs: dict[str, list[int]] = field(
+        default_factory=dict
+    )  # playbook id -> step indexes the agent carried out
     _qseq: int = 0
 
     # ---- construction / persistence -----------------------------------------------------------------------------------------
@@ -316,6 +319,7 @@ class Investigation:
             "intel",
             "enriched",
             "playbooks_used",
+            "playbook_runs",
         ):
             if k in d:
                 setattr(inv, k, d[k])
@@ -506,6 +510,31 @@ class Investigation:
         )
         return [(pb, s) for pb, s in ranked if pb.id not in self.playbooks_used][:limit]
 
+    def note_playbook_step(self, tool: str, query: str | None, field: str | None = None) -> dict[str, Any] | None:
+        """Credit a tool call to the playbook step it carries out (only playbooks the agent opened). Returns the match for the trace."""
+        from app.ai import playbooks
+
+        cat = playbooks.catalog()
+        opened = [cat[i] for i in self.playbooks_used if i in cat]
+        hit = playbooks.match_step(opened, self.playbook_runs, tool, query, field)
+        if hit is None:
+            return None
+        pid, idx, conf = hit
+        runs = self.playbook_runs.setdefault(pid, [])
+        if idx not in runs:
+            runs.append(idx)
+        pb = cat[pid]
+        return {"id": pid, "step": idx + 1, "of": len(pb.steps), "purpose": pb.steps[idx].purpose, "confidence": conf}
+
+    def playbook_status(self) -> list[dict[str, Any]]:
+        from app.ai import playbooks
+
+        cat = playbooks.catalog()
+        et = self.coverage.get("event_types")
+        return [
+            playbooks.progress_of(cat[i], self.playbook_runs.get(i, []), et) for i in self.playbooks_used if i in cat
+        ]
+
     def blocking_leads(self, threshold: int) -> list[Entity]:
         return [e for e in self.leads(50) if e.score >= threshold]
 
@@ -605,6 +634,14 @@ class Investigation:
                     + (" [named in objective]" if e.from_objective else "")
                     + f" -> pivot_entity(type={e.type}, value={e.value})"
                 )
+        for pr in self.playbook_status():
+            todo = [x["goal"][:70] for x in pr["steps"] if not x["done"]]
+            missing_check = any(not x["done"] and x["purpose"] in ("refute", "scope") for x in pr["steps"])
+            lines.append(
+                f"Playbook in progress: {pr['id']} - {pr['run']}/{pr['total']} steps run"
+                + (f"; still to do: {' | '.join(todo[:3])}" if todo else "; all steps run")
+                + (" (a refute/scope step is still missing)" if missing_check else "")
+            )
         suggestions = self.suggested_playbooks()
         if suggestions:
             from app.ai import playbooks
@@ -686,6 +723,7 @@ class Investigation:
             "stop_reason": stop_reason,
             "intel": self.intel,
             "playbooks_used": self.playbooks_used,
+            "playbooks": self.playbook_status(),
             "hypotheses": [
                 {
                     "id": h.id,

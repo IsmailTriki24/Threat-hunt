@@ -11,6 +11,9 @@ import { downloadBlob } from "@/lib/hunt-query";
 import { fmtTime } from "@/lib/query";
 import { ErrorLine, CopyButton, LevelBadge } from "./badges";
 import { EventDrawer } from "./event-drawer";
+import { HuntReportView } from "./hunt-report-view";
+import type { HuntReportData } from "@/lib/hunt-report";
+import { Markdown } from "./markdown";
 import { IntelOpenButton } from "./intel-action";
 import { ScoreBar, VerdictBadge } from "./intel-bits";
 import { CaseTechniqueChips } from "./mitre-panel";
@@ -277,6 +280,30 @@ export function JournalTab({ caseId, canWrite }: { caseId: string; canWrite: boo
   );
 }
 
+/** The AI hunt report as a presentation (the case's headline view when the case came from an AI hunt). */
+export function HuntTab({ caseId, caseNumber }: { caseId: string; caseNumber: string }) {
+  const reports = useQuery({ queryKey: ["case-reports", caseId], queryFn: () => api.caseReports(caseId) });
+  const hunts = (reports.data ?? []).filter((r) => r.kind === "hunt");
+  const [version, setVersion] = useState<number | null>(null);
+  const current = hunts.find((r) => r.version === version) ?? hunts[0];
+  if (reports.isLoading) return <p className="text-muted">Loading the hunt report…</p>;
+  if (!current) return <p className="panel p-3 text-muted">This case has no AI hunt report.</p>;
+  return (
+    <div className="space-y-3">
+      {hunts.length > 1 && (
+        <div className="flex items-center gap-2 text-xs text-muted" role="group" aria-label="Hunt report version">
+          Version
+          {hunts.map((r) => <button key={r.id} className={`btn py-0 text-xs ${r.version === current.version ? "border-accent text-accent" : ""}`} aria-pressed={r.version === current.version} onClick={() => setVersion(r.version)}>v{r.version}</button>)}
+          <span>generated {fmtTime(current.created_at)}</span>
+        </div>
+      )}
+      {current.data
+        ? <HuntReportView key={current.id} data={current.data as unknown as HuntReportData} markdown={current.content} caseNumber={caseNumber} />
+        : <article className="panel p-4" aria-label="Report"><Markdown source={current.content} /></article>}
+    </div>
+  );
+}
+
 export function ReportsTab({ caseId, canWrite, caseNumber }: { caseId: string; canWrite: boolean; caseNumber: string }) {
   const qc = useQueryClient();
   const [version, setVersion] = useState<number | null>(null);
@@ -286,6 +313,8 @@ export function ReportsTab({ caseId, canWrite, caseNumber }: { caseId: string; c
     onSuccess: (r) => { setVersion(r.version); void qc.invalidateQueries({ queryKey: ["case-reports", caseId] }); void qc.invalidateQueries({ queryKey: ["case-activity", caseId] }); },
   });
   const current = reports.data?.find((r) => r.version === (version ?? reports.data?.[0]?.version));
+  const [view, setView] = useState<"presentation" | "markdown" | "source" | null>(null);
+  const mode = view ?? (current?.data ? "presentation" : "markdown");
   return (
     <div className="space-y-2">
       <div className="flex gap-2 items-center text-xs">
@@ -303,8 +332,20 @@ export function ReportsTab({ caseId, canWrite, caseNumber }: { caseId: string; c
       <ErrorLine error={gen.error} fallback="Report generation failed" />
       {current ? (
         <div>
-          <p className="text-xs text-muted mb-1">Version {current.version} · generated {fmtTime(current.created_at)}</p>
-          <pre className="panel p-3 text-xs whitespace-pre-wrap break-words max-h-[60vh] overflow-y-auto">{current.content}</pre>
+          <div className="mb-1 flex flex-wrap items-center gap-2 text-xs text-muted">
+            <span>Version {current.version} · generated {fmtTime(current.created_at)}</span>
+            {current.kind === "hunt" && <span className="ai-chip border-violet-400/40 bg-violet-400/10 text-violet-200">AI hunt report</span>}
+            <span className="ml-auto flex gap-1" role="group" aria-label="Report view">
+              {current.data && <button type="button" className={`btn py-0 text-xs ${mode === "presentation" ? "border-accent text-accent" : ""}`} aria-pressed={mode === "presentation"} onClick={() => setView("presentation")}>Presentation</button>}
+              <button type="button" className={`btn py-0 text-xs ${mode === "markdown" ? "border-accent text-accent" : ""}`} aria-pressed={mode === "markdown"} onClick={() => setView("markdown")}>Rendered</button>
+              <button type="button" className={`btn py-0 text-xs ${mode === "source" ? "border-accent text-accent" : ""}`} aria-pressed={mode === "source"} onClick={() => setView("source")}>Source</button>
+            </span>
+          </div>
+          {mode === "presentation" && current.data
+            ? <HuntReportView data={current.data as unknown as HuntReportData} markdown={current.content} caseNumber={caseNumber} />
+            : mode === "source"
+              ? <pre className="panel p-3 text-xs whitespace-pre-wrap break-words max-h-[60vh] overflow-y-auto">{current.content}</pre>
+              : <article className="panel p-4 max-h-[70vh] overflow-y-auto" aria-label="Report"><Markdown source={current.content} /></article>}
         </div>
       ) : <p className="panel p-3 text-muted">No reports yet. Generate one to snapshot the case as Markdown.</p>}
     </div>

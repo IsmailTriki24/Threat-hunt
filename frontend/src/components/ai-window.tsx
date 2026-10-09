@@ -1,7 +1,7 @@
 "use client";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { EvidenceTimeline } from "./ai-evidence";
-import { Feed, HypothesisList, Icon, Overview, PHASE, QueryLog, StatusOrb, fmtClock, isLive, nowDoing, useElapsed } from "./ai-live";
+import { Feed, HypothesisList, Icon, Overview, PHASE, PlaybooksPanel, QueryLog, StatusOrb, fmtClock, isLive, nowDoing, useElapsed } from "./ai-live";
 import { RunReport } from "./ai-report";
 import type { LiveState } from "@/lib/ai-stream";
 
@@ -25,6 +25,10 @@ function Card({ title, children, className = "" }: { title: string; children: Re
 export function AgentWindow({ state, onClose, onStop, stopping, onResume, onRetry }: WindowProps) {
   const [tab, setTab] = useState<Tab>("activity");
   const [hyp, setHyp] = useState<string | null>(null);
+  const [side, setSide] = useState<"hyp" | "pb">("hyp");
+  const opened = state.progress?.playbooks?.length ?? 0;
+  const sawPlaybook = useRef(false);
+  useEffect(() => { if (opened > 0 && !sawPlaybook.current) { sawPlaybook.current = true; setSide("pb"); } }, [opened]); // show it the first time the agent opens one
   const root = useRef<HTMLDivElement | null>(null);
   const elapsed = useElapsed(state);
   const live = isLive(state);
@@ -79,7 +83,17 @@ export function AgentWindow({ state, onClose, onStop, stopping, onResume, onRetr
             <div className={`${tab === "overview" ? "block" : "hidden"} shrink-0 lg:block`}><Overview state={state} elapsed={elapsed} /></div>
             <div className={`${tab === "queries" ? "flex" : "hidden"} min-h-[160px] flex-1 flex-col lg:flex`}><QueryLog items={state.items} state={state} /></div>
             <div className={`${tab === "overview" ? "block" : "hidden"} min-h-0 flex-col gap-3 overflow-y-auto lg:flex lg:max-h-[34%] lg:shrink-0`}>
-              <Card title="Hypotheses"><HypothesisList state={state} hypothesis={hyp} onHypothesis={(id) => { setHyp(id); setTab("activity"); }} /></Card>
+              <section className="rounded-md border border-line bg-panel/60 p-2.5">
+                <div className="mb-1.5 flex gap-1" role="tablist" aria-label="Hypotheses and playbooks">
+                  {([["hyp", `Hypotheses${state.progress?.hypotheses.length ? ` · ${state.progress.hypotheses.length}` : ""}`], ["pb", `Playbooks${opened ? ` · ${opened}` : ""}`]] as const).map(([id, label]) => (
+                    <button key={id} type="button" role="tab" aria-selected={side === id} onClick={() => setSide(id)}
+                      className={`rounded px-2 py-0.5 text-[11px] font-medium uppercase tracking-wider ${side === id ? "bg-violet-500/20 text-violet-200" : "text-muted hover:text-slate-200"}`}>{label}</button>
+                  ))}
+                </div>
+                {side === "hyp"
+                  ? <HypothesisList state={state} hypothesis={hyp} onHypothesis={(id) => { setHyp(id); setTab("activity"); }} />
+                  : <PlaybooksPanel state={state} />}
+              </section>
             </div>
             <div className={`${tab === "overview" ? "block" : "hidden"} shrink-0 lg:block`}>
               <Card title={`Evidence timeline · ${state.evidence.length} events`}>
