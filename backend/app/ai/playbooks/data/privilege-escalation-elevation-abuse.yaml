@@ -1,0 +1,62 @@
+id: privilege-escalation-elevation-abuse
+title: Privilege escalation and elevation-control abuse (UAC bypass, sudo, tokens)
+summary: >-
+  Hunt UAC bypass through auto-elevating binaries (fodhelper, eventvwr, computerdefaults), SYSTEM token theft tooling, unquoted
+  service path and service-based escalation, and sudo or setuid abuse on Linux.
+tactics: [privilege-escalation, defense-evasion]
+attack: [T1548.002, T1548.001, T1548.003, T1134, T1068, T1574.009]
+sources:
+  - detecting-privilege-escalation-attempts
+  - detecting-t1548-abuse-elevation-control-mechanism
+keywords: [uac bypass, fodhelper, eventvwr, computerdefaults, sudo, setuid, privilege escalation, token manipulation, unquoted service path, sdclt, cmstp, elevation]
+signals: [persistence, lolbin]
+needs: [process_creation]
+helps: [service_install, alert, registry_event]
+hypothesis: >-
+  A user-level process is gaining admin or root without a consent prompt, shown by an auto-elevating Windows binary spawning a shell,
+  token or named-pipe impersonation tooling, a service created to run as SYSTEM, or sudo/setuid abuse for a root shell.
+steps:
+  - purpose: test
+    goal: Children of auto-elevating binaries (UAC bypass) - start with fodhelper.exe, repeat with eventvwr.exe, computerdefaults.exe, sdclt.exe.
+    tool: aggregate_events
+    query: process.parent.name:*fodhelper.exe*
+    field: process.name
+    look_for: These parents rarely start shells; a hit after a short-lived registry write to ms-settings or mscfile command keys is the classic bypass.
+  - purpose: test
+    goal: Token and impersonation tooling or SYSTEM-spawn tricks.
+    tool: search_events
+    query: process.command_line:getsystem
+    look_for: Meterpreter getsystem, named pipe impersonation, PrintSpoofer/Potato tools (repeat with tokens printspoofer, potato, runas, psexec and "s" flag with -s).
+  - purpose: test
+    goal: Services created that run commands as SYSTEM.
+    tool: search_events
+    query: event_type:service_install
+    look_for: Service binary paths in user-writable folders, cmd.exe /c or powershell in ImagePath, or unquoted paths with spaces; created by non-admin tooling.
+  - purpose: test
+    goal: Linux sudo and setuid abuse.
+    tool: search_events
+    query: process.command_line:sudo host.os:*linux*
+    look_for: sudo -u root shells, sudo with editors/interpreters (vim, find, python, awk, less) for shell escape, chmod +s on binaries; repeat with token setuid.
+  - purpose: refute
+    goal: Who normally elevates, to separate admin work.
+    tool: aggregate_events
+    query: process.command_line:sudo
+    field: user.name
+    look_for: Admins and automation (Ansible, backup, monitoring agents) sudo constantly; an application account or a user with a new pattern is not baseline.
+  - purpose: follow_up
+    goal: Post-elevation behaviour.
+    tool: process_lineage
+    look_for: Parent chain from the elevated shell back to the user-level process (browser, Office, script) and the actions at high integrity after it.
+benign:
+  - Administrators using sudo and runas daily; configuration management and patch agents running as root.
+  - Installers and updaters that legitimately use auto-elevation and spawn cmd.exe (software updaters, fodhelper via Windows Settings).
+  - Penetration tests and purple-team exercises with an approved scope.
+escalate:
+  - Process lineage and events_around on the host; check for dumping, persistence and new local admin accounts afterwards.
+  - Pivot on the user to see whether the same account escalates on other hosts.
+confirm: >-
+  Confirmed when an auto-elevating or impersonation path produces a high-privilege shell or SYSTEM service from a user-level origin AND
+  follow-on actions (dumping, persistence, account changes) occur. An elevated process alone is suspicious.
+gaps:
+  - Integrity-level, token elevation type and UAC consent events (4688 TokenElevationType) are not fields; HKCU\Software\Classes registry writes (Sysmon 12/13) are not available.
+  - Kernel-exploit detection (T1068) needs crash/driver telemetry and is not covered; only tool names and behavioral follow-ons are searched.

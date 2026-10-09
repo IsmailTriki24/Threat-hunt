@@ -1,0 +1,63 @@
+id: wmi-event-subscription-persistence
+title: WMI event subscription persistence
+summary: >-
+  Hunt permanent WMI event subscriptions (filter, consumer and binding) that run a script or command when a trigger fires, and the
+  child processes that scrmcons.exe or WmiPrvSE.exe then spawn.
+tactics: [persistence, privilege-escalation]
+attack: [T1546.003]
+sources:
+  - detecting-wmi-persistence
+  - hunting-for-persistence-via-wmi-subscriptions
+keywords: [wmi subscription, eventconsumer, eventfilter, filtertoconsumerbinding, commandlineeventconsumer, activescripteventconsumer, scrmcons, mof, wmi persistence]
+signals: [persistence, lolbin]
+needs: [process_creation]
+helps: [alert]
+hypothesis: >-
+  An adversary registered a permanent WMI event consumer, so a script or command line executes through scrmcons.exe or WmiPrvSE.exe
+  on a timer, at logon or at startup without any scheduled task, service or Run key.
+steps:
+  - purpose: test
+    goal: Command lines that create subscription classes.
+    tool: search_events
+    query: process.command_line:commandlineeventconsumer
+    look_for: >-
+      PowerShell Set-WmiInstance / New-CimInstance or wmic creating __EventFilter, CommandLineEventConsumer or
+      ActiveScriptEventConsumer and __FilterToConsumerBinding.
+  - purpose: test
+    goal: ActiveScript consumer host process.
+    tool: search_events
+    query: process.name:*scrmcons.exe*
+    look_for: Any execution at all is rare; its children (cmd, powershell, wscript, mshta) show what the consumer runs.
+  - purpose: test
+    goal: Children of the WMI provider host.
+    tool: search_events
+    query: process.parent.name:*wmiprvse.exe* process.name:*powershell.exe*
+    look_for: >-
+      Encoded or hidden PowerShell started by WmiPrvSE outside a business hour pattern; compare against remote-exec lateral movement
+      (a logon type 3 beforehand points to that instead).
+  - purpose: test
+    goal: Compiled MOF installs and root\\subscription use.
+    tool: search_events
+    query: process.command_line:subscription
+    look_for: mofcomp.exe on a MOF file in a temp path, or any command referencing root subscription.
+  - purpose: refute
+    goal: Is WmiPrvSE child activity a known pattern.
+    tool: aggregate_events
+    query: process.parent.name:*wmiprvse.exe*
+    field: process.name
+    look_for: >-
+      Monitoring and hardware agents (HP/Dell, SCOM, vulnerability scanners) spawn a stable small set of binaries; a shell or script
+      host that is new on one host is the outlier.
+benign:
+  - Hardware and systems management (Dell/HP agents, SCOM, SCCM) use permanent WMI subscriptions and MOF compilation.
+  - Administrators running wmic or Get-CimInstance for inventory, which does not create consumers.
+  - Vulnerability scanners and monitoring tools executing remote WMI queries.
+escalate:
+  - Pivot on the host to enumerate the subscription (live response) and on the consumer payload text across hosts.
+  - events_around the first WMI-spawned execution; check for earlier remote logons or a dropper.
+confirm: >-
+  Confirmed when a consumer or WmiPrvSE/scrmcons child runs a script or command that is not part of a management product AND
+  the subscription creation command or its payload is traced to a non-administrative process.
+gaps:
+  - Sysmon events 19, 20 and 21 (filter, consumer, binding) and WMI-Activity 5861 are the primary signal upstream and are not in the normalised schema.
+  - Without them this playbook finds only command-line creation and the resulting child processes; a clean result is not proof of absence.

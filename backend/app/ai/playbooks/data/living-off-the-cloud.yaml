@@ -1,0 +1,65 @@
+id: living-off-the-cloud
+title: Living off the cloud (SaaS C2 and exfiltration)
+summary: >-
+  Hunt abuse of legitimate cloud and SaaS services for command-and-control, staging and exfiltration - Discord, Telegram, Pastebin,
+  GitHub raw, Slack webhooks, cloud storage - by unexpected processes.
+tactics: [command-and-control, exfiltration]
+attack: [T1102, T1567, T1537]
+sources:
+  - hunting-for-living-off-the-cloud-techniques
+keywords: [living off the cloud, saas c2, discord webhook, telegram, pastebin, exfiltration, cloud storage, web service, onedrive, mega, rclone, blob storage]
+signals: [external_connection, download_cradle]
+needs: [network_connection]
+helps: [process_creation, dns_query]
+hypothesis: >-
+  Malware or an operator uses a trusted cloud service as C2 or exfiltration channel, so a non-browser process connects to a
+  paste, chat-webhook or storage domain, or a command line names such a service.
+steps:
+  - purpose: test
+    goal: Command lines that reference SaaS endpoints (works without network telemetry).
+    tool: search_events
+    query: event_type:process_creation process.command_line:pastebin
+    look_for: >-
+      Repeat per service token: webhooks, discord, telegram, rclone, mega, transfer, ngrok. curl/powershell/certutil naming them is
+      the lead.
+  - purpose: test
+    goal: Non-browser processes connecting to chat and paste services.
+    tool: search_events
+    query: event_type:network_connection network.dst_domain:(*discord.com|api.telegram.org|*pastebin.com|hooks.slack.com|raw.githubusercontent.com)
+    look_for: >-
+      Look at process.name: only browsers and the sanctioned client should appear; powershell, rundll32, svchost, wscript or an
+      unknown binary is suspicious.
+  - purpose: test
+    goal: Large uploads to storage services.
+    tool: search_events
+    query: event_type:network_connection network.direction:outbound network.bytes>=10000000
+    look_for: >-
+      Tens of MB outbound from a workstation to a storage/SaaS domain or to a rare IP; correlate the user and time with staging
+      activity.
+  - purpose: scope
+    goal: Which hosts talk to these services at all.
+    tool: aggregate_events
+    query: event_type:network_connection has:network.dst_domain
+    field: network.dst_domain
+    look_for: Rare domains hosted on cloud platforms (workers.dev, firebaseio, ngrok, azurewebsites) contacted by one or two hosts.
+  - purpose: refute
+    goal: Confirm the traffic is not a sanctioned business integration.
+    tool: pivot_entity
+    look_for: >-
+      Slack/Teams/Discord clients, backup agents (OneDrive, Dropbox, Veeam) and CI jobs posting to webhooks are expected; check the
+      process path, user and whether the same traffic exists on peers.
+benign:
+  - Sanctioned Slack, Teams, Discord, Dropbox, OneDrive, Google Drive clients and browsers.
+  - DevOps scripts and CI runners pulling from raw.githubusercontent.com or posting to Slack webhooks.
+  - Backup and sync agents uploading large volumes on a schedule.
+escalate:
+  - process_lineage and events_around for the process that made the connection, and the files it touched before the upload.
+  - pivot_entity on the destination domain/IP to find every host involved.
+  - Hand over to credential or staging hunts if archives (zip, rar, 7z) were created beforehand.
+confirm: >-
+  Confirmed when an unexpected process (not a sanctioned client) repeatedly contacts a SaaS/storage service with beacon-like timing or
+  large uploads AND the content or preceding file staging links it to a malicious chain.
+gaps:
+  - dns_query and proxy logs are absent today, and flows are sparse; absence of hits does not mean clean - report the gap.
+  - Cloud audit logs (CloudTrail, Azure Activity, GCP audit) used upstream for cloud-side exfil are not ingested.
+  - TLS hides URL paths, so webhook IDs and API routes are visible only in command lines.

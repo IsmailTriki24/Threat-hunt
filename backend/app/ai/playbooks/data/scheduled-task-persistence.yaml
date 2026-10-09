@@ -1,0 +1,68 @@
+id: scheduled-task-persistence
+title: Scheduled task persistence and remote task creation
+summary: >-
+  Hunt malicious Windows scheduled tasks - schtasks /create with shells, script hosts or user-writable payload paths, remote
+  creation (/s) used for lateral movement, and tasks registered outside the normal software-install pattern.
+tactics: [persistence, execution, lateral-movement]
+attack: [T1053.005]
+sources:
+  - detecting-malicious-scheduled-tasks-with-sysmon
+  - hunting-for-scheduled-task-persistence
+  - hunting-for-suspicious-scheduled-tasks
+keywords: [scheduled task, schtasks, task scheduler, at.exe, persistence, "4698", task registration, taskcache]
+signals: [persistence, lolbin]
+needs: [process_creation]
+helps: [scheduled_task, authentication, file_event]
+hypothesis: >-
+  An adversary registered a scheduled task that runs a shell, script host or a binary from a user-writable path (or created it on
+  a remote host), so task events and schtasks.exe command lines show an action that no installer or administrator explains.
+steps:
+  - purpose: test
+    goal: Task registration events the platform already normalises (LogRhythm Task Scheduler entries).
+    tool: search_events
+    query: event_type:scheduled_task
+    look_for: >-
+      Task names mimicking Microsoft tasks, random names, or an action pointing to powershell, cmd, wscript, mshta or a
+      Temp/AppData/ProgramData/Public path; note the creating user and host.
+  - purpose: test
+    goal: schtasks.exe used to create tasks.
+    tool: search_events
+    query: process.name:*schtasks.exe* process.command_line:create
+    look_for: >-
+      /tr pointing to a shell or script host, /ru system, /sc onlogon or onstart, a payload in a user-writable folder, or /s
+      host (remote creation). The parent process matters: cmd/powershell from a Office or web process is hostile.
+  - purpose: test
+    goal: Tasks created to run as SYSTEM or from the command line with credentials (privileged or remote creation).
+    tool: search_events
+    query: process.name:*schtasks.exe* process.command_line:create process.command_line:system
+    look_for: >-
+      /ru SYSTEM with a shell or script payload; /s host with /u and /p in the line means remote creation, so note the target and
+      look at authentication type 3 events just before.
+  - purpose: refute
+    goal: Who normally creates tasks on these hosts.
+    tool: aggregate_events
+    query: process.name:*schtasks.exe*
+    field: process.parent.name
+    look_for: >-
+      Updaters (Google, Adobe, Microsoft Office, OneDrive), SCCM and backup agents dominate. A rare parent (powershell, wscript,
+      an Office app, a temp binary) on a single host is the outlier.
+  - purpose: follow_up
+    goal: What ran when the task fired and what created it.
+    tool: process_lineage
+    look_for: >-
+      Child of the Schedule service (svchost, taskeng, taskhostw) executing the same payload; the original creator process and
+      whether it came from a download, a logon or a remote session.
+benign:
+  - Software updaters (Google Update, Adobe, Microsoft Edge/Office/OneDrive, Zoom) create tasks under their own vendor folders.
+  - Deployment and management tools (SCCM, Intune, Ansible/PDQ) register tasks, often as SYSTEM and in bulk.
+  - Backup, EDR and inventory agents create tasks at install time.
+escalate:
+  - Pivot on the payload path or hash across all hosts to measure spread.
+  - Pivot on the creating account and source host for remote creation (authentication type 3 just before).
+  - events_around the creation time for the download, dropper or credential access that preceded it.
+confirm: >-
+  Confirmed when a task runs a shell, script host or user-writable binary, was created by a process or account with no management
+  role, AND the payload is unknown (new hash, encoded command or external download) or the same task appears on several hosts.
+gaps:
+  - Security event 4698 task XML (full action and arguments) and the TaskCache registry keys are not directly queryable.
+  - Sysmon file creation under System32\Tasks (event 11) is only available if file_event data exists for the host.

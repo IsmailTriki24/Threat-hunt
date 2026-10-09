@@ -3,7 +3,7 @@ import { useMutation, useQueryClient } from "@tanstack/react-query";
 import Link from "next/link";
 import { useMemo, useState, type ReactNode } from "react";
 import { api } from "@/lib/api";
-import { AI_DISCLAIMER, canSave, type AiHypothesis, type AiRun } from "@/lib/ai";
+import { AI_DISCLAIMER, canSave, type AiHypothesis, type AiRun, type IntelSummary } from "@/lib/ai";
 import { itemsFromSteps, type EvPoint } from "@/lib/ai-stream";
 import { useAuth } from "@/lib/auth";
 import { fmtTime } from "@/lib/query";
@@ -51,6 +51,44 @@ function HypothesisCard({ h, onJump }: { h: AiHypothesis; onJump: (q: string) =>
       {h.alternatives_considered.length > 0 && <p className="text-xs text-muted">Alternatives considered: {h.alternatives_considered.join("; ")}</p>}
       {h.queries.length > 0 && <p className="flex flex-wrap items-center gap-1 text-xs text-muted">Tested by {h.queries.map((q) => <QueryChip key={q} q={q} onJump={onJump} />)}</p>}
     </div>
+  );
+}
+
+const VERDICT_ORDER = ["malicious", "suspicious", "unknown", "benign"];
+const shorten = (v: string) => (v.length > 28 ? `${v.slice(0, 14)}…${v.slice(-8)}` : v);
+
+/** One card per indicator, stacked: verdict + kind + value on top, each provider's answer on its own line below. */
+function IntelList({ intel }: { intel: Record<string, IntelSummary> }) {
+  const rows = Object.entries(intel).sort(([, x], [, y]) => VERDICT_ORDER.indexOf(x.verdict) - VERDICT_ORDER.indexOf(y.verdict));
+  return (
+    <ul className="grid gap-2 lg:grid-cols-2">
+      {rows.map(([k, v]) => {
+        const value = v.value ?? k.split(":").slice(1).join(":");
+        const kind = v.kind ?? k.split(":")[0];
+        return (
+          <li key={k} className="min-w-0 space-y-1.5 rounded-md border border-line bg-bg/50 p-2.5">
+            <div className="flex min-w-0 items-center gap-2">
+              <VerdictChip intel={v} />
+              <span className="ai-chip border-line bg-panel text-muted">{kind}</span>
+              <span className="min-w-0 truncate font-mono text-xs text-slate-200" title={value}>{shorten(value)}</span>
+            </div>
+            {v.providers.length > 0 ? (
+              <ul className="space-y-0.5 text-xs">
+                {v.providers.map((p) => (
+                  <li key={p.provider} className="flex gap-2">
+                    <span className="w-20 shrink-0 text-muted">{p.provider}</span>
+                    <span className={p.verdict === "malicious" ? "text-red-300" : p.verdict === "suspicious" ? "text-amber-300" : "text-slate-300"}>{p.summary || p.verdict || p.status}</span>
+                  </li>
+                ))}
+              </ul>
+            ) : (
+              <p className="text-xs text-muted">No provider answered.</p>
+            )}
+            {v.web > 0 && <p className="text-[11px] text-muted">{v.web} web source(s) consulted</p>}
+          </li>
+        );
+      })}
+    </ul>
   );
 }
 
@@ -121,19 +159,15 @@ export function RunReport({ run, evidence, onResume, resuming, compact }: Report
               </Section>
             )}
 
+            {(c.playbooks_used?.length ?? 0) > 0 && (
+              <Section title="Hunt playbooks followed">
+                <p className="flex flex-wrap gap-1.5">{c.playbooks_used?.map((id) => <span key={id} className="ai-chip border-amber-400/30 bg-amber-400/10 font-mono text-amber-200">{id}</span>)}</p>
+              </Section>
+            )}
             {c.intel && Object.keys(c.intel).length > 0 && (
               <Section title="Threat intelligence on indicators it met">
-                <ul className="space-y-1">
-                  {Object.entries(c.intel)
-                    .sort(([, a], [, b]) => ["malicious", "suspicious", "unknown", "benign"].indexOf(a.verdict) - ["malicious", "suspicious", "unknown", "benign"].indexOf(b.verdict))
-                    .map(([k, v]) => (
-                      <li key={k} className="flex flex-wrap items-center gap-2 rounded-md border border-line bg-bg/50 px-2.5 py-1.5 text-xs">
-                        <VerdictChip intel={v} /><span className="min-w-0 flex-1 break-all font-mono text-slate-200">{k}</span>
-                        <span className="text-muted">{v.providers.map((p) => `${p.provider}: ${p.summary || p.verdict || p.status}`).join(" · ") || "no provider answered"}{v.web ? ` · ${v.web} web source(s)` : ""}</span>
-                      </li>
-                    ))}
-                </ul>
-                <p className="text-[11px] text-muted">Context from external sources, not evidence from your environment. &quot;Unknown&quot; means no source had an opinion, not that it is safe.</p>
+                <IntelList intel={c.intel} />
+                <p className="text-[11px] text-muted">Context from external sources, not evidence from your environment. &quot;Undetected&quot; and &quot;no answer&quot; mean no source had an opinion, not that it is safe.</p>
               </Section>
             )}
             {(c.hypotheses?.length ?? 0) > 0 && <Section title="Hypotheses tested">{c.hypotheses?.map((h) => <HypothesisCard key={h.id} h={h} onJump={jump} />)}</Section>}

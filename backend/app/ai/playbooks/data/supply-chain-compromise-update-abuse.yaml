@@ -1,0 +1,56 @@
+id: supply-chain-compromise-update-abuse
+title: Supply chain compromise - trojanized updates and build tools
+summary: >-
+  Hunt updater, installer and build processes that spawn shells, run from user-writable paths or reach unusual external
+  destinations after a vendor or dependency is flagged.
+tactics: [initial-access, execution]
+attack: [T1195]
+sources:
+  - hunting-for-supply-chain-compromise
+keywords: [supply chain, trojanized update, compromised vendor, updater, installer, build pipeline, dependency, solarwinds, npm, trusted software]
+signals: [lolbin, suspicious_path, external_connection]
+needs: [process_creation]
+helps: [network_connection, file_event]
+hypothesis: >-
+  A trusted updater, installer or build tool was tampered with, so it spawns shells or script hosts and contacts destinations
+  never used by its normal update traffic.
+steps:
+  - purpose: test
+    goal: Updater or installer processes spawning interpreters.
+    tool: search_events
+    query: process.parent.name:*update* process.name:*powershell.exe*
+    look_for: Repeat with child cmd, wscript, mshta and parents setup, installer, patch, agent; check the command line for download or encoded tokens.
+  - purpose: test
+    goal: Build and deployment tools spawning shells with network fetches.
+    tool: search_events
+    query: process.parent.name:*jenkins* process.command_line:curl
+    look_for: Repeat for gitlab runner, teamcity, npm and node parents; fetches of unfamiliar hosts in build steps are suspicious.
+  - purpose: test
+    goal: Outbound connections from update or vendor agents.
+    tool: aggregate_events
+    query: event_type:network_connection process.name:*update*
+    field: network.dst_ip
+    look_for: Destinations beyond the vendor's published update hosts; rare destinations seen on a single host.
+  - purpose: refute
+    goal: Compare the suspicious host with peers running the same software.
+    tool: aggregate_events
+    query: process.parent.name:*update*
+    field: host.hostname
+    look_for: If every host with the product shows the same child process pattern it is likely a normal update step; a lone host or a new pattern after a version change is not.
+  - purpose: follow_up
+    goal: Identify the software version, install path and hash of the flagged binary.
+    tool: process_lineage
+    look_for: Binary running from a temp or user path instead of the install directory, a changed hash, or unsigned replacement of a known updater.
+benign:
+  - Legitimate updaters (Windows Update, Chrome, Adobe, Zoom, Java, Microsoft Teams) spawn cmd.exe or powershell.exe for install scripts.
+  - CI/CD jobs legitimately call curl, npm and PowerShell to fetch dependencies from package registries.
+  - Software deployment tools (SCCM, PDQ) wrap installers in scripts.
+escalate:
+  - Sweep all hosts for the flagged vendor hash or file name (see sweep-fleet-for-known-artifact).
+  - Pivot on every external destination contacted by the updater to find other affected hosts.
+confirm: >-
+  Confirmed when a vendor-flagged or hash-changed binary spawns shells and reaches a destination not in the vendor's normal
+  update infrastructure, on more than one host after the same update.
+gaps:
+  - Code-signing validation, package-lock/SBOM dependency scans, and build-artifact integrity checks used upstream are not possible with event search.
+  - Firmware, git commit history and registry telemetry are not in the tenant; the hunt sees only runtime behaviour.

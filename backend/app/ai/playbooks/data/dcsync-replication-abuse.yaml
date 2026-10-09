@@ -1,0 +1,59 @@
+id: dcsync-replication-abuse
+title: DCSync directory replication abuse
+summary: >-
+  Hunt non-domain-controller accounts or hosts requesting Active Directory replication (DS-Replication-Get-Changes-All) to pull
+  password hashes, including via Mimikatz lsadump dcsync or Impacket secretsdump.
+tactics: [credential-access]
+attack: [T1003.006]
+sources:
+  - detecting-dcsync-attack-in-active-directory
+  - hunting-for-dcsync-attacks
+keywords: [dcsync, replication, drsuapi, dsgetncchanges, secretsdump, "4662", ds-replication-get-changes, lsadump, directory replication]
+signals: [cred_access]
+needs: [authentication]
+helps: [alert, process_creation, network_connection]
+hypothesis: >-
+  An account holding replication rights, or a compromised admin, is impersonating a domain controller to replicate password hashes
+  from a DC, so replication access events appear from a non-DC account or the tooling command line is present.
+steps:
+  - purpose: test
+    goal: Tool-side evidence of DCSync on endpoints.
+    tool: search_events
+    query: process.command_line:dcsync
+    look_for: Mimikatz "lsadump::dcsync /user:krbtgt" or Impacket secretsdump with -just-dc. Repeat with token secretsdump.
+  - purpose: test
+    goal: Directory-service access events carrying the replication right GUIDs (free text on message).
+    tool: search_events
+    query: "1131f6ad-9c07-11d1-f79f-00c04fc2dcd2"
+    look_for: >-
+      Security 4662 messages naming the Get-Changes-All GUID (also try 1131f6aa-9c07-11d1-f79f-00c04fc2dcd2 and the Get-Changes-In-Filtered-Set
+      GUID 89e95b76-444d-4c62-991a-0facbeda640c). Subject account must be a DC computer account (ends with $).
+  - purpose: test
+    goal: EDR or SIEM detections on replication abuse.
+    tool: search_events
+    query: event_type:alert tags:attack.t1003.006
+    look_for: Host and account in the alert; a workstation or member server as source is the signal.
+  - purpose: refute
+    goal: Which accounts perform replication-like activity, to separate known sync accounts.
+    tool: aggregate_events
+    query: "1131f6ad-9c07-11d1-f79f-00c04fc2dcd2"
+    field: user.name
+    look_for: DC machine accounts and the Azure AD Connect MSOL_ account are expected; any user or non-DC machine account is not.
+  - purpose: follow_up
+    goal: Use of the stolen hashes afterwards.
+    tool: pivot_entity
+    look_for: >-
+      The initiating host and account: new RDP or type 3 logons, golden-ticket style Kerberos activity, krbtgt-related events, further dumping.
+benign:
+  - Azure AD Connect / Entra Connect sync account (MSOL_*) and ADFS or Exchange servers with delegated replication rights.
+  - Domain controller computer accounts replicating among themselves, including newly promoted DCs.
+  - Backup or migration tools (Quest, ADMT) holding replication permissions, used during a project.
+escalate:
+  - Find the source host and its logon chain (pivot_entity on host and user); check how the account got replication rights (see the account-manipulation playbook).
+  - Treat krbtgt as exposed and hunt forged Kerberos tickets (kerberos-forged-ticket-abuse).
+confirm: >-
+  Confirmed when replication access or tooling comes from an account/host that is not a DC or a documented sync service, ideally with
+  corroborating network traffic from a non-DC to a DC or follow-on credential use.
+gaps:
+  - Event 4662 AccessMask/Properties fields and DRSUAPI RPC (DsGetNCChanges) network traffic are not structured fields; only a GUID free-text match on the message is possible, if 4662 is collected at all.
+  - DC allow-list and audit-policy (Directory Service Access, SACL on the domain object) must be assumed; an empty result may mean auditing is off.

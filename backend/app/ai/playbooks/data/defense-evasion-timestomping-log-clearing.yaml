@@ -1,0 +1,63 @@
+id: defense-evasion-timestomping-log-clearing
+title: Timestomping and log clearing (anti-forensics)
+summary: >-
+  Hunt command-line signs of NTFS timestamp manipulation and event-log clearing; MFT attribute comparison itself needs forensic
+  disk data, so this playbook looks for the tooling and its side effects.
+tactics: [defense-evasion]
+attack: [T1070.006, T1070.001]
+sources:
+  - hunting-for-defense-evasion-via-timestomping
+keywords: [timestomp, timestomping, wevtutil, clear-eventlog, anti-forensics, mft, setmace, lastwritetime, creationtime, log clearing]
+signals: [lolbin]
+needs: [process_creation]
+helps: [file_event, alert]
+hypothesis: >-
+  After dropping tools or data, an adversary changes file timestamps with PowerShell or a timestomp utility and clears event
+  logs to hide the intrusion timeline.
+steps:
+  - purpose: test
+    goal: >-
+      PowerShell setting file time properties.
+    tool: search_events
+    query: process.command_line:creationtime process.command_line:lastwritetime
+    look_for: >-
+      Set-ItemProperty or [IO.File]::SetCreationTime on files in system directories or newly dropped binaries; copying times from a legitimate system file is the usual pattern.
+  - purpose: test
+    goal: >-
+      Known timestomp tools by name (repeat with ntimestomp and setmace).
+    tool: search_events
+    query: process.name:*timestomp*
+    look_for: >-
+      Any execution; these tools have almost no legitimate business use on endpoints.
+  - purpose: test
+    goal: >-
+      Event log clearing.
+    tool: search_events
+    query: process.name:*wevtutil.exe* process.command_line:cl
+    look_for: >-
+      wevtutil cl Security/System/PowerShell logs outside a documented maintenance; Clear-EventLog in PowerShell is the equivalent.
+  - purpose: test
+    goal: >-
+      Log-clear audit records.
+    tool: search_events
+    query: event_type:other message:cleared
+    look_for: >-
+      Messages stating the audit log was cleared (Windows 1102 / 104) on the host and the account that did it.
+  - purpose: refute
+    goal: >-
+      Check the acting account and parent for a legitimate IT process.
+    tool: process_lineage
+    look_for: >-
+      A patching or image-prep script run by a known admin explains it; an unknown process or a dropped binary clearing logs does not.
+benign:
+  - Imaging, sysprep and lab-reset scripts clearing logs; log-retention cleanup jobs.
+  - Backup and sync tools that preserve original times with Set-ItemProperty, and build systems normalising timestamps for reproducible builds.
+escalate:
+  - >-
+    events_around the log clear: what ran just before it is what the adversary wanted hidden.
+  - Take an MFT or disk image for forensic comparison of $STANDARD_INFORMATION and $FILE_NAME times on the suspect files.
+confirm: >-
+  Confirmed when timestamp-altering commands target recently created binaries AND logs are cleared close in time by the same
+  account or host, outside maintenance windows.
+gaps:
+  - MFT $SI versus $FN timestamp comparison, USN journal and Sysmon event 2 (file creation time changed) are not available.

@@ -1,0 +1,66 @@
+id: hunt-hypothesis-from-threat-intel
+title: Turning threat intelligence into a testable hunt hypothesis
+summary: >-
+  Method for converting a threat report or ATT&CK technique into a falsifiable hypothesis: check what telemetry can answer it,
+  look for technique tags and behaviours, and try to refute before concluding.
+tactics: [execution, persistence]
+attack: [T1059.001, T1071, T1547]
+sources:
+  - building-threat-hunt-hypothesis-framework
+keywords: [hypothesis, threat intelligence, hunt plan, attack gap, coverage, testable, ttp, campaign]
+signals: []
+needs: [process_creation]
+helps: [network_connection, alert, authentication]
+hypothesis: >-
+  If the actor or technique named in the intelligence is active here, then at least one observable (process chain, command-line
+  token, tagged alert, outbound connection, autostart change) exists on one or more hosts in the window, and its absence on
+  covered telemetry refutes the hypothesis.
+steps:
+  - purpose: scope
+    goal: Which event types and sources exist in the window, so each hypothesis maps to telemetry that can answer it.
+    tool: aggregate_events
+    query: has:event_type
+    field: event_type
+    look_for: >-
+      Event types with zero or tiny counts cannot test a hypothesis that depends on them: record a gap instead of calling it clean.
+  - purpose: scope
+    goal: Which sensors and hosts supply the data (coverage breadth).
+    tool: aggregate_events
+    query: has:host.hostname
+    field: host.hostname
+    look_for: A hypothesis about "the fleet" only holds for hosts that report; note silent servers or a single noisy host dominating counts.
+  - purpose: test
+    goal: Sensor-tagged detections for the technique family in the intelligence.
+    tool: search_events
+    query: tags:attack.t1059*
+    look_for: >-
+      Swap the prefix for the technique under test (attack.t1547*, attack.t1071*). Tagged hits are leads to verify in raw process
+      events, not proof.
+  - purpose: test
+    goal: Behavioural observable written as a command-line token from the report.
+    tool: search_events
+    query: process.command_line:encodedcommand
+    look_for: Replace the token with the report's distinctive argument or tool name; check parent process and user for each hit.
+  - purpose: refute
+    goal: Try to disprove the hypothesis by finding the benign owner of every hit.
+    tool: pivot_entity
+    look_for: >-
+      Pivot on the host and user of each hit; a software-deployment tool, admin script or scanner explaining all hits refutes it for
+      those hosts.
+  - purpose: follow_up
+    goal: Reconstruct the chain around any hit that survives refutation.
+    tool: process_lineage
+    look_for: Parent chain, sibling commands and what ran next; compare against the intelligence's expected kill-chain order.
+benign:
+  - Red-team or purple-team exercises and authorised vulnerability scanning produce the technique on purpose; check with the change calendar.
+  - Endpoint management and software deployment agents (SCCM, Intune, Ansible) legitimately use encoded PowerShell and scheduled autostarts.
+  - Sensor tags are applied by detection rules; a tag shows a rule matched, not that the behaviour was malicious.
+escalate:
+  - Widen from the surviving host to its user and peers with pivot_entity before concluding it is isolated.
+  - Add any hash, domain or IP from the report as a fleet sweep (see sweep-fleet-for-known-artifact).
+confirm: >-
+  Confirmed only when two independent observables from different event types (for example a process chain and an outbound
+  connection or autostart change) align in time on the same host with no benign owner.
+gaps:
+  - The upstream procedure assumes Sysmon, EDR and SIEM with threat-intel feed correlation; no automatic IOC feed matching exists here.
+  - ATT&CK coverage gap analysis (navigator layers, detection inventory) is outside the agent's read-only search tools.

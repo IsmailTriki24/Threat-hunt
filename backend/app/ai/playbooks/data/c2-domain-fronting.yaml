@@ -1,0 +1,57 @@
+id: c2-domain-fronting
+title: Domain fronting C2 through CDN hosts
+summary: >-
+  Look for hosts talking to CDN-hosted high-reputation domains from non-browser processes, with steady periodic traffic - the
+  only visible trace of domain fronting when SNI/Host header logs are missing.
+tactics: [command-and-control]
+attack: [T1090.004, T1071.001]
+sources:
+  - hunting-for-domain-fronting-c2-traffic
+keywords: [domain fronting, sni, host header, cdn, cloudfront, azureedge, fastly, proxy, front domain]
+signals: [external_connection]
+needs: [network_connection]
+helps: [process_creation, alert]
+hypothesis: >-
+  A non-browser process connects to a CDN-fronted domain at regular intervals while the true destination is hidden in the HTTP
+  Host header, so the visible destination is a trusted CDN hostname with unusual traffic patterns.
+steps:
+  - purpose: test
+    goal: >-
+      CDN destinations contacted by processes other than browsers.
+    tool: aggregate_events
+    query: event_type:network_connection network.dst_domain:(*cloudfront.net|*azureedge.net|*fastly.net|*akamaihd.net|*edgekey.net)
+    field: process.name
+    look_for: >-
+      powershell, rundll32, svchost from odd paths, or unknown binaries reaching CDN edges; browsers and Office are expected.
+  - purpose: test
+    goal: >-
+      Which CDN hostnames are hit repeatedly by one host.
+    tool: aggregate_events
+    query: event_type:network_connection network.dst_domain:(*cloudfront.net|*azureedge.net|*fastly.net)
+    field: network.dst_domain
+    look_for: >-
+      A single random-looking distribution ID with steady counts from one host (use events_around for spacing).
+  - purpose: test
+    goal: >-
+      Command-line evidence of a Host header override.
+    tool: search_events
+    query: process.command_line:host process.command_line:header
+    look_for: >-
+      curl, PowerShell or custom tools setting a Host header that differs from the URL host.
+  - purpose: refute
+    goal: >-
+      Rule out a legitimate application using the CDN.
+    tool: pivot_entity
+    look_for: >-
+      Pivot on the process and destination; the same CDN hostname used by many hosts and a signed vendor binary is software delivery, not fronting.
+benign:
+  - Software updaters, SaaS clients and web apps served from CloudFront, Azure CDN or Fastly.
+  - Developers testing CDN configuration with curl and custom Host headers.
+escalate:
+  - Pull the owning process lineage and compare the process with c2-beaconing-periodicity findings.
+  - Report the CDN distribution identifiers to the CDN provider through the incident process.
+confirm: >-
+  Confirmed only with a Host/SNI mismatch from proxy or TLS logs, or a non-browser process beaconing to a CDN distribution
+  with threat-intelligence support; periodic CDN traffic alone is suspicious, not confirmed.
+gaps:
+  - SNI versus HTTP Host header comparison, certificate details and CDN IP range correlation need proxy or TLS inspection logs that are not ingested.

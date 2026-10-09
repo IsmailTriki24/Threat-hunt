@@ -1,0 +1,67 @@
+id: lateral-movement-dcom
+title: DCOM lateral movement (MMC20, ShellWindows, ShellBrowserWindow)
+summary: >-
+  Hunt remote command execution through abused DCOM objects - shells spawned by mmc.exe, dllhost.exe or explorer.exe on servers,
+  preceded by RPC-driven network logons.
+tactics: [lateral-movement, execution]
+attack: [T1021.003]
+sources:
+  - hunting-for-dcom-lateral-movement
+keywords: [dcom, mmc20, shellwindows, shellbrowserwindow, mmc.exe, dllhost, rpc, executeshellcommand, lateral movement]
+signals: [lateral_movement]
+needs: [process_creation]
+helps: [authentication, network_connection]
+hypothesis: >-
+  An adversary is activating a DCOM object on a remote host, so a command interpreter appears as a child of mmc.exe, dllhost.exe
+  or an existing explorer.exe on a server where nobody is logged on interactively.
+steps:
+  - purpose: test
+    goal: >-
+      Children of mmc.exe (MMC20.Application COM server): a shell or script host among them is the signal.
+    tool: aggregate_events
+    query: process.parent.name:*mmc.exe*
+    field: process.name
+    look_for: >-
+      mmc.exe normally spawns nothing on servers; a cmd/powershell/wscript/mshta child with /c and output redirection is the classic ExecuteShellCommand pattern.
+  - purpose: test
+    goal: >-
+      Children of dllhost.exe (COM surrogate): interpreters among them are suspicious.
+    tool: aggregate_events
+    query: process.parent.name:*dllhost.exe*
+    field: process.name
+    look_for: >-
+      dllhost.exe with /processid:{CLSID} spawning interpreters; legitimate surrogates rarely launch shells.
+  - purpose: test
+    goal: >-
+      Children of explorer.exe on server hosts (ShellWindows / ShellBrowserWindow); narrow to one server with host.hostname.
+    tool: aggregate_events
+    query: process.parent.name:*explorer.exe* event_type:process_creation
+    field: process.name
+    look_for: >-
+      On a server with no console or RDP session, an explorer child shell is DCOM; on workstations this is normal user activity, so scope by host.
+  - purpose: test
+    goal: >-
+      The network logon that carries the DCOM call.
+    tool: search_events
+    query: event_type:authentication auth.logon_type:(3|network) outcome:success
+    look_for: >-
+      Align the logon time with the shells above (events_around); take the source IP as the origin host.
+  - purpose: refute
+    goal: >-
+      Was a human logged on the target interactively?
+    tool: search_events
+    query: event_type:authentication auth.logon_type:(2|10|interactive|remoteinteractive) outcome:success
+    look_for: >-
+      An interactive session on the same host at that time explains explorer children; none makes DCOM more likely.
+benign:
+  - Administrators opening Event Viewer or other snap-ins from MMC and launching a command prompt from them.
+  - Users on RDP servers or terminal servers launching shells from explorer.exe all day.
+  - Software installers and Office/Adobe components that use dllhost.exe surrogates.
+escalate:
+  - pivot_entity on the source IP of the network logon and hunt it for earlier compromise.
+  - process_lineage on the spawned shell, then events_around for dropped files, tasks or credential access.
+confirm: >-
+  Confirmed when an interpreter is spawned by mmc.exe/dllhost.exe/explorer.exe with no interactive session on the host AND a
+  network logon from another internal host precedes it.
+gaps:
+  - Sysmon network events for RPC port 135 and dynamic ports, and COM CLSID activation events, are not available.

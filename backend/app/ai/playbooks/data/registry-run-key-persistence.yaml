@@ -1,0 +1,64 @@
+id: registry-run-key-persistence
+title: Registry autorun persistence (Run keys, Winlogon, IFEO, COM)
+summary: >-
+  Hunt autostart persistence in the registry - Run/RunOnce, Winlogon Shell/Userinit, Image File Execution Options and COM hijacks -
+  using registry events when present and process-level proxies (reg.exe, PowerShell) when they are not.
+tactics: [persistence, privilege-escalation]
+attack: [T1547.001, T1547.004, T1546.012, T1546.015]
+sources:
+  - hunting-for-registry-run-key-persistence
+  - hunting-for-registry-persistence-mechanisms
+keywords: [run key, runonce, registry persistence, autorun, winlogon, userinit, ifeo, image file execution options, reg add, com hijack]
+signals: [persistence, suspicious_path]
+needs: [registry_event]
+helps: [process_creation]
+hypothesis: >-
+  An adversary wrote a value under a Run, RunOnce, Winlogon, Image File Execution Options or COM InprocServer32 key so that a
+  payload in a user-writable path or a LOLBin command runs at logon or when a trusted program starts.
+steps:
+  - purpose: test
+    goal: Run key writes (needs registry telemetry).
+    tool: search_events
+    query: event_type:registry_event registry.key:currentversion registry.key:run
+    look_for: >-
+      Values whose data is in AppData, Temp, ProgramData, Public, a script host or powershell with encoded/hidden flags; unsigned
+      binaries; very recent values on a single host.
+  - purpose: test
+    goal: Proxy when no registry events exist - reg.exe writing autorun keys.
+    tool: search_events
+    query: process.name:*reg.exe* process.command_line:currentversion process.command_line:run
+    look_for: >-
+      reg add ... \Run /v <name> /d <payload>; payload in a user path; parent is powershell, cmd, script host or an Office app.
+  - purpose: test
+    goal: IFEO debugger and Winlogon tampering.
+    tool: search_events
+    query: process.command_line:"image file execution options"
+    look_for: >-
+      A Debugger value set for accessibility binaries (sethc, utilman, osk) or security tools; Winlogon Shell/Userinit changed from
+      explorer.exe / userinit.exe.
+  - purpose: test
+    goal: PowerShell writing autorun values.
+    tool: search_events
+    query: process.name:*powershell.exe* process.command_line:currentversion process.command_line:run
+    look_for: Set-ItemProperty or New-ItemProperty against Run keys with an encoded or downloaded payload.
+  - purpose: refute
+    goal: Which processes normally write autoruns.
+    tool: aggregate_events
+    query: process.name:*reg.exe*
+    field: process.parent.name
+    look_for: >-
+      Installers (msiexec, setup executables) and management agents explain most hits; hostile writers are shells and script hosts
+      with a user-path payload.
+benign:
+  - Installers and updaters (OneDrive, Teams, Zoom, Spotify, Adobe) register Run values pointing into AppData or Program Files.
+  - Group policy logon scripts and endpoint management agents set RunOnce for post-reboot configuration.
+  - Debuggers configured for developers via IFEO (for example Visual Studio) on engineering workstations.
+escalate:
+  - Pivot on the payload path/hash across hosts and look for the same value name.
+  - process_lineage on the writer to find the dropper; events_around for the first execution at the next logon.
+confirm: >-
+  Confirmed when an autorun value points to a binary or command that is unsigned/unknown or in a writable path AND the writer is not
+  an installer or management agent, or the same value appears on multiple hosts.
+gaps:
+  - registry_event telemetry (Sysmon 12/13/14) is absent in the tenant, so the first step cannot return real results; the process proxy only sees reg.exe and PowerShell, not API writes.
+  - Autoruns/RegRipper snapshots used by the upstream procedure are not available.

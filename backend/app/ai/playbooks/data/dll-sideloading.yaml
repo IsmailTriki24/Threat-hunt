@@ -1,0 +1,63 @@
+id: dll-sideloading
+title: DLL side-loading and search-order hijacking
+summary: >-
+  Hunt signed applications copied to user-writable folders next to a planted DLL, DLLs dropped in application or PATH directories,
+  and the odd child processes or connections that follow the load.
+tactics: [defense-evasion, persistence, privilege-escalation]
+attack: [T1574.001, T1574.002]
+sources:
+  - detecting-dll-sideloading-attacks
+keywords: [dll sideloading, dll side-loading, search order hijacking, phantom dll, dll proxying, version.dll, planted dll, signed binary]
+signals: [suspicious_path]
+needs: [process_creation]
+helps: [file_event, network_connection]
+hypothesis: >-
+  An attacker placed a malicious DLL beside a legitimate signed executable (often copied to Temp, AppData, ProgramData or Public) so
+  the trusted binary loads it; this shows as a well-known vendor executable running from a non-standard folder.
+steps:
+  - purpose: test
+    goal: Legitimate-looking executables running from user-writable folders.
+    tool: search_events
+    query: event_type:process_creation process.executable:appdata
+    look_for: >-
+      Vendor binaries (OneDrive updater, Notepad++, Adobe, security-product helpers) executing from AppData or Temp subfolders instead
+      of Program Files. Repeat with ProgramData, public and temp.
+  - purpose: test
+    goal: New DLLs created in user-writable folders.
+    tool: search_events
+    query: event_type:file_event file.name:*.dll* file.path:temp
+    look_for: >-
+      A DLL with a system-library name (version.dll, wtsapi32.dll, dbghelp.dll, winhttp.dll, cryptsp.dll) created in a folder that is
+      not system32, shortly before an executable starts from the same folder.
+  - purpose: test
+    goal: Same executable name with different paths across the fleet.
+    tool: aggregate_events
+    query: event_type:process_creation process.executable:programdata
+    field: process.name
+    look_for: >-
+      Rare process names run from ProgramData or Public on few hosts; compare with the same name's expected install path.
+  - purpose: follow_up
+    goal: Behaviour of the suspected host process after launch.
+    tool: process_lineage
+    look_for: >-
+      The signed binary spawning cmd/powershell, beaconing outward, or writing further files; a pristine updater has none of this.
+  - purpose: refute
+    goal: Check if the folder is a normal per-user install location.
+    tool: pivot_entity
+    look_for: >-
+      The same executable and path on many hosts with the same hash and a consistent signed vendor (Teams, Slack, Chrome updaters under
+      AppData) is a legitimate per-user install; a single host with a unique hash is not.
+benign:
+  - Per-user installs under AppData\Local (Teams, Slack, Zoom, Discord, Chrome, VS Code) legitimately run from user folders.
+  - Software installers and updaters extract temp copies of signed binaries and DLLs while running.
+  - Portable tools carried by administrators (Sysinternals, 7-Zip portable).
+escalate:
+  - Pivot on the DLL file hash (file.hash.sha256) and the executable hash across all hosts.
+  - events_around the DLL creation to find the dropper (archive extraction, browser download, Office or script host).
+  - Check persistence created from the same folder (scheduled task, run key, service).
+confirm: >-
+  Confirmed when a signed executable runs from a non-standard path next to a freshly created, unsigned or unique-hash DLL AND the
+  process then does something the genuine application does not (network beacon, shell child).
+gaps:
+  - Sysmon Event 7 (ImageLoaded), the primary source for sideloading, is not in the normalized schema; DLL loads and signature status are invisible.
+  - Signature validation of the DLL is not available; the hunt infers abuse from path anomalies and file creation only.

@@ -278,6 +278,9 @@ class Investigation:
     resumes: int = 0
     intel: dict[str, dict[str, Any]] = field(default_factory=dict)  # entity key -> compact enrichment summary
     enriched: list[str] = field(default_factory=list)  # entity keys already looked up (never twice per run)
+    playbooks_used: list[str] = field(
+        default_factory=list
+    )  # hunt playbooks the agent opened (provenance for the report)
     _qseq: int = 0
 
     # ---- construction / persistence -----------------------------------------------------------------------------------------
@@ -312,6 +315,7 @@ class Investigation:
             "flagged_procs",
             "intel",
             "enriched",
+            "playbooks_used",
         ):
             if k in d:
                 setattr(inv, k, d[k])
@@ -433,6 +437,11 @@ class Investigation:
         cmd = _g(doc, "process", "command_line")
         if cmd:
             out["command_line"] = str(cmd)[:300]
+        tags = [str(t)[:60] for t in (doc.get("tags") or [])[:8]]
+        if tags:
+            out["tags"] = (
+                tags  # LogRhythm / Trend alerts carry ATT&CK ids here (attack.t1059.003); they point to hunt playbooks
+            )
         return out
 
     def record(self, rec: QueryRecord) -> None:
@@ -470,6 +479,32 @@ class Investigation:
     def leads(self, limit: int = 8) -> list[Entity]:
         cands = [e for e in self.entities.values() if not e.pivoted and e.dismissed is None and e.score > 0]
         return sorted(cands, key=lambda e: (-e.score, -e.count, e.value))[:limit]
+
+    def attack_ids_seen(self) -> tuple[str, ...]:
+        """ATT&CK technique ids the sensors already attached to events we have seen (tags such as attack.t1059.003, or ids in summaries)."""
+        found: dict[str, None] = {}
+        for e in self.evidence.values():
+            for t in e.get("tags") or []:
+                m = re.fullmatch(r"(?i)attack\.(t\d{4}(?:\.\d{3})?)", str(t))
+                if m:
+                    found[m.group(1).upper()] = None
+            for m in re.finditer(r"\bT\d{4}(?:\.\d{3})?\b", str(e.get("summary") or "")):
+                found[m.group(0)] = None
+        return tuple(found)
+
+    def suggested_playbooks(self, limit: int = 3) -> list[tuple[Any, int]]:
+        """Hunt playbooks that fit the objective, the triage signals and the ATT&CK ids seen so far (not yet opened). Deterministic."""
+        from app.ai import playbooks
+
+        signals = tuple(dict.fromkeys(f for e in self.entities.values() for f in e.flags if f in playbooks.SIGNALS))
+        ranked = playbooks.search(
+            self.objective,
+            attack=self.attack_ids_seen(),
+            signals=signals,
+            limit=limit + len(self.playbooks_used),
+            min_score=4,
+        )
+        return [(pb, s) for pb, s in ranked if pb.id not in self.playbooks_used][:limit]
 
     def blocking_leads(self, threshold: int) -> list[Entity]:
         return [e for e in self.leads(50) if e.score >= threshold]
@@ -570,6 +605,20 @@ class Investigation:
                     + (" [named in objective]" if e.from_objective else "")
                     + f" -> pivot_entity(type={e.type}, value={e.value})"
                 )
+        suggestions = self.suggested_playbooks()
+        if suggestions:
+            from app.ai import playbooks
+
+            et = self.coverage.get("event_types")
+            lines.append(
+                "Hunt playbooks that fit what you know (open one with hunt_playbook action=get id=...; guidance, not evidence):"
+            )
+            for pb, _ in suggestions:
+                f = playbooks.feasibility(pb, et)
+                lines.append(
+                    f"  {pb.id} - {pb.title} [{', '.join(pb.attack[:3])}] telemetry: {f['status']}"
+                    + (f" (missing {', '.join(f['missing'])})" if f["missing"] else "")
+                )
         if self.intel:
             lines.append(
                 "Threat intelligence on indicators you met (looked up automatically in the tenant's providers / public sources; "
@@ -636,6 +685,7 @@ class Investigation:
         return {
             "stop_reason": stop_reason,
             "intel": self.intel,
+            "playbooks_used": self.playbooks_used,
             "hypotheses": [
                 {
                     "id": h.id,

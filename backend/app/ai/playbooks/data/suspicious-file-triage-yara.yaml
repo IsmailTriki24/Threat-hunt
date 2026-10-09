@@ -1,0 +1,61 @@
+id: suspicious-file-triage-yara
+title: Suspicious file drops and hash triage (YARA-style hunting)
+summary: >-
+  Adapt YARA-based file hunting to what file_event can show: executables, DLLs and scripts created in staging paths, known-bad hash
+  and name matches, and which files are then executed. Content scanning itself is handed back to the analyst.
+tactics: [execution, command-and-control]
+attack: [T1105]
+sources:
+  - performing-threat-hunting-with-yara-rules
+keywords: [yara, file scan, malware triage, file hash, dropped file, staging, ioc sweep, signature, hash pivot, malware family]
+signals: [suspicious_path]
+needs: [file_event]
+helps: [process_creation, alert]
+hypothesis: >-
+  Malware was written to a user-writable path as an executable, DLL or script, and its hash or name matches a known sample or is
+  unique across the fleet, followed by execution of that file.
+steps:
+  - purpose: test
+    goal: Executables created in user-writable staging paths.
+    tool: search_events
+    query: event_type:file_event file.name:*.exe* file.path:temp
+    look_for: >-
+      Executables created in Temp, AppData or Public by browsers, archive tools or Office. Repeat for .dll, .ps1, .hta and .js
+      extensions and for the token "downloads".
+  - purpose: test
+    goal: Sweep a specific indicator hash (supply from intel or an alert).
+    tool: search_events
+    query: has:file.hash.sha256 event_type:file_event
+    look_for: >-
+      Replace with file.hash.sha256:<value> (or md5/sha1, or process.hash.*) for each known-bad sample; every host that holds the
+      file is in scope.
+  - purpose: test
+    goal: Was the dropped file executed?
+    tool: search_events
+    query: event_type:process_creation process.executable:temp
+    look_for: Match the process.executable path and hash with the file_event; creation then execution within minutes is the pattern.
+  - purpose: scope
+    goal: Files seen on only one or two hosts.
+    tool: aggregate_events
+    query: event_type:file_event file.name:*.dll* file.path:programdata
+    field: file.name
+    look_for: Rare file names (random strings, system-library names) in ProgramData/Public are candidates for hash lookup or manual YARA scan.
+  - purpose: refute
+    goal: Exclude installer and update noise.
+    tool: aggregate_events
+    query: event_type:file_event file.name:*.exe* file.path:temp
+    field: process.name
+    look_for: msiexec, setup, Chrome/Edge updaters and SCCM clients writing signed files on many hosts are benign; one host with an unknown writer is not.
+benign:
+  - Software installers, MSI extraction and browser or Office updaters write executables and DLLs to Temp.
+  - Developer build output and CI agents create many binaries and scripts.
+  - Security tools quarantine or sandbox samples in temp folders.
+escalate:
+  - pivot_entity on the file hash across hosts and over time; events_around the creation for the delivery vector.
+  - Ask the analyst to collect the file and run the YARA rules offline; do not claim a family match without it.
+confirm: >-
+  Confirmed when a hash matches a known-bad indicator, or a unique file from a staging path is executed and then shows malicious
+  behaviour; a path or name match alone is only suspicious.
+gaps:
+  - YARA matching on file or memory content cannot be done by event search; the agent can only use metadata and hashes.
+  - file_event hashes may be absent for many sources, limiting IOC sweeps.

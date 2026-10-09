@@ -1,0 +1,55 @@
+id: dns-based-persistence
+title: DNS-based persistence and record tampering
+summary: >-
+  Hunt DNS persistence - unauthorized zone records, wildcard or NS delegation changes and dangling CNAMEs - using the little
+  host-side evidence available and declaring the DNS telemetry gap honestly.
+tactics: [persistence, resource-development]
+attack: [T1584.001, T1583.002]
+sources:
+  - hunting-for-dns-based-persistence
+keywords: [dns persistence, dangling cname, subdomain takeover, ns delegation, wildcard dns, dnscmd, zone change, dns hijack]
+signals: [external_connection]
+needs: [dns_query]
+helps: [process_creation, network_connection]
+hypothesis: >-
+  An adversary changed or abused DNS records (new subdomains, wildcard records, NS delegation, dangling CNAMEs) or the DNS server
+  configuration so internal clients or the organisation's domains resolve to attacker-controlled infrastructure.
+steps:
+  - purpose: test
+    goal: DNS server administration performed with command-line tools.
+    tool: search_events
+    query: process.name:*dnscmd.exe*
+    look_for: >-
+      /recordadd, /zoneadd, /config /serverlevelplugindll (a known DLL-load persistence), zone transfers enabled to unknown hosts;
+      run by a non-DNS-admin account.
+  - purpose: test
+    goal: PowerShell DNS record changes.
+    tool: search_events
+    query: process.name:*powershell.exe* process.command_line:dnsserverresourcerecord
+    look_for: Add-DnsServerResourceRecord / Set-DnsServerResourceRecord with a new CNAME, NS or wildcard from an unexpected host.
+  - purpose: test
+    goal: Resolution of suspicious names (needs DNS telemetry).
+    tool: search_events
+    query: event_type:dns_query has:dns.answers
+    look_for: >-
+      Newly seen subdomains of your own domains, answers pointing to external hosting for internal names, TXT/NS lookups with long
+      high-entropy labels.
+  - purpose: refute
+    goal: Rate and ownership of the changing records.
+    tool: aggregate_events
+    query: event_type:dns_query
+    field: dns.question
+    look_for: Frequent legitimate names (update, CDN, SaaS) vs rare new ones; confirm ownership of any rare name against the zone owner.
+benign:
+  - DNS administrators adding records through dnscmd or PowerShell during planned changes.
+  - Cloud and SaaS onboarding that adds CNAME or TXT verification records (Microsoft 365, Google, certificate validation).
+  - Load-balancer and CDN migrations that create temporary wildcard or CNAME records.
+escalate:
+  - Pivot on the account that ran the DNS change and on the server host for earlier suspicious logons.
+  - Validate record ownership with the DNS team and compare against the change log; pivot on the destination IP in network_connection.
+confirm: >-
+  Confirmed when a DNS record or server setting was changed by an account outside the DNS admin group or change window AND it
+  points to infrastructure the organisation does not own, or an unauthorised plugin DLL is configured.
+gaps:
+  - "No dns_query telemetry in the tenant, so the zone-baseline comparison, passive-DNS history (SecurityTrails) and provider audit logs (Route53, Azure DNS, Cloudflare) used upstream are unavailable."
+  - "Only host-side DNS-server admin commands can be hunted, and only on hosts with process telemetry."

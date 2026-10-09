@@ -1,0 +1,55 @@
+id: email-forwarding-rule-abuse
+title: Malicious mailbox forwarding rules (endpoint proxy)
+summary: >-
+  Find signs that an attacker set up inbox rules or mailbox forwarding for persistent email collection, using endpoint
+  command lines and alerts because mail audit logs are not available.
+tactics: [collection, persistence]
+attack: [T1114]
+sources:
+  - detecting-email-forwarding-rules-attack
+keywords: [email forwarding, inbox rule, bec, mailbox rule, forwardingsmtpaddress, business email compromise, mail collection]
+signals: [persistence]
+needs: [process_creation]
+helps: [alert, authentication]
+hypothesis: >-
+  After an account compromise, the attacker created an inbox rule or mailbox forwarding setting to copy mail to an external
+  address, visible as Exchange PowerShell cmdlets in command lines or as a security alert.
+steps:
+  - purpose: test
+    goal: Inbox rule cmdlets run from an endpoint or server.
+    tool: search_events
+    query: process.command_line:inboxrule
+    look_for: New-InboxRule or Set-InboxRule with forward, redirect or delete parameters, run by a user who is not a mail administrator.
+  - purpose: test
+    goal: Mailbox-level forwarding set through PowerShell.
+    tool: search_events
+    query: process.command_line:forwardingsmtpaddress
+    look_for: Set-Mailbox with an external SMTP address; note the actor user and the host.
+  - purpose: test
+    goal: Detections or messages that mention forwarding rules.
+    tool: search_events
+    query: message:"forwarding rule"
+    look_for: Alerts from mail or cloud sensors; record the mailbox and the creator IP.
+  - purpose: refute
+    goal: Is the actor a known mail administrator or migration job?
+    tool: aggregate_events
+    query: process.command_line:inboxrule
+    field: user.name
+    look_for: A single admin account doing planned work is benign; an ordinary user account or a first-time user is suspicious.
+  - purpose: follow_up
+    goal: Account-compromise context before the rule appeared.
+    tool: pivot_entity
+    look_for: Failed then successful logons, new source IPs, or phishing-related process chains for the same user before the rule creation.
+benign:
+  - Users create legitimate rules to file newsletters or forward to a personal address when on leave (policy permitting).
+  - Mail migrations and shared-mailbox setup by administrators use Set-Mailbox and inbox cmdlets in bulk.
+escalate:
+  - Pivot on the user and source IP for sign-ins from unfamiliar locations around the rule time.
+  - Hunt other mailboxes for the same destination address once known.
+confirm: >-
+  Confirmed when a rule or forwarding target points to an external address the user does not recognise AND the account shows
+  compromise indicators (anomalous sign-in, phishing chain) before the creation time.
+gaps:
+  - Exchange/O365 unified audit log (New-InboxRule, Set-Mailbox, UpdateInboxRules operations) and Graph messageRules are absent; this is an endpoint-only proxy and a clean result is weak.
+  - Mailbox rule enumeration via Graph API cannot be performed by the agent.
+  - Sign-in logs from the identity provider are not in this tenant.

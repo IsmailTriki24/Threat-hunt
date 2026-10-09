@@ -1,0 +1,67 @@
+id: pass-the-hash-ntlm-relay
+title: Pass-the-hash and NTLM relay
+summary: >-
+  Hunt NTLM-based network logons that bypass password knowledge - stolen hash replay and relayed/coerced authentication
+  (Responder, ntlmrelayx, PetitPotam-style coercion) - via NTLM type 3 logons, source mismatches and machine-account anomalies.
+tactics: [lateral-movement, credential-access]
+attack: [T1550.002, T1557.001]
+sources:
+  - detecting-pass-the-hash-attacks
+  - detecting-ntlm-relay-with-event-correlation
+  - hunting-for-ntlm-relay-attacks
+keywords: [pass the hash, ntlm, ntlm relay, responder, llmnr, ntlmrelayx, petitpotam, smb signing, "4624", logon type 3, machine account]
+signals: [lateral_movement, cred_access]
+needs: [authentication]
+helps: [process_creation, network_connection, alert]
+hypothesis: >-
+  An attacker is authenticating to servers over NTLM with a stolen hash or a relayed session, so type 3 NTLM logons appear for accounts
+  and sources that normally use Kerberos, or machine accounts authenticate from IPs that are not theirs.
+steps:
+  - purpose: test
+    goal: Successful network logons that used NTLM.
+    tool: search_events
+    query: event_type:authentication outcome:success auth.logon_type:(3|network) auth.method:*ntlm*
+    look_for: >-
+      NTLM (not Kerberos) logons by privileged users from workstations to servers; local Administrator RID-500 or admin accounts across
+      many targets. If auth.method is empty in this tenant, use message text ntlm.
+  - purpose: test
+    goal: Relay and poisoning tooling on endpoints.
+    tool: search_events
+    query: process.command_line:responder
+    look_for: Responder, ntlmrelayx, Inveigh, mitm6 (repeat with the token names); also wmic or smbclient style sessions from odd hosts.
+  - purpose: test
+    goal: Machine-account network logons (relay of coerced authentication).
+    tool: search_events
+    query: event_type:authentication outcome:success auth.logon_type:(3|network) user.name:*$*
+    look_for: >-
+      Computer accounts (WS01$) logging on from an IP that is not the machine's own address, or a DC account authenticating to a non-DC
+      after a coercion trigger (spooler/efs/dfs RPC).
+  - purpose: test
+    goal: Spread - one account hitting many hosts quickly.
+    tool: aggregate_events
+    query: event_type:authentication outcome:success auth.logon_type:(3|network)
+    field: user.name
+    look_for: One user with success on many distinct hosts in minutes (pivot to host.hostname for the count); relayed sessions show fast fan-out.
+  - purpose: refute
+    goal: Baseline the NTLM users to exclude legacy-but-legitimate NTLM.
+    tool: aggregate_events
+    query: event_type:authentication outcome:success auth.logon_type:(3|network) auth.method:*ntlm*
+    field: auth.source_ip
+    look_for: Print servers, file-share clients reached by IP address, scanners and old NAS devices produce steady NTLM; a new source or a workstation-to-workstation pattern does not.
+  - purpose: follow_up
+    goal: What did the account do on the target?
+    tool: events_around
+    look_for: Remote service creation, scheduled tasks, shells from services, or dumping on the target within minutes of the logon.
+benign:
+  - Access by IP address or to non-domain hosts, which forces NTLM fallback (file servers, NAS, printers).
+  - Vulnerability scanners and management tools authenticating to every host with a service account.
+  - Legacy applications and trusts that cannot use Kerberos.
+escalate:
+  - Identify the first host that used the account (pivot_entity on user.name and auth.source_ip) and hunt it for credential dumping.
+  - Check SMB/LDAP signing posture of targeted servers with the administrators; relay needs unsigned targets.
+confirm: >-
+  Confirmed when NTLM network logons for an account come from hosts that do not match its normal workstation or the machine's own IP AND
+  they are linked to dumping, relay tooling, or follow-on remote execution. NTLM usage alone is not evidence.
+gaps:
+  - Event 4624 detail (WorkstationName vs IP mismatch, LmPackageName NTLM V1, KeyLength 0), 5145 named-pipe access and SMB-signing status are not structured fields.
+  - LLMNR/NBT-NS poisoning is seen on the wire (UDP 5355/137); dns_query and most network flow data are absent here.

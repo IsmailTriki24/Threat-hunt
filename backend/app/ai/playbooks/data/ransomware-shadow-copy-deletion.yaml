@@ -1,0 +1,63 @@
+id: ransomware-shadow-copy-deletion
+title: Ransomware preparation - shadow copy deletion and recovery inhibition
+summary: >-
+  Hunt vssadmin, wmic, PowerShell and bcdedit commands that delete shadow copies or disable recovery, plus ransom-note and
+  mass-rename file activity.
+tactics: [impact]
+attack: [T1490, T1486]
+sources:
+  - hunting-for-shadow-copy-deletion
+keywords: [shadow copy, vssadmin, delete shadows, wbadmin, bcdedit, recoveryenabled, ransomware, ransom note, inhibit system recovery, encrypt]
+signals: [lolbin]
+needs: [process_creation]
+helps: [file_event, alert]
+hypothesis: >-
+  Ransomware, immediately before encrypting files, removes Volume Shadow Copies and disables recovery, so vssadmin, wmic,
+  PowerShell or bcdedit commands with delete/ignoreallfailures semantics appear, followed by mass file modification.
+steps:
+  - purpose: test
+    goal: >-
+      vssadmin deleting shadows.
+    tool: search_events
+    query: process.name:*vssadmin.exe* process.command_line:"delete shadows"
+    look_for: >-
+      The /all and /quiet switches in the arguments; any parent that is not an administrator tool (script host, Office, unknown binary) is high risk.
+  - purpose: test
+    goal: >-
+      WMIC or PowerShell shadow copy removal.
+    tool: search_events
+    query: process.command_line:shadowcopy process.command_line:delete
+    look_for: >-
+      wmic shadowcopy delete or Get-WmiObject Win32_ShadowCopy | Remove-WmiObject, often from encoded PowerShell.
+  - purpose: test
+    goal: >-
+      Recovery settings disabled.
+    tool: search_events
+    query: process.name:*bcdedit.exe* process.command_line:recoveryenabled
+    look_for: >-
+      "recoveryenabled No" and "bootstatuspolicy ignoreallfailures"; also wbadmin delete catalog.
+  - purpose: test
+    goal: >-
+      Mass encryption artefacts - ransom notes and renamed files.
+    tool: search_events
+    query: event_type:file_event file.name:(*readme*|*decrypt*|*recover*|*restore_files*)
+    look_for: >-
+      The same note name created across many directories within minutes; pair with many files gaining one new extension on the same host.
+  - purpose: refute
+    goal: >-
+      Was this a maintenance action by an administrator?
+    tool: process_lineage
+    look_for: >-
+      Interactive admin session with a change ticket and a single run is benign; automated chains from a dropped binary are not.
+benign:
+  - Backup and storage-management software pruning shadow copies (Veeam, Acronis, Windows Backup cleanup) with vssadmin delete shadows /for=.
+  - Administrators freeing disk space or resizing shadow storage.
+  - Imaging and deployment tasks that change boot configuration.
+escalate:
+  - Isolate the host in the report; use events_around for the encryption window and find patient zero via the parent chain.
+  - Pivot on the account to other hosts running the same commands (lateral-movement-remote-services).
+confirm: >-
+  Confirmed when shadow-copy deletion runs from an unexpected parent or account, especially together with bcdedit changes or
+  mass file renames and ransom notes within minutes.
+gaps:
+  - VSS service events, Windows 4688 command-line auditing (if disabled) and file-system change journals are not complete; mass-rename detection relies on file_event volume.

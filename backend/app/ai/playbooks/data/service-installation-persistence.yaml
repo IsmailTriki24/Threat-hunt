@@ -1,0 +1,64 @@
+id: service-installation-persistence
+title: Suspicious Windows service installation
+summary: >-
+  Hunt newly installed services whose binary path is a shell, script, encoded command or a user-writable path, and sc.exe or
+  PowerShell service creation, typical of persistence and remote execution (PsExec-style).
+tactics: [persistence, privilege-escalation]
+attack: [T1543.003]
+sources:
+  - hunting-for-unusual-service-installations
+keywords: [service install, new service, "7045", "4697", sc create, sc.exe, psexesvc, binpath, service persistence]
+signals: [persistence, lateral_movement]
+needs: [service_install]
+helps: [process_creation, authentication]
+hypothesis: >-
+  An adversary installed a Windows service (locally or remotely) whose image path runs a shell, script engine or an unsigned
+  binary from Temp, ProgramData, Public or a user profile, giving SYSTEM-level persistence or one-shot remote execution.
+steps:
+  - purpose: test
+    goal: All service installations in the window.
+    tool: search_events
+    query: event_type:service_install
+    look_for: >-
+      Service names that are random strings or mimic Windows ones, image paths with cmd.exe /c, powershell, a pipe name, or a
+      path outside Program Files and Windows. Note the host and account.
+  - purpose: test
+    goal: sc.exe creating services from the command line.
+    tool: search_events
+    query: process.name:*sc.exe* process.command_line:create
+    look_for: binPath= pointing to a shell, script or temp path; start= auto; creation targeted at another host (\\host).
+  - purpose: test
+    goal: Service images that are shells (classic remote execution pattern).
+    tool: search_events
+    query: event_type:service_install process.command_line:comspec
+    look_for: >-
+      %COMSPEC% /c ... or cmd /c in the service image path; a short-lived service created then removed within seconds is
+      PsExec-like behaviour.
+  - purpose: refute
+    goal: Which services appear on exactly one host.
+    tool: aggregate_events
+    query: event_type:service_install
+    field: host.hostname
+    look_for: >-
+      A burst on one host is an installer or an intruder; compare the service name set against peers. Identical names on many
+      hosts at once usually means software deployment.
+  - purpose: follow_up
+    goal: What process created the service and what the service ran.
+    tool: process_lineage
+    look_for: >-
+      Creator is services.exe on the target for remote installs, so also check authentication type 3 just before; the service
+      process children (cmd, powershell, rundll32).
+benign:
+  - Installers for drivers and agents (VMware Tools, EDR, backup, printer drivers) install services from Program Files.
+  - Admin tools such as PsExec or RMM products create a temporary service by design, which still needs an authorised operator.
+  - Windows Update and .NET/Visual C++ installers register services during patching.
+escalate:
+  - Pivot on the service binary hash or path across hosts.
+  - Pivot on the account and source IP of the preceding network logon.
+  - events_around the install for the dropped file (file_event) and first execution.
+confirm: >-
+  Confirmed when the service image runs a shell/script or an unknown binary from a writable path, was created by a non-management
+  account or remotely, AND the binary or command is not explained by a known deployment.
+gaps:
+  - System event 7045 and Security 4697 are only visible through whatever service_install fields the sensor fills in; the service account and start type may be missing.
+  - Registry Services keys (T1543.003 via registry) are not available without registry_event.

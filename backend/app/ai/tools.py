@@ -22,7 +22,7 @@ from pydantic import BaseModel, ConfigDict, Field, ValidationError
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.ai import enrich, websearch
+from app.ai import enrich, playbooks, websearch
 from app.ai import state as st
 from app.auth.deps import Principal
 from app.auth.rbac import Permission
@@ -880,6 +880,68 @@ def websearch_enabled() -> bool:
     return TOOLS["web_search"].enabled()
 
 
+class PlaybookIn(_In):
+    action: Literal["search", "get", "list"] = Field(
+        description="search: find playbooks for words / technique ids; get: open one by id; list: every playbook id and title"
+    )
+    query: str | None = Field(
+        default=None,
+        max_length=300,
+        description="search: what you are hunting, e.g. 'kerberoasting' or 'T1053 persistence'",
+    )
+    id: str | None = Field(default=None, max_length=61, description="get: the playbook id")
+
+
+class HuntPlaybook(Tool):
+    name = "hunt_playbook"
+    description = (
+        "Curated threat-hunting playbooks (hypothesis, ATT&CK ids, ready-to-run queries in this platform's query language, benign "
+        "explanations to rule out, what to pivot on, what makes it confirmed) for techniques such as PowerShell abuse, lateral movement, "
+        "credential dumping, persistence, beaconing and exfiltration. Search by words or ATT&CK id, then get one. Each playbook says whether "
+        "this tenant's telemetry can answer it. Guidance only: it is not evidence - run the steps yourself and cite events."
+    )
+    input_model = PlaybookIn
+    permission = Permission.AI_USE
+
+    async def run(self, ctx: ToolContext, args: PlaybookIn, scope: Scope) -> dict[str, Any]:
+        et = ctx.state.coverage.get("event_types") if ctx.state else None
+        cat = playbooks.catalog()
+        if args.action == "list":
+            return {
+                "playbooks": [{"id": p.id, "title": p.title, "attack": p.attack[:3]} for p in cat.values()],
+                "returned": len(cat),
+                "total": len(cat),
+            }
+        if args.action == "get":
+            pb = cat.get((args.id or "").strip().lower())
+            if pb is None:
+                wanted = (args.id or args.query or "").strip().lower()
+                near = list(dict.fromkeys([*difflib.get_close_matches(wanted, list(cat), n=3, cutoff=0.5)])) or [
+                    p.id for p, _ in playbooks.search(wanted, limit=4, min_score=1)
+                ]
+                raise ToolError(
+                    "unknown playbook id"
+                    + (f"; closest: {', '.join(near)}" if near else "; use action=search or list"),
+                    "not_found",
+                )
+            if ctx.state is not None and pb.id not in ctx.state.playbooks_used:
+                ctx.state.playbooks_used.append(pb.id)
+            return {**playbooks.detail(pb, et), "returned": 1, "total": 1}
+        text = (args.query or "").strip()
+        ids = tuple(dict.fromkeys(m.upper() for m in re.findall(r"(?i)\bT\d{4}(?:\.\d{3})?\b", text)))
+        if not text:
+            raise ToolError("search needs a query (words or an ATT&CK id); use action=list to see everything")
+        hits = playbooks.search(text, attack=ids, limit=6, min_score=1)
+        return {
+            "playbooks": [playbooks.brief(p, et) for p, _ in hits],
+            "returned": len(hits),
+            "total": len(hits),
+            "note": "open one with action=get id=<id>"
+            if hits
+            else "no playbook matches; hunt from first principles with the other tools",
+        }
+
+
 class Notebook(Tool):
     name = NOTEBOOK
     description = (
@@ -993,6 +1055,7 @@ TOOLS: dict[str, Tool] = {
         MitreLookup(),
         WebSearch(),
         EnrichIndicator(),
+        HuntPlaybook(),
         Notebook(),
     )
 }

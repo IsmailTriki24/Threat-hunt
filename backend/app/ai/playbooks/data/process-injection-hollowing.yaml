@@ -1,0 +1,77 @@
+id: process-injection-hollowing
+title: Process injection and process hollowing
+summary: >-
+  Hunt code hidden inside legitimate processes - hollowed svchost/rundll32/explorer, remote-thread and APC injection - through the
+  behaviours an EDR or Sysmon leaves: odd parents, system binaries without their normal parent, injection alerts and the network or
+  child-process activity of the host process.
+tactics: [defense-evasion, privilege-escalation]
+attack: [T1055, T1055.001, T1055.002, T1055.003, T1055.012]
+sources:
+  - detecting-process-hollowing-technique
+  - detecting-t1055-process-injection-with-sysmon
+  - hunting-for-process-injection-techniques
+keywords: [process injection, process hollowing, hollowing, createremotethread, ntunmapviewofsection, svchost, dll injection, apc injection, code injection, malfind]
+signals: [lolbin, suspicious_path, external_connection]
+needs: [process_creation]
+helps: [alert, network_connection]
+hypothesis: >-
+  A malicious payload is running inside a legitimate Windows process (typically svchost.exe, rundll32.exe, explorer.exe or
+  regsvr32.exe), visible as that process having an abnormal parent, path or command line, or as an EDR injection alert on it.
+steps:
+  - purpose: test
+    goal: EDR or sensor alerts that already name injection or hollowing.
+    tool: search_events
+    query: event_type:alert tags:attack.t1055*
+    look_for: >-
+      Alerts tagged with T1055 sub-techniques (hollowing .012, thread hijack .003, DLL injection .001). Note host, source and target
+      process; each is a starting point for the steps below.
+  - purpose: test
+    goal: svchost.exe started by something other than services.exe (hollowed or masquerading service host).
+    tool: search_events
+    query: event_type:process_creation process.name:*svchost.exe* -process.parent.name:*services.exe*
+    look_for: >-
+      A real svchost has services.exe as parent (MsMpEng, WerFault and a few others are not parents). Parents such as cmd.exe,
+      powershell.exe, explorer.exe or an Office app, or an unusual user, are strong leads; check process.executable is under system32.
+  - purpose: test
+    goal: rundll32.exe or regsvr32.exe launched with no DLL argument (a classic host for injected beacons).
+    tool: aggregate_events
+    query: event_type:process_creation process.name:*rundll32.exe*
+    field: process.parent.name
+    look_for: >-
+      Parents like winword, excel, wscript or powershell are suspicious. Then search the host's rundll32 command lines for a bare
+      "rundll32.exe" with no arguments, which legitimate use almost never produces.
+  - purpose: follow_up
+    goal: Lineage and children of the suspected host process.
+    tool: process_lineage
+    look_for: >-
+      A system process that spawns cmd.exe or powershell.exe, or whose parent already died, or that appears minutes after an Office or
+      script-host process; compare process.executable path to the expected system location.
+  - purpose: follow_up
+    goal: Network activity of the suspected host process.
+    tool: search_events
+    query: event_type:network_connection process.name:*svchost.exe* network.direction:outbound
+    look_for: >-
+      Outbound connections to rare external IPs/ports from a process that normally talks to Microsoft ranges; run this per host and
+      compare with the same process on peers (aggregate_events on network.dst_ip).
+  - purpose: refute
+    goal: Rule out security tooling and debuggers that legitimately touch other processes.
+    tool: aggregate_events
+    query: event_type:alert tags:attack.t1055*
+    field: process.name
+    look_for: >-
+      If every hit is the same security agent, debugger or backup product on many hosts, treat it as known-good noise and exclude it.
+benign:
+  - Endpoint security agents (Defender MsMpEng, Trend, CrowdStrike, Malwarebytes) inject hooks or open handles in other processes.
+  - Debuggers and profilers (Visual Studio, WinDbg, Process Hacker) opened by developers or admins.
+  - Game anti-cheat and accessibility software (screen readers, overlay tools) legitimately inject DLLs.
+  - Application-compat shims and RMM agents that attach to processes.
+escalate:
+  - process_lineage and pivot_entity on the host process pid to list children, connections and files written in the same window.
+  - events_around the first suspicious event to find the delivery (Office macro, script host, downloaded file).
+  - Pivot on the executable hash or the injecting process across other hosts.
+confirm: >-
+  Confirmed when a system process has an impossible parent or path AND shows behaviour it never has (outbound connections to rare
+  hosts, shells as children), or an EDR injection alert is corroborated by such behaviour. An alert alone is suspicious, not confirmed.
+gaps:
+  - Sysmon Event 8 (CreateRemoteThread), 10 (ProcessAccess access masks) and 25 (ProcessTampering) are not in the normalized schema; the upstream detections are built on them.
+  - Memory analysis (Volatility malfind, pe-sieve, Hollows Hunter) cannot be done by read-only event search; recommend it as a response action.

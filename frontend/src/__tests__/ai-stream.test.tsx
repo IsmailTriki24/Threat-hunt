@@ -303,11 +303,12 @@ describe("threat-intel enrichment steps", () => {
       conclusion: { summary: "s", confidence: "LOW", model_confidence: "LOW", findings: [], next_steps: [], validation_notes: [], events_reviewed: 1,
         intel: { "domain:x.example.org": unknown.intel, "ip:45.77.65.211": intel } } } as unknown as AiRun;
     renderWithQuery(<RunReport run={run} evidence={[]} />);
-    const rows = screen.getAllByRole("listitem").filter((li) => li.textContent?.includes(":"));
-    expect(rows[0].textContent).toContain("ip:45.77.65.211");
-    expect(rows[0].textContent).toContain("virustotal: malicious");
-    expect(rows[1].textContent).toContain("no provider answered");
-    expect(screen.getByText(/not that it is safe/)).toBeInTheDocument();
+    const cards = screen.getAllByRole("listitem").filter((li) => li.querySelector(".font-mono") && li.textContent?.match(/ip|domain/));
+    expect(cards[0].textContent).toContain("45.77.65.211"); // malicious first
+    expect(cards[0].textContent).toContain("ip");
+    expect(cards[0].textContent).toContain("virustotal");
+    expect(cards[1].textContent).toContain("No provider answered");
+    expect(screen.getByText(/not evidence from your environment/)).toBeInTheDocument();
   });
 });
 
@@ -339,5 +340,47 @@ describe("malformed model output cannot break the page", () => {
     render(<ErrorBoundary fallback={(reset) => <button onClick={reset}>recover</button>}><Boom /></ErrorBoundary>);
     expect(screen.getByRole("button", { name: "recover" })).toBeInTheDocument();
     spy.mockRestore();
+  });
+});
+
+describe("playbook steps", () => {
+  const pb: AiStep = { type: "tool", name: "hunt_playbook", ref: "q3", input: { action: "get", id: "lateral-movement-wmi" }, status: "ok", total: 1, returned: 1, ms: 5,
+    playbook: { id: "lateral-movement-wmi", title: "WMI remote execution (lateral movement)", attack: ["T1047", "T1021.003"], feasibility: "partial", missing: ["authentication"] } };
+  it("shows the playbook, its ATT&CK ids and whether the tenant's telemetry can answer it", async () => {
+    render(<Feed items={itemsFromSteps([pb])} animate={false} />);
+    expect(screen.getByText("Playbook")).toBeInTheDocument();
+    await userEvent.click(screen.getByRole("button", { name: /Playbook/ }));
+    expect(screen.getByText("WMI remote execution (lateral movement)")).toBeInTheDocument();
+    expect(screen.getByText("T1047")).toBeInTheDocument();
+    expect(screen.getByText("partial telemetry")).toBeInTheDocument();
+    expect(screen.getByText(/a gap to report, not a clean result/)).toBeInTheDocument();
+  });
+  it("the report lists the playbooks that were followed", () => {
+    const run = { id: "r1", status: "COMPLETED", provider: "p", model: "m", goal: "g", hours_back: 24, steps: [], saved_findings: [], input_tokens: 1, output_tokens: 1, error: "", created_at: "2026-03-01T10:00:00Z",
+      conclusion: { summary: "s", confidence: "LOW", model_confidence: "LOW", findings: [], next_steps: [], validation_notes: [], events_reviewed: 1, playbooks_used: ["lateral-movement-wmi"] } } as unknown as AiRun;
+    renderWithQuery(<RunReport run={run} evidence={[]} />);
+    expect(screen.getByText("Hunt playbooks followed")).toBeInTheDocument();
+    expect(screen.getByText("lateral-movement-wmi")).toBeInTheDocument();
+  });
+});
+
+describe("threat intelligence list layout", () => {
+  const hash = "01e9a32736963ae57c7c8943b5592176a7daca614ddb012e87a9fbae3c79997b";
+  const entry = { kind: "hash", value: hash, verdict: "unknown" as const, score: 0, answered: 2, unavailable: [], web: 0,
+    providers: [{ provider: "heuristics", status: "ok", verdict: "unknown", summary: "Hash has no structural signal" }, { provider: "virustotal", status: "ok", verdict: "unknown", summary: "0/75 engines flag as malicious" },
+      { provider: "watchlist", status: "not_found", verdict: null, summary: "Not on the tenant watch-list" }] };
+  const run = { id: "r1", status: "COMPLETED", provider: "p", model: "m", goal: "g", hours_back: 24, steps: [], saved_findings: [], input_tokens: 1, output_tokens: 1, error: "", created_at: "2026-03-01T10:00:00Z",
+    conclusion: { summary: "s", confidence: "LOW", model_confidence: "LOW", findings: [], next_steps: [], validation_notes: [], events_reviewed: 1, intel: { [`hash:${hash}`]: entry } } } as unknown as AiRun;
+  it("stacks each provider on its own line under a shortened value instead of one long row", () => {
+    renderWithQuery(<RunReport run={run} evidence={[]} />);
+    const value = screen.getByTitle(hash);
+    expect(value.textContent).toBe(`${hash.slice(0, 14)}…${hash.slice(-8)}`); // shortened; the full value is on hover
+    expect(value.textContent?.length).toBeLessThan(hash.length);
+    expect(value.className).toContain("truncate");
+    const card = value.closest("li") as HTMLElement;
+    const lines = card.querySelectorAll("ul > li");
+    expect(lines).toHaveLength(3); // one line per provider
+    expect(lines[1].textContent).toContain("virustotal");
+    expect(lines[1].textContent).toContain("0/75 engines flag as malicious");
   });
 });

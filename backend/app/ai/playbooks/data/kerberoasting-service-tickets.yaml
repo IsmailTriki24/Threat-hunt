@@ -1,0 +1,58 @@
+id: kerberoasting-service-tickets
+title: Kerberoasting (bulk service ticket requests)
+summary: >-
+  Hunt accounts requesting Kerberos service tickets for many SPN-bearing service accounts, especially with RC4 encryption, to crack
+  service account passwords offline.
+tactics: [credential-access]
+attack: [T1558.003]
+sources:
+  - detecting-kerberoasting-attacks
+keywords: [kerberoasting, kerberoast, spn, "4769", service ticket, rc4, setspn, rubeus, invoke-kerberoast, getuserspns]
+signals: [cred_access]
+needs: [authentication]
+helps: [process_creation, alert]
+hypothesis: >-
+  A compromised domain user enumerated SPNs and requested service tickets for many service accounts within a short time, usually with
+  RC4 (0x17), so one user shows ticket requests across many distinct services.
+steps:
+  - purpose: test
+    goal: Tooling that enumerates SPNs or requests tickets in bulk.
+    tool: search_events
+    query: process.command_line:kerberoast
+    look_for: Rubeus kerberoast, Invoke-Kerberoast, GetUserSPNs; also try tokens setspn and getuserspns. setspn -Q */* from a non-admin is notable.
+  - purpose: test
+    goal: Kerberos service-ticket events with RC4 encryption (free text on message).
+    tool: search_events
+    query: 0x17 event_type:authentication
+    look_for: >-
+      4769 messages with Ticket Encryption Type 0x17 for service names that are not krbtgt or computer accounts; many distinct service names
+      per requesting user in minutes is the shape.
+  - purpose: test
+    goal: EDR detections on Kerberos credential access.
+    tool: search_events
+    query: event_type:alert tags:attack.t1558*
+    look_for: Alert host/user; tags may also show t1558.003.
+  - purpose: refute
+    goal: Which users request the most tickets, to compare with normal application accounts.
+    tool: aggregate_events
+    query: event_type:authentication 0x17
+    field: user.name
+    look_for: One ordinary user far above peers is suspect; servers and service accounts that legitimately request many tickets are expected.
+  - purpose: follow_up
+    goal: Did a service account then log on from an unusual place?
+    tool: pivot_entity
+    look_for: >-
+      The targeted service accounts - new logons, interactive logons, lateral movement within days of the ticket burst (see service-account-abuse).
+benign:
+  - Legacy applications and old clients that still negotiate RC4 for specific SPNs.
+  - Vulnerability and AD audit tools (PingCastle, BloodHound collectors) run by the security team.
+  - Servers and batch jobs that legitimately authenticate to many services.
+escalate:
+  - Check each requested service account for weak password age, privileged group membership and subsequent logons.
+  - Hunt the requesting host for the enumeration tool and its initial execution (process_lineage).
+confirm: >-
+  Confirmed when a non-service user requests tickets for many SPNs (RC4) in a short window AND a tool command line or later misuse of one
+  of those service accounts is found. Ticket volume alone is suspicious only.
+gaps:
+  - Event 4769 fields (ServiceName, TicketEncryptionType, TicketOptions) are not structured; matching depends on message text and on DC Kerberos auditing being forwarded.
+  - A decoy honeypot SPN account cannot be checked without account inventory.

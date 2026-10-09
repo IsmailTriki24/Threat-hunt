@@ -1,0 +1,62 @@
+id: linux-persistence
+title: Linux persistence (cron, systemd, ld.so.preload, SSH keys, profiles)
+summary: >-
+  Hunt Linux persistence - new cron jobs and systemd units, /etc/ld.so.preload, shell profile edits and authorized_keys changes -
+  through file events and the processes that write them.
+tactics: [persistence, privilege-escalation]
+attack: [T1053.003, T1543.002, T1574.006, T1546.004, T1098.004]
+sources:
+  - analyzing-persistence-mechanisms-in-linux
+keywords: [linux persistence, cron, crontab, systemd, ld.so.preload, ld_preload, authorized_keys, bashrc, rc.local, ssh key, timer unit]
+signals: [persistence]
+needs: [process_creation]
+helps: [file_event, authentication]
+hypothesis: >-
+  An adversary with shell or SSH access on a Linux host added a cron job, systemd unit/timer, preload library, profile line or SSH
+  key so that access or a payload survives reboot and logoff.
+steps:
+  - purpose: test
+    goal: Crontab edits and cron file writes.
+    tool: search_events
+    query: process.name:*crontab* process.command_line:crontab
+    look_for: >-
+      crontab -e/-l from a web, database or service account; entries that fetch with curl/wget or pipe to a shell. Also search file
+      events under etc cron.d.
+  - purpose: test
+    goal: File writes to persistence paths.
+    tool: search_events
+    query: event_type:file_event file.path:"etc systemd system"
+    look_for: >-
+      New .service/.timer units; repeat for file.path:"etc cron d", "etc ld so preload", authorized_keys, "etc rc local" and
+      "etc profile d". A write to ld.so.preload or authorized_keys by a non-admin process is high priority.
+  - purpose: test
+    goal: SSH key and shell profile modification from the command line.
+    tool: search_events
+    query: process.command_line:authorized_keys
+    look_for: echo/cat >> into authorized_keys, chmod on .ssh, or bashrc/profile appended with a download or reverse shell.
+  - purpose: test
+    goal: systemctl enabling new units.
+    tool: search_events
+    query: process.name:*systemctl* process.command_line:enable
+    look_for: A unit whose ExecStart is in /tmp, /dev/shm, /var/tmp or a hidden dot directory; enable --now by a non-root-admin session.
+  - purpose: refute
+    goal: Who normally changes these on the fleet.
+    tool: aggregate_events
+    query: process.name:*systemctl* process.command_line:enable
+    field: host.hostname
+    look_for: >-
+      Config management (Ansible, Puppet, Chef) and package scripts touch many hosts in the same minute; a single host with an
+      interactive user is the exception.
+benign:
+  - Package installs (apt, yum, dnf) drop systemd units and cron.d entries via dpkg/rpm scriptlets.
+  - Configuration management and deployment pipelines write units, cron files and authorized_keys for admins.
+  - Monitoring, backup and logrotate agents install their own cron jobs.
+escalate:
+  - process_lineage on the writer and pivot_entity on the user for the SSH session and source IP that preceded it.
+  - Pivot on the payload path/hash across Linux hosts; events_around for outbound connections after the unit started.
+confirm: >-
+  Confirmed when a persistence file is written by an interactive or service account (not a package manager or config management)
+  and references an unknown binary, a temp-path payload, a remote download or an unauthorised key.
+gaps:
+  - auditd file-watch rules (the upstream correlation source) and file integrity monitoring (OSSEC/Wazuh) are not necessarily forwarded; file_event coverage on Linux may be missing.
+  - Contents of cron files, unit files and keys cannot be read, only the fact and command line of the write.

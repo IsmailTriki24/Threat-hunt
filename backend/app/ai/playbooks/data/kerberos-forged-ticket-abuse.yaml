@@ -1,0 +1,63 @@
+id: kerberos-forged-ticket-abuse
+title: Forged and replayed Kerberos tickets (golden ticket, pass-the-ticket)
+summary: >-
+  Hunt krbtgt-forged TGTs and stolen ticket reuse - service tickets with no preceding TGT, RC4 where AES is enforced, one ticket
+  used from several hosts, and ticket export tooling.
+tactics: [credential-access, lateral-movement]
+attack: [T1558.001, T1550.003]
+sources:
+  - detecting-golden-ticket-attacks-in-kerberos-logs
+  - detecting-golden-ticket-forgery
+  - detecting-pass-the-ticket-attacks
+keywords: [golden ticket, pass the ticket, kerberos, krbtgt, tgt, ptt, rubeus, ticket forgery, "4768", "4769", "4771", kirbi]
+signals: [cred_access, lateral_movement]
+needs: [authentication]
+helps: [process_creation, alert]
+hypothesis: >-
+  After obtaining the krbtgt hash or stolen tickets, an attacker presents Kerberos tickets that were never issued by a normal AS exchange,
+  so a user appears with service-ticket activity and no TGT, from multiple hosts, or with RC4 and abnormal lifetimes.
+steps:
+  - purpose: test
+    goal: Ticket forging, export or injection tooling.
+    tool: search_events
+    query: process.command_line:kirbi
+    look_for: >-
+      .kirbi/.ccache files, Mimikatz kerberos::golden / kerberos::ptt, Rubeus ptt/dump/asktgt (repeat with tokens golden, ptt, rubeus).
+  - purpose: test
+    goal: RC4 Kerberos ticket events in an AES-enforced domain (free text on message).
+    tool: search_events
+    query: 0x17 event_type:authentication
+    look_for: >-
+      4768/4769 messages with encryption type 0x17 for user accounts, particularly privileged ones. Also look for 4771 pre-auth failures
+      and unknown or non-existent account names that still obtain service tickets.
+  - purpose: test
+    goal: Same account authenticating from several source IPs at once.
+    tool: aggregate_events
+    query: event_type:authentication outcome:success has:auth.source_ip
+    field: auth.source_ip
+    look_for: >-
+      Choose a suspect user via pivot_entity and compare source IPs; one user at several hosts at the same time (impossible overlap)
+      suggests ticket replay.
+  - purpose: refute
+    goal: Is the multi-host pattern a normal admin or service pattern?
+    tool: aggregate_events
+    query: event_type:authentication outcome:success auth.logon_type:(3|network)
+    field: user.name
+    look_for: Terminal servers, jump hosts, scanners and clustered applications legitimately span many sources; check the user's usual hosts.
+  - purpose: follow_up
+    goal: Activity of the ticket holder after the suspicious logons.
+    tool: events_around
+    look_for: Domain-admin actions, new accounts or services, DCSync, access to many servers from an account that normally does not.
+benign:
+  - Clients and applications that legitimately use RC4 (legacy Samba, old appliances) where AES is not enforced.
+  - Clock skew or domain trust ticket handling causing odd 4769 without a local 4768 on a given DC (tickets issued by another DC).
+  - Jump hosts and RDS farms where one user shows many source IPs.
+escalate:
+  - If krbtgt exposure is plausible, correlate with dcsync-replication-abuse and credential-dumping-lsass-sam-ntds on the domain controllers.
+  - Pivot on the account and source hosts to establish the first host where the ticket appeared.
+confirm: >-
+  Confirmed when tickets are presented that lack a matching TGT issuance or violate encryption/lifetime policy AND ticket tooling or krbtgt
+  credential theft is found; unusual RC4 or multi-IP use alone is suspicious only.
+gaps:
+  - Ticket lifetime, PAC and SID checks, and 4768-to-4769 correlation per DC need structured Kerberos fields that are not in the schema.
+  - Per-DC TGT issuance cannot be proven absent when only some DCs forward logs; krbtgt password age is not visible.

@@ -1,0 +1,66 @@
+id: data-exfiltration-network
+title: Data exfiltration over network and cloud channels
+summary: >-
+  Find large outbound transfers, uploads to cloud-storage or file-sharing services, TOR and alternative-protocol traffic, and
+  pre-encryption exfiltration typical of ransomware operations.
+tactics: [exfiltration, command-and-control]
+attack: [T1041, T1048, T1567.002, T1090.003]
+sources:
+  - hunting-for-data-exfiltration-indicators
+  - analyzing-ransomware-network-indicators
+keywords: [exfiltration, data theft, upload, mega, rclone, cloud storage, dropbox, tor, outbound bytes, double extortion, ransomware network]
+signals: [external_connection]
+needs: [network_connection]
+helps: [process_creation, file_event]
+hypothesis: >-
+  A host sends an unusually large volume of data to an external destination - cloud storage, an unknown IP or a TOR relay -
+  shortly after staging activity, often by an unexpected process or sync tool.
+steps:
+  - purpose: test
+    goal: >-
+      Large single outbound connections.
+    tool: search_events
+    query: event_type:network_connection network.bytes>=50000000
+    look_for: >-
+      Tens of MB or more to one external IP, particularly from non-browser processes or at night; sort by bytes and check the destination.
+  - purpose: scope
+    goal: >-
+      Which hosts send the most data to which destinations.
+    tool: aggregate_events
+    query: event_type:network_connection network.bytes>=1000000
+    field: network.dst_ip
+    look_for: >-
+      One destination absorbing repeated large transfers from a single host; then group by host.hostname.
+  - purpose: test
+    goal: >-
+      Cloud-storage and file-sharing destinations.
+    tool: search_events
+    query: event_type:network_connection network.dst_domain:(*mega.nz|*mega.io|*dropbox.com|*drive.google.com|*anonfiles.com|*transfer.sh|*wetransfer.com)
+    look_for: >-
+      Non-browser processes or servers uploading to consumer file-sharing; compare with approved sanctioned cloud storage.
+  - purpose: test
+    goal: >-
+      Exfiltration and sync tools on the command line.
+    tool: search_events
+    query: process.command_line:rclone process.command_line:copy
+    look_for: >-
+      rclone, megacmd, WinSCP or curl uploads with remote targets, especially configured silently; ransomware crews use them before encryption.
+  - purpose: refute
+    goal: >-
+      Is the volume explained by approved backup or sync?
+    tool: pivot_entity
+    look_for: >-
+      Pivot on host and process; corporate OneDrive, backup agents and software mirrors produce large steady transfers to known endpoints.
+benign:
+  - Sanctioned cloud backup (Veeam, Azure Backup, OneDrive/SharePoint sync) and software or ISO downloads and mirrors.
+  - Video-conferencing uploads and large file shares from marketing or engineering users.
+  - Developers pushing container images or repositories.
+escalate:
+  - Look back with data-staging-archive for archives created just before the transfer.
+  - Pivot on the destination across hosts; check for TOR or other relays, and for shadow-copy deletion following (ransomware-shadow-copy-deletion).
+confirm: >-
+  Confirmed when a large or repeated outbound transfer goes to an unapproved destination from an unexpected process AND staged
+  data or archives from the same host precede it.
+gaps:
+  - Proxy/DLP/CASB byte accounting, DNS exfiltration and TOR exit-list matching are not available; few network flows exist, so volume may be undercounted.
+  - Zeek conn.log duration and service fields are absent; only network.bytes where the sensor provides it.

@@ -1,0 +1,63 @@
+id: insider-threat-data-access-anomalies
+title: Insider threat - abnormal data access and staging
+summary: >-
+  Look for users whose file activity, logon pattern or archiving and upload behaviour deviates from peers, as indicators of
+  data hoarding or exfiltration by an insider.
+tactics: [collection, exfiltration]
+attack: [T1078, T1048, T1530]
+sources:
+  - detecting-insider-threat-behaviors
+  - detecting-insider-threat-with-ueba
+keywords: [insider threat, ueba, mass download, data theft, off-hours, departing employee, exfiltration, peer group, staging]
+signals: [external_connection]
+needs: [authentication]
+helps: [file_event, network_connection, process_creation]
+hypothesis: >-
+  One user touches far more files, hosts or sensitive paths than peers, or archives and uploads data outside normal hours, which
+  indicates deliberate collection before departure or misuse of access.
+steps:
+  - purpose: scope
+    goal: Rank users by successful logon volume to build a rough peer baseline.
+    tool: aggregate_events
+    query: event_type:authentication outcome:success
+    field: user.name
+    look_for: Compare each human user with the median; a user several times above peers (ignoring service accounts) is a candidate.
+  - purpose: test
+    goal: Users with unusually many file events.
+    tool: aggregate_events
+    query: event_type:file_event
+    field: user.name
+    look_for: Mass reads or copies by one non-service account; then check which share or path (file.path tokens finance, hr, legal, confidential).
+  - purpose: test
+    goal: Archive or bulk-copy tools run by a user (staging before exfiltration).
+    tool: search_events
+    query: process.command_line:robocopy
+    look_for: Source on a sensitive share and destination on removable or personal-looking paths; repeat with 7z, rar or xcopy tokens.
+  - purpose: test
+    goal: Outbound connections to personal cloud storage or transfer sites.
+    tool: search_events
+    query: event_type:network_connection network.dst_domain:*mega.nz*
+    look_for: Also try dropbox, wetransfer, pastebin; large network.bytes from a user machine right after staging is the strong signal.
+  - purpose: refute
+    goal: Check whether the activity is the user's normal role or a scheduled job.
+    tool: pivot_entity
+    look_for: >-
+      Pivot on the user: do the same files appear in prior weeks, is the host their usual one, is it a backup or migration account?
+  - purpose: follow_up
+    goal: Timeline of the suspicious session including logon time and source.
+    tool: events_around
+    look_for: Logons late at night or on weekends from an unusual auth.source_ip followed by the staging commands above.
+benign:
+  - Backup, DLP and file-indexing service accounts read huge numbers of files by design.
+  - Project handovers, audits, data migrations and end-of-quarter reporting cause genuine bursts for finance, legal or IT staff.
+  - Developers and admins routinely use robocopy and archive tools for deployments.
+escalate:
+  - Correlate the user with HR context outside the platform (resignation, performance action) before any conclusion; keep conclusions to evidence.
+  - Pivot on destination IPs/domains to see whether other users used the same upload service.
+confirm: >-
+  Confirmed only when abnormal access volume, staging or archiving, and external transfer by the same user line up in time with
+  no business owner; any single signal stays suspicious.
+gaps:
+  - No DLP, file-share audit (5145), USB device, cloud-app or VPN logs; mass-download counts rely on whatever file_event data exists.
+  - Statistical baselining (z-scores, peer-group models, risk scoring) is not computed; the agent compares aggregates by eye.
+  - Off-hours analysis cannot filter by hour of day; read timestamps from results.

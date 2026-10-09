@@ -175,7 +175,7 @@ async def test_model_can_enrich_an_indicator_with_the_tenants_providers(client, 
     assert b["status"] == "error" and "internal" in b["error"] and c["status"] == "error"
     assert intel.calls == [("ip", sc.C2_IP)]  # the refused lookups never reached a provider
     async with app.state.sessionmaker() as s:  # stored in the tenant's intel cache like a manual lookup
-        rows = (await s.execute(select(IntelEntity).where(IntelEntity.value == sc.C2_IP))).scalars().all()
+        rows = (await s.execute(select(IntelEntity).where(IntelEntity.tenant_id == t.id, IntelEntity.value == sc.C2_IP))).scalars().all()
     assert len(rows) == 1 and rows[0].verdict == "malicious"
 
 

@@ -157,6 +157,7 @@ const TOOLS: Record<string, { label: string; tone: Tone; icon: string; what: str
   mitre_technique: { label: "ATT&CK lookup", tone: "rose", icon: "shield", what: "Looking up a technique" },
   web_search: { label: "Web search", tone: "green", icon: "globe", what: "Searching the public web" },
   enrich_indicator: { label: "Threat intel", tone: "rose", icon: "shield", what: "Checking threat intelligence" },
+  hunt_playbook: { label: "Playbook", tone: "amber", icon: "book", what: "Opening a hunt playbook" },
 };
 const toolMeta = (name: string) => TOOLS[name] ?? { label: name, tone: "slate" as Tone, icon: "sparkle", what: "Running a tool" };
 
@@ -194,6 +195,25 @@ function IntelDetail({ intel }: { intel: NonNullable<AiStep["intel"]> }) {
       {intel.answered === 0 && <p className="text-muted">No configured provider gave an answer. That is <b>unknown</b>, not benign.</p>}
       {intel.answered > 0 && intel.verdict === "unknown" && <p className="text-muted">No engine flagged it. That lowers suspicion a little, but a brand-new threat can score 0 - it is not proof of safety.</p>}
       {intel.unavailable.length > 0 && <p className="text-amber-300/90">Not queried (disabled or no API key): {intel.unavailable.join(", ")}. Configure them under Threat Intel for real verdicts.</p>}
+    </div>
+  );
+}
+
+const FEAS: Record<string, { tone: Tone; label: string }> = {
+  ready: { tone: "green", label: "telemetry ready" }, partial: { tone: "amber", label: "partial telemetry" }, blocked: { tone: "red", label: "telemetry missing" }, unknown: { tone: "slate", label: "telemetry unchecked" },
+};
+
+/** Which playbook the agent opened and whether this tenant's data can answer it - a missing source is a gap, not a clean result. */
+function PlaybookDetail({ pb }: { pb: NonNullable<AiStep["playbook"]> }) {
+  const f = FEAS[pb.feasibility] ?? FEAS.unknown;
+  return (
+    <div className="space-y-1.5 text-xs">
+      <p className="text-slate-200">{pb.title}</p>
+      <div className="flex flex-wrap items-center gap-1.5">
+        {pb.attack.map((a) => <Chip key={a} tone="slate">{a}</Chip>)}
+        <Chip tone={f.tone}>{f.label}</Chip>
+      </div>
+      {pb.missing.length > 0 && <p className="text-amber-300/90">This tenant has no {pb.missing.join(", ")} telemetry in the window, so the playbook cannot be fully answered. That is a gap to report, not a clean result.</p>}
     </div>
   );
 }
@@ -300,6 +320,7 @@ function ToolCard({ item, open, onToggle }: { item: ToolItem; open: boolean; onT
             </div>
           )}
           {!item.running && s?.intel && <IntelDetail intel={s.intel} />}
+          {!item.running && s?.playbook && <PlaybookDetail pb={s.playbook} />}
           {!item.running && s && (
             <div className="space-y-1.5">
               {s.total != null && !failed && !s.intel && (

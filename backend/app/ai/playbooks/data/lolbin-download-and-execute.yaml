@@ -1,0 +1,75 @@
+id: lolbin-download-and-execute
+title: LOLBin ingress, decode and script execution
+summary: >-
+  Hunt built-in Windows binaries used to download, decode or run payloads - certutil, bitsadmin, mshta, regsvr32 scriptlets,
+  msbuild/installutil inline code - using abnormal arguments, parents and paths.
+tactics: [defense-evasion, execution, command-and-control]
+attack: [T1105, T1140, T1197, T1218.005, T1218.010, T1127.001]
+sources:
+  - hunting-for-living-off-the-land-binaries
+  - hunting-for-lolbins-execution-in-endpoint-logs
+  - detecting-living-off-the-land-attacks
+  - detecting-living-off-the-land-with-lolbas
+keywords: [lolbin, lolbas, living off the land, certutil, bitsadmin, mshta, regsvr32, squiblydoo, msbuild, installutil, urlcache, signed binary]
+signals: [lolbin, download_cradle, suspicious_path, external_connection]
+needs: [process_creation]
+helps: [network_connection, file_event]
+hypothesis: >-
+  An adversary is using signed Microsoft binaries to fetch or decode a second-stage payload (certutil -urlcache/-decode, bitsadmin
+  transfer, mshta or regsvr32 with a remote URL, msbuild with a project file from a user folder).
+steps:
+  - purpose: test
+    goal: certutil used to download files.
+    tool: search_events
+    query: event_type:process_creation process.name:*certutil.exe* process.command_line:urlcache
+    look_for: >-
+      urlcache with split/f and an http(s) URL writing an executable or script. Repeat with the token "decode" (T1140) for base64
+      payloads staged to disk.
+  - purpose: test
+    goal: BITS jobs created from the command line.
+    tool: search_events
+    query: event_type:process_creation process.name:*bitsadmin.exe* process.command_line:transfer
+    look_for: Remote source URL plus a destination in Temp/AppData, or a SetNotifyCmdLine that runs the file after download.
+  - purpose: test
+    goal: mshta executing remote or inline content.
+    tool: search_events
+    query: event_type:process_creation process.name:*mshta.exe* process.command_line:http
+    look_for: >-
+      mshta with a URL, or with vbscript/javascript inline; a parent of winword, excel, outlook or a browser is high confidence.
+  - purpose: test
+    goal: regsvr32 scriptlet loading (Squiblydoo).
+    tool: search_events
+    query: event_type:process_creation process.name:*regsvr32.exe* process.command_line:scrobj
+    look_for: >-
+      /i:http... with scrobj.dll fetches a remote scriptlet. Also search the token "msbuild" with a project file in a user folder, and
+      "installutil" with /u from Temp.
+  - purpose: scope
+    goal: Which LOLBins are most used and under which parents.
+    tool: aggregate_events
+    query: event_type:process_creation process.name:*mshta.exe*
+    field: process.parent.name
+    look_for: Rank parents; Office and script hosts are suspicious, explorer from a user double-click on a known .hta app may be benign.
+  - purpose: refute
+    goal: Check for legitimate certificate or deployment activity.
+    tool: aggregate_events
+    query: event_type:process_creation process.name:*certutil.exe*
+    field: user.name
+    look_for: >-
+      A service/admin account running certutil -verifystore, -dump or ADCS enrolment on a server is normal; a standard user with
+      urlcache is not.
+benign:
+  - certutil for certificate store checks and ADCS enrolment (-verifystore, -dump, -ca).
+  - bitsadmin or BITS used by Windows Update, SCCM/Intune and some vendor updaters.
+  - Legacy HTA-based internal tools and installers launched by mshta.
+  - msbuild invoked by Visual Studio, CI agents and developer builds; installutil during .NET service installs.
+escalate:
+  - process_lineage on each hit, then events_around for the file written and its first execution.
+  - pivot_entity on the destination domain or IP across hosts, and on the written file hash.
+  - Check for persistence or credential access minutes later on the same host.
+confirm: >-
+  Confirmed when a LOLBin fetches or decodes content from an external or rare host AND the resulting file executes or the parent
+  chain is an Office/script/browser process; arguments alone (suspicious) are not enough.
+gaps:
+  - Command lines depend on process auditing (4688/Sysmon 1); hosts without command-line logging produce false negatives.
+  - Proxy/firewall logs used upstream for download correlation are mostly absent; few network_connection events exist.
+  - Sysmon 3 and 11 correlation (LOLBin network and file writes) is only partial.

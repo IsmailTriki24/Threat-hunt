@@ -1,0 +1,63 @@
+id: sweep-fleet-for-known-artifact
+title: Sweeping the fleet for a known artifact or IOC
+summary: >-
+  Search every host for one known file name, hash, command-line token, remote domain or IP and rank hosts by exposure, applying
+  Sigma-style process detections instead of collecting logs with fleet tools.
+tactics: [execution, persistence]
+attack: [T1059, T1059.001, T1059.003, T1547.001, T1053.005]
+sources:
+  - fleet-hunting-with-velociraptor
+  - hunting-evtx-with-chainsaw
+keywords: [ioc sweep, fleet hunt, hash, sigma, chainsaw, velociraptor, evtx, artifact, indicator, all hosts, vql]
+signals: [lolbin, suspicious_path]
+needs: [process_creation]
+helps: [file_event, network_connection, scheduled_task, service_install]
+hypothesis: >-
+  A single known indicator (hash, file name, command-line token, domain or IP) appears on more hosts than the one first reported,
+  so a sweep of all process, file and network telemetry will list every host that ran or touched it.
+steps:
+  - purpose: scope
+    goal: Hosts that executed a process with the hash of interest.
+    tool: aggregate_events
+    query: process.hash.sha256:0000000000000000000000000000000000000000000000000000000000000000
+    field: host.hostname
+    look_for: Replace the placeholder with the real hash (use sha1 or md5 fields as supplied). One row per host is the fleet footprint.
+  - purpose: test
+    goal: Same artifact seen as a file written to disk, possibly before it ever ran.
+    tool: search_events
+    query: event_type:file_event file.name:evil.exe
+    look_for: Replace with the file name; check file.path for temp, public, appdata or programdata locations and compare the hash across hosts.
+  - purpose: test
+    goal: Sigma-style suspicious scripting host launch (the PowerShell/cmd detection chainsaw ran on logs).
+    tool: search_events
+    query: process.command_line:bypass process.name:*powershell.exe*
+    look_for: Execution-policy bypass with hidden window, encoded or download tokens; group by parent to separate admin tooling from malware.
+  - purpose: test
+    goal: Network contact with the indicator's domain.
+    tool: search_events
+    query: event_type:network_connection network.dst_domain:example-bad.invalid
+    look_for: Replace with the domain or use network.dst_ip; list which hosts and processes connected, and how often.
+  - purpose: refute
+    goal: Is the artifact present only on hosts that legitimately run the related software?
+    tool: aggregate_events
+    query: process.command_line:bypass
+    field: process.parent.name
+    look_for: One management parent (software deployment agent) across many hosts points to benign tooling; unusual parents point to malice.
+  - purpose: follow_up
+    goal: Establish first and last sighting per host and the activity around it.
+    tool: events_around
+    look_for: Earliest hit is likely patient zero; look for credential access, new services or scheduled tasks within minutes.
+benign:
+  - Admin and deployment scripts legitimately use execution-policy bypass and hidden windows (SCCM, Intune, Chocolatey, Ansible on Windows).
+  - Security scanners and EDR self-tests drop and execute test files such as EICAR or known-bad hashes on purpose.
+  - A hash of a legitimate signed tool shared between vendors can hit many hosts; check signer context before treating the hash as malicious.
+escalate:
+  - For every hit host, run pivot_entity on host and user to find lateral movement and shared accounts.
+  - Report hosts with the file but no execution separately as exposed but not yet executed.
+confirm: >-
+  Confirmed when the exact hash or artifact appears on a host together with execution or outbound contact, and no software owner
+  explains it; a name match alone stays suspicious.
+gaps:
+  - Velociraptor VQL collection, offline collectors and remote forensic artifacts (prefetch, amcache, MFT) cannot be run here; only indexed events are searchable.
+  - Chainsaw and Sigma over raw EVTX (PowerShell 4104 script blocks, shimcache, SRUM, log gap analysis) is not available; only normalised events.
+  - Registry-based persistence (Sigma registry rules) has no registry_event data in this tenant.

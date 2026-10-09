@@ -1,0 +1,59 @@
+id: account-manipulation-t1098
+title: Account manipulation (group changes, password and rights changes)
+summary: >-
+  Hunt additions to privileged groups, new or re-enabled accounts, password resets and directory object edits that give an
+  intruder durable or elevated access (shadow admins, SID history, added credentials).
+tactics: [persistence, privilege-escalation]
+attack: [T1098, T1098.001]
+sources:
+  - hunting-for-t1098-account-manipulation
+keywords: [account manipulation, group membership, domain admins, "4728", "4732", "4756", "4738", net localgroup, net group, sid history, shadow admin, password reset]
+signals: [persistence]
+needs: [authentication]
+helps: [process_creation, alert, other]
+hypothesis: >-
+  An attacker with admin rights is adding an account to a privileged group or changing account properties (password, SID history, key
+  credentials), shown by group-change audit events or net/PowerShell commands, outside any change process.
+steps:
+  - purpose: test
+    goal: Command-line changes to local or domain groups and accounts.
+    tool: search_events
+    query: process.command_line:localgroup process.name:*net*
+    look_for: >-
+      net localgroup administrators X /add, net group "domain admins" X /add /domain, net user X /add. Repeat with tokens "domain admins",
+      adduser, net1.
+  - purpose: test
+    goal: PowerShell and AD tooling that edits membership or credentials.
+    tool: search_events
+    query: process.command_line:add-adgroupmember
+    look_for: Repeat with set-adaccountpassword, sidhistory, msds-keycredentiallink, add-localgroupmember, new-aduser.
+  - purpose: test
+    goal: Windows audit events for group membership and account changes (free text on message).
+    tool: search_events
+    query: event_type:other "security-enabled" "member added"
+    look_for: >-
+      4728/4732/4756 style messages; adding to Domain Admins, Enterprise Admins, Administrators, Backup Operators or Account Operators.
+      Also try "user account was changed" and "sid history".
+  - purpose: refute
+    goal: Who performs these changes normally?
+    tool: aggregate_events
+    query: process.command_line:localgroup
+    field: user.name
+    look_for: Helpdesk, IT admin and provisioning service accounts are expected; a user outside IT or a service account is not.
+  - purpose: follow_up
+    goal: What did the actor do before and after the change?
+    tool: events_around
+    look_for: Credential dumping, new logons by the modified account from unusual hosts, remote tool installation, or deletion of the audit trail.
+benign:
+  - Joiner/mover/leaver provisioning by IAM tools (SailPoint, Entra Connect, Ansible) and helpdesk password resets.
+  - Software installers adding service users to local Administrators or Performance Log Users.
+  - Break-glass access granted under an approved change.
+escalate:
+  - Pivot on the target account for its logons after the change (pivot_entity on user.name).
+  - Pivot on the actor account and host to find how it got rights, including credential dumping and DCSync playbooks.
+confirm: >-
+  Confirmed when a privileged group or account property changes by an actor outside the normal admin set or change window AND the
+  beneficiary account then logs on or acts. A group change on its own is only suspicious.
+gaps:
+  - Event IDs 4738, 4728/4732/4756, 4670 and 5136 are not fields; only message text and command lines are searchable.
+  - AD attribute-level changes (5136 values such as SID history, key credentials) are likely absent, and there is no change-ticket data.

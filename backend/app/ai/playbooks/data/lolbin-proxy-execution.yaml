@@ -1,0 +1,71 @@
+id: lolbin-proxy-execution
+title: LOLBin proxy execution and renamed binaries
+summary: >-
+  Hunt trusted binaries used to proxy-execute code or hide: rundll32 and cmstp loading DLLs from user folders, LOLBins spawned by
+  Office or script hosts, system binaries run from the wrong directory, and unusual LOLBin volume per host.
+tactics: [defense-evasion, execution]
+attack: [T1218, T1218.003, T1218.011, T1218.010]
+sources:
+  - hunting-for-living-off-the-land-binaries
+  - hunting-for-lolbins-execution-in-endpoint-logs
+  - detecting-living-off-the-land-attacks
+  - detecting-living-off-the-land-with-lolbas
+keywords: [lolbin, lolbas, proxy execution, rundll32, cmstp, system binary proxy execution, renamed binary, masquerading, signed binary, living off the land]
+signals: [lolbin, office_spawn_shell, suspicious_path]
+needs: [process_creation]
+helps: [alert]
+hypothesis: >-
+  Malicious code runs through signed Windows binaries launched from an abnormal parent or path, so a LOLBin appears under an Office
+  app, a script host or from a user-writable folder.
+steps:
+  - purpose: test
+    goal: rundll32 loading a DLL from a user-writable location.
+    tool: search_events
+    query: event_type:process_creation process.name:*rundll32.exe* process.command_line:appdata
+    look_for: >-
+      A DLL under AppData, Temp or ProgramData with an unusual export name or an ordinal (#1); repeat with the token "temp". Legit
+      rundll32 calls point at system32 DLLs (shell32, url, printui).
+  - purpose: test
+    goal: Children of Word (repeat with excel.exe, powerpnt.exe, outlook.exe) - LOLBins spawned by Office applications.
+    tool: aggregate_events
+    query: event_type:process_creation process.parent.name:*winword.exe*
+    field: process.name
+    look_for: Any rundll32/regsvr32/mshta/cmstp/certutil among the children is high priority - documents do not legitimately start these; capture the command line for payload location.
+  - purpose: test
+    goal: cmstp executing an INF with an install section.
+    tool: search_events
+    query: event_type:process_creation process.name:*cmstp.exe* process.command_line:inf
+    look_for: cmstp /s /ns with an INF in Temp or a user folder (UAC bypass / scriptlet execution).
+  - purpose: test
+    goal: System binaries executing from outside system32 (renamed or copied).
+    tool: search_events
+    query: event_type:process_creation process.name:cmd.exe process.executable:temp
+    look_for: >-
+      cmd, powershell, certutil, rundll32 running with an executable path in Temp/AppData/Public means a copy or rename; repeat per
+      binary name. The usual path is windows system32 or syswow64.
+  - purpose: scope
+    goal: Overall LOLBin volume by host to find outliers.
+    tool: aggregate_events
+    query: event_type:process_creation process.name:*regsvr32.exe*
+    field: host.hostname
+    look_for: Hosts with many regsvr32/rundll32 launches versus peers; software installers cause bursts on single hosts.
+  - purpose: refute
+    goal: Compare against the baseline for the same LOLBin and user.
+    tool: pivot_entity
+    look_for: >-
+      Repeated identical command lines on many hosts (software deployment, printer or driver installs) indicate management tooling
+      rather than an attack.
+benign:
+  - regsvr32 registering COM components during software install or repair; rundll32 for printui, shell32 and control panel applets.
+  - Office add-ins and PDF tools that launch rundll32 or regsvr32 from Program Files.
+  - Deployment tools (SCCM, Intune, Chocolatey) running installers from temp folders.
+escalate:
+  - process_lineage on the hit, then events_around for the dropped DLL/INF and what the LOLBin spawned.
+  - pivot_entity on the DLL path or hash and the user across hosts.
+  - Escalate to lolbin-download-and-execute when a URL is present.
+confirm: >-
+  Confirmed when the LOLBin loads content from a user-writable or remote location AND has a document/script parent or follow-on
+  malicious behaviour (child shells, outbound connection, persistence).
+gaps:
+  - Module-load data (Sysmon 7) to see which DLL rundll32/regsvr32 really loaded is absent; command-line parsing is the only view.
+  - Binary signature and original-filename (PE metadata) checks for renamed LOLBins are not in the schema.

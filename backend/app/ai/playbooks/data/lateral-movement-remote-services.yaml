@@ -1,0 +1,76 @@
+id: lateral-movement-remote-services
+title: Lateral movement over remote services (SMB, RDP, WinRM, PsExec-style)
+summary: >-
+  Hunt credential reuse and remote execution between internal hosts - network and RDP logons from unusual sources, PsExec-style
+  service installs, WinRM hosts and admin-share use - and measure how far one account spread.
+tactics: [lateral-movement, execution]
+attack: [T1021, T1021.001, T1021.002, T1021.006, T1569.002]
+sources:
+  - detecting-lateral-movement-with-splunk
+keywords: [lateral movement, psexec, psexesvc, rdp, winrm, wsmprovhost, admin share, remote service, logon type 3, logon type 10, smb]
+signals: [lateral_movement, failed_auth]
+needs: [authentication]
+helps: [process_creation, service_install, network_connection]
+hypothesis: >-
+  An adversary holding stolen credentials is moving between hosts, so one account or source address authenticates (network or
+  remote-interactive) to many hosts, followed on the target by a new service, a WinRM host process or a remote shell.
+steps:
+  - purpose: scope
+    goal: >-
+      Which accounts perform successful network or RDP logons, and how widely?
+    tool: aggregate_events
+    query: event_type:authentication outcome:success auth.logon_type:(3|10|network|remoteinteractive)
+    field: user.name
+    look_for: >-
+      An ordinary user or a service account appearing on far more hosts than usual; then repeat grouping by host.hostname and by
+      auth.source_ip to see fan-out. Machine accounts ending in $ are normal.
+  - purpose: test
+    goal: >-
+      Remote-interactive (RDP) logons.
+    tool: search_events
+    query: event_type:authentication outcome:success auth.logon_type:(10|remoteinteractive)
+    look_for: >-
+      RDP to servers from workstations, from non-admin accounts, outside working hours, or hopping host to host within minutes
+      (chain of auth.source_ip values).
+  - purpose: test
+    goal: >-
+      PsExec-style remote service installation.
+    tool: search_events
+    query: event_type:service_install process.name:*psexesvc.exe*
+    look_for: >-
+      PSEXESVC (or a randomly named service with an ADMIN share binary path) created on a server by a network logon. Also try
+      file.name:psexesvc.exe with event_type:file_event.
+  - purpose: test
+    goal: >-
+      Remote shells launched by the WinRM host process.
+    tool: search_events
+    query: process.parent.name:*wsmprovhost.exe*
+    look_for: >-
+      Any child of wsmprovhost.exe (cmd, powershell, net, whoami) is remote PowerShell/WinRM execution; check who and from where.
+  - purpose: test
+    goal: >-
+      Mapping of admin shares from the command line.
+    tool: search_events
+    query: process.name:*net.exe* process.command_line:use
+    look_for: >-
+      net use \\host\C$ or \\host\ADMIN$ followed by copy/xcopy to the same share - file push before remote execution.
+  - purpose: refute
+    goal: >-
+      Compare the suspicious account against its normal footprint.
+    tool: pivot_entity
+    look_for: >-
+      Pivot on the account and source host over a wider window: is this admin on a jump host with a stable set of targets, or a
+      first-time pattern?
+benign:
+  - Helpdesk and server admins using RDP from a jump host; backup, monitoring and patching service accounts doing network logons by design.
+  - Software deployment (SCCM, PDQ, Ansible-on-Windows) installs temporary services and uses WinRM and admin shares at scale.
+  - Vulnerability scanners authenticating to every host with one credential.
+escalate:
+  - Pivot on the source host or IP of the first anomalous logon and hunt it for the original compromise.
+  - events_around on the target at the logon time for credential dumping, scheduled tasks or new services.
+confirm: >-
+  Confirmed when one identity or source reaches several hosts it has no administrative reason to touch AND remote execution
+  artefacts (new service, WinRM child process, pushed binary) appear on the targets right after the logons.
+gaps:
+  - Explicit 4648 / 4672 / 4768 / 4769 event IDs are not queryable fields; logon type and outcome are the available proxy.
+  - Firewall/NetFlow views of SMB 445, RDP 3389 and WinRM 5985/5986 are largely absent (few network flows).

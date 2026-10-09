@@ -1,0 +1,65 @@
+id: cobalt-strike-beacon-indicators
+title: Cobalt Strike beacon indicators (endpoint-side)
+summary: >-
+  Look for the host-side footprint of Cobalt Strike-style beacons - sacrificial child processes, rundll32 with no arguments,
+  service-based staging and EDR alerts naming the framework - since TLS and PCAP views are unavailable.
+tactics: [command-and-control, execution]
+attack: [T1071.001, T1573, T1055]
+sources:
+  - hunting-for-cobalt-strike-beacons
+keywords: [cobalt strike, beacon, rundll32, spawnto, named pipe, malleable, jarm, ja3, team server, psexec]
+signals: [lolbin, external_connection]
+needs: [process_creation]
+helps: [alert, network_connection]
+hypothesis: >-
+  A Cobalt Strike beacon is running on a host, visible as rundll32.exe or other system binaries launched without normal
+  arguments from an odd parent, making outbound connections at regular intervals.
+steps:
+  - purpose: test
+    goal: >-
+      EDR or detection alerts that already name the framework.
+    tool: search_events
+    query: event_type:alert cobalt
+    look_for: >-
+      Alerts mentioning Cobalt Strike, beacon or malleable profile; note host and time and treat as the anchor for pivots.
+  - purpose: test
+    goal: >-
+      rundll32 launched with no DLL argument.
+    tool: search_events
+    query: process.name:*rundll32.exe* event_type:process_creation -process.parent.name:*explorer.exe*
+    look_for: >-
+      A command line that is only rundll32.exe (no dll,export) is the typical post-exploitation spawn-to pattern; legitimate use
+      always names a DLL.
+  - purpose: test
+    goal: >-
+      Service-based beacon staging with pipe-style commands.
+    tool: search_events
+    query: event_type:service_install process.command_line:pipe
+    look_for: >-
+      Services whose command line echoes data to a named pipe (cmd /c echo ... pipe) are a known privilege-escalation staging idiom.
+  - purpose: test
+    goal: >-
+      Outbound connections from the suspect host process.
+    tool: aggregate_events
+    query: event_type:network_connection process.name:*rundll32.exe*
+    field: network.dst_ip
+    look_for: >-
+      rundll32 connecting out to the same external IP repeatedly; combine with the c2-beaconing-periodicity checks.
+  - purpose: refute
+    goal: >-
+      Verify the binary and parent chain are not a known tool.
+    tool: process_lineage
+    look_for: >-
+      Signed, expected parents and a documented software deployment explain it; injection into or spawning from Office, browsers or services does not.
+benign:
+  - Red-team and penetration-test exercises using licensed Cobalt Strike; confirm with the security team before escalating.
+  - Installers and control-panel applets that legitimately invoke rundll32 with DLL arguments.
+escalate:
+  - Hunt the destination IP/domain across all hosts and review the first process that connected to it.
+  - events_around the first beacon time for credential access and lateral movement.
+confirm: >-
+  Confirmed when an alert or intelligence match names the framework, or a no-argument rundll32/spawned system process makes
+  periodic external connections AND is not part of an authorised exercise.
+gaps:
+  - Default certificate, JA3/JA3S/JARM fingerprints, URI/user-agent profile matching and PCAP timing analysis need network sensors that are not present.
+  - Named-pipe and memory-injection telemetry (Sysmon 17/18/8) is mostly absent.

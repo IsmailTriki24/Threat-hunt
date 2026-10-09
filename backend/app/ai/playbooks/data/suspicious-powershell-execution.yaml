@@ -1,0 +1,67 @@
+id: suspicious-powershell-execution
+title: Suspicious PowerShell execution (encoded commands, download cradles, AMSI bypass)
+summary: >-
+  Hunt PowerShell used to run hidden or obfuscated code - Base64 -EncodedCommand, in-memory download cradles (IEX/DownloadString),
+  AMSI or execution-policy bypass - and trace what it launched or connected to.
+tactics: [execution, defense-evasion]
+attack: [T1059.001, T1027.010, T1620, T1105]
+sources:
+  - detecting-suspicious-powershell-execution
+  - hunting-for-anomalous-powershell-execution
+  - analyzing-powershell-empire-artifacts
+keywords: [powershell, encoded command, encodedcommand, base64, download cradle, downloadstring, iex, invoke-expression, amsi, obfuscated, fileless, empire, script block]
+signals: [encoded_command, download_cradle, office_spawn_shell]
+needs: [process_creation]
+helps: [network_connection, file_event]
+hypothesis: >-
+  PowerShell is being used to execute obfuscated or remotely fetched code on one or more hosts, typically spawned by an Office
+  document, script host or remote-execution service rather than by an administrator at a console.
+steps:
+  - purpose: test
+    goal: Find PowerShell launched with an encoded command (the strongest single indicator).
+    tool: search_events
+    query: process.name:*powershell.exe* process.command_line:encodedcommand
+    look_for: >-
+      Long Base64 blobs, hidden window or -nop, parent that is not explorer/cmd run by a person. Decode mentally: legitimate
+      management tools do use -enc, so note the parent and the user.
+  - purpose: test
+    goal: The short form of the same flag (-enc / -e) is far more common in malware.
+    tool: search_events
+    query: process.name:*powershell.exe* process.command_line:enc
+    look_for: Same as above; compare hosts and users with the previous step to see how widespread it is.
+  - purpose: test
+    goal: In-memory download cradles.
+    tool: search_events
+    query: process.name:*powershell.exe* process.command_line:downloadstring
+    look_for: URL or IP in the command line, especially external, plus IEX. Pivot on the destination.
+  - purpose: test
+    goal: What launches PowerShell - Office, script hosts and remote-execution parents.
+    tool: aggregate_events
+    query: process.name:*powershell.exe*
+    field: process.parent.name
+    look_for: Any hit is unusual on a workstation. Office as parent suggests a malicious document; wmiprvse suggests remote WMI execution.
+  - purpose: scope
+    goal: Which hosts and users run PowerShell at all - a rare host or account stands out.
+    tool: aggregate_events
+    query: process.name:*powershell.exe*
+    field: host.hostname
+    look_for: Hosts with a handful of PowerShell runs next to hosts with thousands; servers and admin workstations are the normal heavy users.
+  - purpose: follow_up
+    goal: What did the suspicious PowerShell do next?
+    tool: process_lineage
+    look_for: >-
+      Children (cmd, reg, schtasks, net, whoami), file drops in user-writable paths, and outbound connections within minutes of the
+      launch. Use events_around the process event for the surrounding minutes.
+benign:
+  - Software deployment and management agents (SCCM, Intune, RMM tools, backup agents) legitimately run encoded PowerShell.
+  - Administrators and logon scripts using -NoProfile or -ExecutionPolicy Bypass for ordinary automation.
+  - Security tooling that invokes PowerShell from a known service account on a schedule.
+escalate:
+  - Pivot on the destination IP/domain of any cradle (pivot_entity, enrich_indicator).
+  - Pivot on the user and host to find other activity in the same time window (lateral movement, persistence).
+  - process_lineage on the PowerShell process to see its parent chain and children.
+confirm: >-
+  Confirmed when encoded or cradle PowerShell has an anomalous parent (Office/script host/remote service) AND is followed by
+  persistence, credential access, a download, or an outbound connection to an external destination - not just the flag alone.
+gaps:
+  - Script Block Logging (4104) content is not in the normalized schema, so decoded script text cannot be inspected; rely on command lines.

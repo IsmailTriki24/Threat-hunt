@@ -12,8 +12,6 @@ from app.core.config import get_settings
 from tests.test_ai import conclude, nb, tool
 from tests.test_ai_agent import H1, Scripted, _run, _seeded, real_steps
 
-pytestmark = pytest.mark.asyncio
-
 RESULTS = [
     {
         "title": "Emotet  malware\nanalysis",

@@ -1,0 +1,67 @@
+id: data-staging-archive
+title: Data staging with archive tools before exfiltration
+summary: >-
+  Hunt archive creation by 7-Zip, WinRAR, tar or zip in temp, public or hidden paths, with passwords or split volumes, which
+  usually precedes exfiltration.
+tactics: [collection, exfiltration]
+attack: [T1074, T1074.001, T1560.001]
+sources:
+  - hunting-for-data-staging-before-exfiltration
+keywords: [data staging, archive, 7zip, rar archive, winrar, zip, tar, compress, collection, staging directory, password protected]
+signals: [suspicious_path, lolbin]
+needs: [process_creation]
+helps: [file_event]
+hypothesis: >-
+  Before exfiltration the adversary consolidates files from many directories into one archive, built with 7z/rar/tar in a
+  user-writable or hidden folder, often encrypted with a password.
+steps:
+  - purpose: test
+    goal: >-
+      7-Zip invocations.
+    tool: search_events
+    query: process.name:*7z.exe* event_type:process_creation
+    look_for: >-
+      "a" (add) with -p password, -v volume split or paths under temp, programdata or public; one archive from many source folders.
+  - purpose: test
+    goal: >-
+      RAR / WinRAR invocations.
+    tool: search_events
+    query: process.name:*rar.exe* event_type:process_creation
+    look_for: >-
+      Command lines with -hp (header encrypt), -m5 and output into a staging folder; rar.exe on a host that never had it installed is a strong sign.
+  - purpose: test
+    goal: >-
+      tar and zip created from the command line.
+    tool: search_events
+    query: process.command_line:tar process.command_line:czf
+    look_for: >-
+      Recursive archives of home, documents or database dumps on Linux or Windows; check destination path and who ran it.
+  - purpose: test
+    goal: >-
+      Archive files created in staging locations.
+    tool: search_events
+    query: event_type:file_event file.name:(*.7z|*.rar|*.zip|*.tar|*.gz)
+    look_for: >-
+      Archives in temp, public, programdata or recycle bin, especially large or created off-hours; compare with the process that wrote them.
+  - purpose: refute
+    goal: >-
+      Is this a sanctioned backup or developer job?
+    tool: aggregate_events
+    query: process.name:*7z.exe*
+    field: user.name
+    look_for: >-
+      Repeat with rar.exe. Service accounts on a schedule fit backup jobs; a regular user or admin running it ad hoc at night does not.
+benign:
+  - Backup and log-rotation jobs (logrotate, tar cron, Windows backup scripts) and build pipelines packaging artefacts.
+  - Users zipping documents for email; developers packaging releases.
+  - Software installers that unpack with 7z.
+escalate:
+  - >-
+    Follow the archive: events_around for outbound transfer, cloud-upload tools or removable media access.
+  - See data-exfiltration-network for the outbound leg.
+confirm: >-
+  Confirmed when archives of data from several directories are created in a staging path by an unexpected account or process
+  AND followed by outbound transfer or deletion of the archive.
+gaps:
+  - Directory-listing and file-read volume (object access events), and Sysmon 11 file creation, are only partly available.
+  - Archive size is not always in file_event, so "large archive" must be judged from command lines.

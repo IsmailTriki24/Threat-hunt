@@ -1,0 +1,56 @@
+id: spearphishing-attachment-execution
+title: Spearphishing attachment execution chain
+summary: >-
+  Hunt endpoint evidence of a targeted phishing attachment: mail client or Office spawning scripting hosts, and risky
+  attachment types written to disk.
+tactics: [initial-access, execution]
+attack: [T1566, T1566.001]
+sources:
+  - hunting-for-spearphishing-indicators
+keywords: [spearphishing, phishing, attachment, macro, docm, iso, lnk, outlook, office child process, malicious document]
+signals: [office_spawn_shell, lolbin, suspicious_path]
+needs: [process_creation]
+helps: [file_event, network_connection, alert]
+hypothesis: >-
+  A user opened a weaponised attachment, so Outlook or an Office app launched a script interpreter or LOLBin shortly after a
+  risky file was written to a mail cache or download path.
+steps:
+  - purpose: test
+    goal: Office or mail client spawning scripting hosts.
+    tool: search_events
+    query: process.parent.name:*winword.exe* process.name:*powershell.exe*
+    look_for: Any hit is high value; read the command line. Repeat swapping parent (excel, powerpnt, outlook) and child (cmd, wscript, cscript, mshta).
+  - purpose: test
+    goal: Risky attachment types dropped on disk from mail.
+    tool: search_events
+    query: event_type:file_event file.path:outlook file.name:*iso*
+    look_for: Repeat with .lnk, .docm, .xlsm, .hta, .js; a container (iso, zip) followed by an exe or lnk child is the classic evasion.
+  - purpose: test
+    goal: certutil or mshta used to fetch the second stage after opening.
+    tool: search_events
+    query: process.command_line:urlcache
+    look_for: certutil -urlcache -f with an external URL, within minutes of the Office process.
+  - purpose: refute
+    goal: Are there legitimate macros or add-ins launching shells?
+    tool: aggregate_events
+    query: process.parent.name:*excel.exe*
+    field: process.name
+    look_for: Finance workbooks calling cmd.exe for internal automation repeat across days for the same user; a one-time child is more suspicious.
+  - purpose: follow_up
+    goal: Full lineage and next actions on the victim host.
+    tool: process_lineage
+    look_for: Persistence, credential access or outbound connections following the Office child; compare to the phishing delivery time.
+benign:
+  - Business macros in finance or engineering workbooks launching cmd.exe or powershell.exe for internal reports.
+  - Outlook add-ins and document management or e-signature plug-ins spawning helper processes.
+  - Security awareness phishing simulations produce the same chain on purpose.
+escalate:
+  - Pivot on the user and file hash to find other recipients who opened the same attachment (sweep-fleet-for-known-artifact).
+  - Pivot on the destination domain/IP of the second stage across hosts.
+confirm: >-
+  Confirmed when an Office/mail process spawns a scripting host that reaches an external destination or drops persistence AND
+  the document is not a known business macro.
+gaps:
+  - Email gateway logs (sender, subject, SPF/DKIM/DMARC, URL rewrite, attachment hashes) used by the upstream procedure are not available; recipients cannot be enumerated from mail data.
+  - No proxy or dns_query data, so lookalike-domain and URL-click analysis is not possible.
+  - Sysmon-only fields (hashes of the attachment) exist only if the sensor supplies them.

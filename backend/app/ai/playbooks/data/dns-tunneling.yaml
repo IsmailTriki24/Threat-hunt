@@ -1,0 +1,60 @@
+id: dns-tunneling
+title: DNS tunneling and DNS-based C2 or exfiltration
+summary: >-
+  Hunt long, high-entropy or high-volume DNS queries to a single parent domain and TXT/NULL record abuse. Requires DNS logs,
+  which the tenant does not currently ingest.
+tactics: [command-and-control, exfiltration]
+attack: [T1071.004, T1048]
+sources:
+  - hunting-for-dns-tunneling-with-zeek
+keywords: [dns tunneling, dns exfiltration, txt record, subdomain, entropy, iodine, dnscat, dns c2]
+signals: [external_connection]
+needs: [dns_query]
+helps: [network_connection, process_creation]
+hypothesis: >-
+  A host encodes data in subdomain labels of one attacker-controlled zone, producing very many unique, long queries (often TXT
+  or NULL type) to the same parent domain in a short time.
+steps:
+  - purpose: scope
+    goal: >-
+      Domains receiving the most DNS queries.
+    tool: aggregate_events
+    query: event_type:dns_query
+    field: dns.question
+    look_for: >-
+      Many distinct long subdomains under one parent; compare with the host's normal destinations.
+  - purpose: test
+    goal: >-
+      TXT or NULL record lookups.
+    tool: aggregate_events
+    query: event_type:dns_query dns.query_type:(TXT|NULL)
+    field: host.hostname
+    look_for: >-
+      Endpoints issuing frequent TXT queries to non-mail, non-vendor zones.
+  - purpose: test
+    goal: >-
+      Proxy signal when DNS logs are absent - endpoints running resolver tools.
+    tool: search_events
+    query: process.name:*nslookup.exe* process.command_line:txt
+    look_for: >-
+      Scripted nslookup or Resolve-DnsName loops with type TXT against one domain.
+  - purpose: refute
+    goal: >-
+      Does the queried domain belong to a known service?
+    tool: pivot_entity
+    look_for: >-
+      Pivot on the domain: antivirus cloud lookups, DNSBLs and CDN names generate long encoded labels legitimately.
+benign:
+  - Endpoint security products that query vendor reputation services through long encoded DNS names.
+  - DNS blocklist lookups (DNSBL) by mail servers, and SPF/DKIM TXT lookups.
+  - Content delivery and cloud hosts with long machine-generated hostnames.
+escalate:
+  - Identify the process generating the queries and run process_lineage.
+  - Estimate volume leaving through the domain and check whether the same host also beacons.
+confirm: >-
+  Confirmed when one host sends hundreds of unique long subdomains to a single uncommon parent domain, from a process that is not
+  a resolver or security agent. Without dns_query data it cannot be confirmed.
+gaps:
+  - >-
+    No dns_query telemetry today: this playbook is blocked until DNS logs arrive; report a gap instead of a clean result.
+  - Zeek-specific per-query length, entropy and RITA scoring cannot be reproduced; only counts per domain can.

@@ -1,0 +1,65 @@
+id: webshell-activity
+title: Web shell deployment and use
+summary: >-
+  Hunt web shells on internet-facing servers - shells and discovery tools spawned by web server processes (w3wp, httpd, nginx,
+  tomcat/java) and new script files written to web roots.
+tactics: [persistence, execution, initial-access]
+attack: [T1505.003, T1190]
+sources:
+  - hunting-for-webshell-activity
+keywords: [web shell, webshell, w3wp, aspx, jsp, php, tomcat, apache, nginx, china chopper, public-facing application, inetpub]
+signals: [persistence, lolbin]
+needs: [process_creation]
+helps: [file_event, network_connection, alert]
+hypothesis: >-
+  A web shell was planted on an internet-facing server, so the web server worker process spawns shells or reconnaissance commands
+  and script files appear in a web root outside any deployment.
+steps:
+  - purpose: test
+    goal: IIS worker process spawning shells.
+    tool: search_events
+    query: process.parent.name:*w3wp.exe* process.name:*cmd.exe*
+    look_for: >-
+      cmd /c whoami, net user, ipconfig, systeminfo, certutil or PowerShell; repeat with process.name:*powershell.exe*. Any shell
+      from w3wp is rare; the app-pool user is the context.
+  - purpose: test
+    goal: Linux web server or Java app server spawning shells.
+    tool: search_events
+    query: process.parent.name:*httpd* process.name:*sh*
+    look_for: >-
+      sh/bash/python children of httpd, apache2, nginx, php-fpm, tomcat or java (repeat for each parent) running id, uname, curl or wget;
+      reverse shell command lines.
+  - purpose: test
+    goal: New script files in web roots.
+    tool: search_events
+    query: event_type:file_event file.path:inetpub file.name:*aspx*
+    look_for: >-
+      Repeat for .asp .ashx .jsp .jspx .php under inetpub, wwwroot, webapps, var www; names like shell, cmd, up, or one-letter,
+      created by w3wp or an upload handler or at odd hours.
+  - purpose: refute
+    goal: Which web hosts show shell spawns.
+    tool: aggregate_events
+    query: process.parent.name:*w3wp.exe*
+    field: process.name
+    look_for: >-
+      Legit app pools may spawn csc.exe (compilation), conhost, or a known report tool; cmd/powershell/whoami/net in this list is
+      the anomaly.
+  - purpose: follow_up
+    goal: Chain of activity around the first spawn.
+    tool: events_around
+    look_for: >-
+      Exploit of the application or file upload just before, discovery commands, credential tools, then outbound connections or
+      lateral movement from the server.
+benign:
+  - ASP.NET compilation (csc.exe, vbc.exe) and Windows error reporting launched by IIS app pools.
+  - Legitimate CGI/PHP scripts and Java apps that call shell utilities for report generation, backups or health checks.
+  - Deployment pipelines that write aspx/jsp/php files during releases (known service account, change window).
+escalate:
+  - Pivot on the web server host and the app-pool/service account; hunt the same file name or hash on sibling servers.
+  - Use pivot_entity on the source IP in the web log if available, and check outbound network_connection from the server.
+confirm: >-
+  Confirmed when a web server process spawns commands that are not part of the application's function AND a script file in the
+  web root matches the timing, or the same behaviour repeats after the file creation.
+gaps:
+  - IIS/Apache HTTP request logs (POST to a single script, user-agent anomalies) used upstream are not in the platform; the file and process evidence has to carry the finding.
+  - Web root file contents and file integrity monitoring baselines are not available.

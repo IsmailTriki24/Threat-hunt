@@ -1,0 +1,56 @@
+id: lateral-movement-wmi
+title: WMI remote execution (lateral movement)
+summary: >-
+  Hunt commands executed on a host by WMI from another machine - WmiPrvSE.exe spawning shells, wmic /node, Win32_Process.Create -
+  and the network logons that carry them.
+tactics: [lateral-movement, execution]
+attack: [T1047, T1021.003]
+sources:
+  - hunting-for-lateral-movement-via-wmi
+keywords: [wmi, wmic, wmiprvse, win32_process, remote execution, lateral movement, dcom]
+signals: [lateral_movement]
+needs: [process_creation]
+helps: [authentication]
+hypothesis: >-
+  An adversary with valid credentials is running commands on remote hosts through WMI, so shells appear as children of WmiPrvSE.exe
+  and are preceded by a network logon from another internal host.
+steps:
+  - purpose: test
+    goal: Children of the WMI provider host - shells and script hosts among them are the signal.
+    tool: aggregate_events
+    query: process.parent.name:*wmiprvse.exe*
+    field: process.name
+    look_for: cmd.exe /q /c ... output redirected to an admin share or a temp file is the classic Impacket/wmiexec pattern.
+  - purpose: test
+    goal: wmic invoked against a remote node.
+    tool: search_events
+    query: process.command_line:node process.name:*wmic.exe*
+    look_for: /node:<host> process call create ... - the source host is the pivot point.
+  - purpose: test
+    goal: The network logon that precedes remote WMI execution.
+    tool: search_events
+    query: event_type:authentication auth.logon_type:(3|network) outcome:success
+    look_for: >-
+      Type 3 logons from a workstation to many servers, or by an account that never logs on there; line up the time with the shells
+      found above (events_around).
+  - purpose: refute
+    goal: Check whether the WMI use is a known management pattern.
+    tool: aggregate_events
+    query: process.parent.name:*wmiprvse.exe*
+    field: user.name
+    look_for: A single service account running on a schedule from a management server is expected; a human account or a new source is not.
+  - purpose: follow_up
+    goal: What did the remote command do?
+    tool: events_around
+    look_for: Credential dumping, persistence, file staging or further movement within minutes on the target host.
+benign:
+  - Monitoring and inventory software (SCCM, vulnerability scanners, backup agents) uses WMI remotely by design.
+  - IT administrators running wmic or Get-WmiObject for diagnostics from a jump host.
+escalate:
+  - Identify the source host of the Type 3 logon and hunt it for the earlier compromise (pivot_entity on the source IP / host).
+  - Pivot on the account used across hosts to measure how far it moved.
+confirm: >-
+  Confirmed when WMI-spawned shells run commands that are not part of a known management pattern AND the account/source host has no
+  legitimate reason to administer the target.
+gaps:
+  - WMI-Activity operational events (5857/5860/5861) used for subscription-based detection are not in the normalized schema.

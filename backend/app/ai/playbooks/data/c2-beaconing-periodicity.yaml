@@ -1,0 +1,74 @@
+id: c2-beaconing-periodicity
+title: C2 beaconing and unusual outbound connections
+summary: >-
+  Find hosts that call the same external destination repeatedly at regular intervals, use rare or non-standard ports, or have
+  scripting processes making outbound connections.
+tactics: [command-and-control]
+attack: [T1071, T1071.001, T1571, T1573]
+sources:
+  - hunting-for-beaconing-with-frequency-analysis
+  - hunting-for-command-and-control-beaconing
+  - hunting-for-unusual-network-connections
+keywords: [beacon, beaconing, c2 beacon, command and control, callback, jitter, non-standard port, rare destination, periodic]
+signals: [external_connection]
+needs: [network_connection]
+helps: [process_creation, dns_query, alert]
+hypothesis: >-
+  An implant on one endpoint contacts the same external IP or domain at near-constant intervals (with jitter) over hours, with
+  small similar-sized requests, often from an unexpected process or on a non-standard port.
+steps:
+  - purpose: scope
+    goal: >-
+      Rank destinations by connection count to find repeaters.
+    tool: aggregate_events
+    query: event_type:network_connection
+    field: network.dst_ip
+    look_for: >-
+      Destinations with a high, steady count from few hosts. Then narrow to one source host and check spacing with events_around.
+      CDN, update and monitoring endpoints are expected top talkers.
+  - purpose: test
+    goal: >-
+      Connections on unusual destination ports.
+    tool: aggregate_events
+    query: event_type:network_connection -network.dst_port:443 -network.dst_port:80 -network.dst_port:53
+    field: network.dst_port
+    look_for: >-
+      Web-like traffic on 8080/8443/4444/50050 or high random ports; ports used by one host only are most interesting (T1571).
+  - purpose: test
+    goal: >-
+      Which processes are making the outbound connections?
+    tool: aggregate_events
+    query: event_type:network_connection
+    field: process.name
+    look_for: >-
+      powershell, rundll32, regsvr32, mshta, wscript, cmd or a binary in a user-writable path with outbound connections is far more
+      suspicious than browsers and updaters.
+  - purpose: test
+    goal: >-
+      Repeated connections by domain.
+    tool: aggregate_events
+    query: event_type:network_connection has:network.dst_domain
+    field: network.dst_domain
+    look_for: >-
+      Young or random-looking domains with steady counts from one host; many hosts to one domain is more likely software.
+  - purpose: refute
+    goal: >-
+      Is the periodic destination a known application?
+    tool: pivot_entity
+    look_for: >-
+      Pivot on the destination: which hosts, which processes, which users. Telemetry, NTP-like checks, EDR agents and cloud sync
+      clients beacon legitimately and across many hosts.
+benign:
+  - EDR, antivirus, patch and licensing agents, NTP and monitoring probes that check in on fixed schedules.
+  - Browsers with keep-alive tabs, mail and chat clients, cloud storage sync polling.
+  - Scheduled jobs and health checks calling internal or SaaS APIs.
+escalate:
+  - process_lineage on the owning process and check its path, signer and parent (suspicious_path, lolbin).
+  - Enrich the destination with threat-intel and pivot to every other host that talked to it.
+confirm: >-
+  Confirmed when a single destination shows regular intervals from a process that has no business using the network AND the
+  destination is rare in the estate or tied to threat intelligence or an EDR alert.
+gaps:
+  - Coefficient-of-variation scoring over inter-arrival times, JA3/JARM and byte-size consistency need raw flow data; only counts
+    and event timestamps (via events_around) are available.
+  - Few network flows exist today, so a quiet result may mean low visibility, not absence.

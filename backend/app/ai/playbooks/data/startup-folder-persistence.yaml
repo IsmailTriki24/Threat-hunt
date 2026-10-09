@@ -1,0 +1,61 @@
+id: startup-folder-persistence
+title: Startup folder persistence
+summary: >-
+  Hunt executables, scripts and shortcuts dropped into the per-user or all-users Windows Startup folders so that they run at
+  logon.
+tactics: [persistence]
+attack: [T1547.001]
+sources:
+  - hunting-for-startup-folder-persistence
+keywords: [startup folder, start menu, programs startup, lnk, bat, vbs, logon persistence, autostart]
+signals: [persistence, suspicious_path]
+needs: [file_event]
+helps: [process_creation]
+hypothesis: >-
+  An adversary created a script, executable or shortcut in a Startup folder, so a file with a runnable extension appears there
+  outside of any installer activity and executes at the next logon.
+steps:
+  - purpose: test
+    goal: Files created under the Startup folders.
+    tool: search_events
+    query: event_type:file_event file.path:"programs startup"
+    look_for: >-
+      .bat .cmd .vbs .js .ps1 .exe .lnk .hta created by a shell, browser, Office app or script host; names that are generic or
+      mimic software. A desktop.ini is normal.
+  - purpose: test
+    goal: Executables launched from the Startup folder at logon.
+    tool: search_events
+    query: event_type:process_creation process.executable:startup
+    look_for: >-
+      Process image or command line inside Start Menu\Programs\Startup, parent explorer.exe at logon time, or cmd/wscript running a
+      script from there.
+  - purpose: test
+    goal: Command-line creation of startup items.
+    tool: search_events
+    query: process.command_line:"programs startup"
+    look_for: >-
+      copy/move/echo redirection or PowerShell writing into the folder; a shortcut created via WScript.Shell COM.
+  - purpose: refute
+    goal: Which hosts and users have startup activity.
+    tool: aggregate_events
+    query: event_type:file_event file.path:"programs startup"
+    field: host.hostname
+    look_for: >-
+      One-off items on one host are interesting; many hosts with the same shortcut name are a deployment (VPN client, chat client).
+  - purpose: follow_up
+    goal: Origin of the dropped file.
+    tool: process_lineage
+    look_for: The creating process and what downloaded or extracted it; hash and signer of the file.
+benign:
+  - Corporate software places shortcuts in the all-users Startup folder (VPN clients, Teams, Citrix, OneNote send-to tools).
+  - Users add their own shortcuts for personal tools; these are .lnk to signed programs.
+  - Logon scripts deployed by IT as .bat or .cmd files.
+escalate:
+  - Pivot on the file hash and name across hosts.
+  - events_around the file creation for a download, archive extraction or phishing attachment.
+confirm: >-
+  Confirmed when a runnable file in a Startup folder is unsigned or unknown, was created by a non-installer process, AND it
+  executes at logon with network or discovery activity following.
+gaps:
+  - Windows 4663 file-access auditing and Autoruns baselines used upstream are not available; coverage depends on file_event data from Sysmon or the EDR.
+  - The upstream real-time filesystem watchdog cannot be replicated; only logged file creations are searchable.
