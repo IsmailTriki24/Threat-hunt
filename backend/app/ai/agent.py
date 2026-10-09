@@ -22,6 +22,7 @@ import asyncio
 import json
 import logging
 import time
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import Any, Literal
 
@@ -178,16 +179,31 @@ class RawConclusion(BaseModel):
         return v.upper() if isinstance(v, str) else v
 
 
+Sink = Callable[[str, dict[str, Any]], None]
+
+
+class _Steps(list):
+    """The step log. When a sink is attached (live streaming), every appended step is announced as it happens."""
+
+    sink: Sink | None = None
+
+    def append(self, item: dict[str, Any]) -> None:
+        super().append(item)
+        if self.sink is not None:
+            self.sink("step", {"index": len(self) - 1, "step": item})
+
+
 @dataclass
 class Outcome:
     status: str = "FAILED"  # COMPLETED | INCOMPLETE | FAILED
-    steps: list[dict[str, Any]] = field(default_factory=list)
+    steps: list[dict[str, Any]] = field(default_factory=_Steps)
     conclusion: dict[str, Any] | None = None
     input_tokens: int = 0
     output_tokens: int = 0
     error: str = ""
     state: dict[str, Any] | None = None
     mode: str = "standard"
+    sink: Sink | None = field(default=None, repr=False)  # live event consumer (SSE); never required
 
 
 # ---- model-facing envelopes ------------------------------------------------------------------------------------------------------
@@ -431,6 +447,39 @@ async def run_agent(
     out = outcome or Outcome()
     out.mode = m.name
     clock = st.Clock(lim.wall_s)
+    if isinstance(out.steps, _Steps):
+        out.steps.sink = out.sink
+
+    def emit(kind: str, **data: Any) -> None:
+        if out.sink is not None:
+            out.sink(kind, data)
+
+    def progress() -> None:
+        """A compact snapshot of the investigation for the live view (hypotheses, counters, remaining budget)."""
+        if out.sink is None:
+            return
+        emit(
+            "progress",
+            hypotheses=[
+                {
+                    "id": h.id,
+                    "statement": h.statement[:240],
+                    "status": h.status,
+                    "priority": h.priority,
+                    "supporting": len(h.supporting),
+                    "contradicting": len(h.contradicting),
+                }
+                for h in inv.hypotheses.values()
+            ],
+            queries=len(inv.queries),
+            events=len(inv.evidence),
+            entities=len(inv.entities),
+            redundant=inv.redundant_calls,
+            gate_rejections=inv.gate_rejections,
+            tokens=out.input_tokens + out.output_tokens,
+            remaining=remaining(),
+            limits={"steps": lim.max_steps, "tool_calls": lim.max_tool_calls, "seconds": lim.wall_s},
+        )
     offered = tools.schemas_for(ctx.principal)
     sem = asyncio.Semaphore(m.max_parallel)
     cache: dict[str, tuple[tools.ToolResult, str]] = {}
@@ -580,6 +629,7 @@ async def run_agent(
             if final:
                 sys_p += f"\nThe investigation must stop now ({reason}). Call submit_conclusion: report what was found, what is unresolved and the best next actions."
             session_steps += 1
+            emit("thinking", step=session_steps, final=final, reason=reason)
             resp = await provider.complete(
                 sys_p,
                 _render(first, turns, brief, m.keep_full_turns),
@@ -588,6 +638,7 @@ async def run_agent(
                 force_tool=CONCLUDE if final else None,
             )
             tally(resp)
+            progress()
             if resp.text:
                 out.steps.append({"type": "assistant", "text": resp.text[:2000]})
             turn = _Turn(assistant=resp.blocks() or [{"type": "text", "text": "(no output)"}])
@@ -635,6 +686,16 @@ async def run_agent(
                     p["tr"] = await tools.execute_ex(ctx, tools.NOTEBOOK, p["call"].input)
             run_idx = [i for i, p in enumerate(plan) if p.get("kind") == "run"]
             refs = {i: inv.next_ref() for i, p in enumerate(plan) if p.get("kind") in ("run", "cached", "dup_in_batch")}
+            for i in run_idx:
+                pc = plan[i]["call"]
+                emit(
+                    "tool_start",
+                    ref=refs[i],
+                    name=pc.name,
+                    input=pc.input,
+                    purpose=pc.input.get("purpose"),
+                    hypothesis=pc.input.get("hypothesis"),
+                )
             outs = await asyncio.gather(
                 *(run_telemetry(plan[i]["call"].name, plan[i]["call"].input, refs[i]) for i in run_idx)
             )
@@ -718,6 +779,8 @@ async def run_agent(
                         hypothesis=rec.hypothesis,
                         result_preview=_preview(tr.result, tr.error),
                         ms=tr.ms,
+                        total=tr.total,
+                        returned=tr.returned,
                         attempts=tr.attempts,
                         new_events=rec.new_events,
                         new_entities=rec.new_entities,
@@ -754,6 +817,7 @@ async def run_agent(
             if real:
                 gained = sum(r.new_events + r.new_entities for r in new_by_ref.values() if r.status != "error")
                 inv.no_progress = 0 if gained else inv.no_progress + 1
+            progress()
 
             if conclude_call is not None:
                 try:

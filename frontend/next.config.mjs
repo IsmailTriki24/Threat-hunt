@@ -16,6 +16,7 @@ const csp = [
 export default {
   output: "standalone",
   poweredByHeader: false,
+  compress: false, // gzip would buffer Server-Sent Events (the live AI hunt view) until the response ends
   // AI hunts run synchronously for up to AI_RUN_TIMEOUT_S (540s); the default proxy timeout (~30s) turned finished runs into a 500.
   experimental: { proxyTimeout: 600_000 },
   async rewrites() {

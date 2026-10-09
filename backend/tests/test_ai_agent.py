@@ -401,3 +401,54 @@ def test_signals_cover_common_techniques():
     assert "office_spawn_shell" in sig(name="cmd.exe", parent={"name": "EXCEL.EXE"})
     assert not sig(command_line="chrome.exe --type=renderer")
     assert LLMResponse().text == ""  # keep the import honest
+
+
+def _parse_sse(text: str) -> list[tuple[str, dict]]:
+    out = []
+    for block in text.strip().split("\n\n"):
+        lines = [ln for ln in block.splitlines() if not ln.startswith(":")]
+        if lines:
+            out.append((lines[0].removeprefix("event: "), json.loads(lines[1].removeprefix("data: "))))
+    return out
+
+
+async def test_stream_narrates_the_investigation_live_and_saves_the_run(client, make, llm, app):
+    _, h = await _seeded(make, app)
+    llm(
+        Scripted(
+            nb(H1),
+            tool("search_events", query="process.name:powershell.exe"),
+            tool("search_events", query="process.name:powershell.exe"),  # served from cache
+            conclude([]),
+        )
+    )
+    r = await client.post(f"{A}/runs/stream", headers=h, json={"goal": "hunt encoded powershell and what it led to", "mode": "quick"})
+    assert r.status_code == 200 and r.headers["content-type"].startswith("text/event-stream")
+    assert "no-transform" in r.headers["cache-control"]
+    ev_ = _parse_sse(r.text)
+    kinds = [k for k, _ in ev_]
+    assert kinds[0] == "start" and kinds[-1] == "done"
+    assert {"thinking", "progress", "tool_start", "step"} <= set(kinds)
+    start = ev_[0][1]
+    assert start["limits"]["steps"] > 0 and start["mode"] == "quick"
+    steps = [d for k, d in ev_ if k == "step"]
+    assert [d["index"] for d in steps] == list(range(len(steps)))  # ordered, gap-free
+    tool_steps = [d["step"] for d in steps if d["step"]["type"] == "tool" and d["step"]["name"] == "search_events"]
+    assert tool_steps[0]["total"] is not None and tool_steps[0]["ms"] is not None
+    started = [d for k, d in ev_ if k == "tool_start"]
+    assert started and started[0]["name"] == "search_events" and started[0]["ref"]
+    prog = [d for k, d in ev_ if k == "progress"][-1]
+    assert prog["queries"] >= 1 and prog["hypotheses"] and prog["remaining"]["steps"] >= 0
+    done = ev_[-1][1]
+    assert done["status"] == "COMPLETED" and len(done["steps"]) == len(steps)
+    saved = (await client.get(f"{A}/runs", headers=h)).json()
+    assert [x["id"] for x in saved] == [done["id"]]  # persisted exactly like a normal run
+
+
+async def test_stream_rejects_without_a_provider_and_for_unprivileged_users(client, make, app):
+    t = await make.tenant()
+    _, h = await make.login_as(t, Role.THREAT_HUNTER)
+    app.state.llm = None
+    r = await client.post(f"{A}/runs/stream", headers=h, json={"goal": "hunt something odd", "mode": "quick"})
+    assert r.status_code in (502, 503)  # plain JSON error, not an event stream
+    assert not r.headers["content-type"].startswith("text/event-stream")

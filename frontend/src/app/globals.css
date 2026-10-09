@@ -12,3 +12,18 @@ body { @apply bg-bg text-[#c9d1d9] text-sm antialiased; font-family: ui-sans-ser
   .th { @apply text-left text-xs font-medium text-muted px-2 py-1 border-b border-line whitespace-nowrap; }
   .td { @apply px-2 py-0.5 border-b border-line/60 align-top; }
 }
+
+/* AI hunting: animated surfaces. Motion is decorative only and is switched off for users who ask for reduced motion. */
+@layer components {
+  .ai-glow { @apply relative overflow-hidden rounded-md; }
+  .ai-glow > .ai-glow-spin { @apply pointer-events-none absolute left-1/2 top-1/2 h-[220%] w-[120%] -translate-x-1/2 -translate-y-1/2 opacity-0 transition-opacity duration-500; background: conic-gradient(from 0deg, transparent 0 55%, rgba(167,139,250,.9), rgba(88,166,255,.9), transparent 90%); }
+  .ai-glow[data-active="true"] > .ai-glow-spin { @apply opacity-100 animate-spin-slow; }
+  .ai-glow > .ai-glow-body { @apply relative m-px rounded-[5px] bg-panel; }
+  .ai-btn { @apply relative rounded-md border border-ai/60 px-4 py-1.5 text-sm font-medium text-white transition hover:border-ai disabled:opacity-40; background: linear-gradient(110deg, #6d4aff 20%, #3b82f6 45%, #a78bfa 55%, #6d4aff 80%); background-size: 300% 100%; }
+  .ai-btn:not(:disabled):hover { @apply animate-shimmer; }
+  .ai-chip { @apply inline-flex items-center gap-1 rounded-full border px-2 py-0.5 text-[11px] leading-4; }
+  .ai-rail::before { content: ""; @apply absolute bottom-0 left-[15px] top-0 w-px; background: linear-gradient(to bottom, rgba(167,139,250,.5), rgba(88,166,255,.25) 60%, transparent); }
+}
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after { animation-duration: .01ms !important; animation-iteration-count: 1 !important; transition-duration: .01ms !important; scroll-behavior: auto !important; }
+}

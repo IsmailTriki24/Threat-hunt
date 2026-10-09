@@ -1,5 +1,5 @@
 import type { AllowEntry, Bulletin, FeedType, Ioa, IocFeed, IocHunt, IocHuntDetail, IocItem, IocOverview, IocPage, ThreatPage, Ttp } from "./ioc";
-import type { AiRun, AiStatus } from "./ai";
+import type { AiRun, AiRunBody, AiStatus } from "./ai";
 import type { Alert, AlertStatus, Backtest, DetectionOverview, Rule, RuleStatus, TestCase, TestResult } from "./detections";
 import type {
   EventDetail, EventQueryBody, FieldInfo, MemberOut, ReadyResponse, SearchResult, TenantOut, TokenResponse,
@@ -105,6 +105,20 @@ export async function requestBlob(path: string, body: unknown): Promise<Blob> {
   if (res.status === 401) { accessToken = null; onSessionLost?.(); }
   if (!res.ok) throw await parseError(res);
   return res.blob();
+}
+
+/** POST that returns the raw streaming Response (Server-Sent Events). Mirrors `request` auth/refresh handling. */
+export async function requestStream(path: string, body: unknown, signal?: AbortSignal): Promise<Response> {
+  const send = () => fetch(path, {
+    method: "POST", credentials: "same-origin", signal,
+    headers: { "Content-Type": "application/json", Accept: "text/event-stream", ...(accessToken ? { Authorization: `Bearer ${accessToken}` } : {}) },
+    body: JSON.stringify(body),
+  });
+  let res = await send();
+  if (res.status === 401 && (await refreshSession())) res = await send();
+  if (res.status === 401) { accessToken = null; onSessionLost?.(); }
+  if (!res.ok) throw await parseError(res);
+  return res;
 }
 
 const J = (body: unknown) => ({ method: "POST", body });
@@ -222,6 +236,7 @@ export const api = {
   aiTranslate: (question: string) => request<{ query: string | null; note: string }>("/api/v1/ai/translate", J({ question })),
   aiRuns: () => request<AiRun[]>("/api/v1/ai/runs"),
   aiRun: (b: { goal: string; hunt_id?: string; hours_back: number }) => request<AiRun>("/api/v1/ai/runs", J(b)),
+  aiRunStream: (b: AiRunBody, signal?: AbortSignal) => requestStream("/api/v1/ai/runs/stream", b, signal),
   aiSave: (id: string, finding_indexes: number[], hunt_id?: string) => request<AiRun>(`/api/v1/ai/runs/${enc(id)}/save`, J({ finding_indexes, ...(hunt_id ? { hunt_id } : {}) })),
   threats: (qs = "") => request<ThreatPage>(`/api/v1/ioc/threats${qs}`),
   bulletin: (id: string) => request<Bulletin>(`/api/v1/ioc/threats/${enc(id)}`),
