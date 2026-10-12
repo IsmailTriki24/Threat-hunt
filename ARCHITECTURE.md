@@ -32,6 +32,7 @@ and, later, the AI planner use), and **connectors** (all integrations behind one
 | `datasources/` | persisted connector instances, encrypted secrets, ingest keys, pull collection |
 | `audit/` | audit trail (write + read API) |
 | `intel/` | tenant-private IOC entities, provider adapters, explainable scoring, STIX/TAXII, sightings |
+| `threatmap/` | read-only global threat map: GeoIP classification/providers, OpenSearch IP/flow aggregations, three layers (reported intel · observed telemetry · correlated), investigation panel (ADR 0016) |
 | `mitre/` | ATT&CK reference data, evidence-backed suggestion rules, mappings, technique risk summaries |
 | `connectors/` | `Connector` interface, registry, `canonical`, `generic_json`, `sysmon` |
 | `workers/` | arq worker: heartbeat, per-tenant retention |
@@ -66,6 +67,7 @@ Roles (`SUPER_ADMIN`, `TENANT_ADMIN`, `SOC_ANALYST`, `THREAT_HUNTER`, `INCIDENT_
 | 4 Threat intel | IOC entities, enrichment adapters (MISP, ThreatFox/abuse.ch, OTX, VT…) with graceful degradation, scoring, ATT&CK | **done** |
 | 5 Detection engineering | Sigma → query compiler, rule lifecycle/testing, hunt→detection, scheduled evaluation, alerts | **done** (ADR 0010) |
 | 7 IOC hunting + threat bulletins | recent-IOC database, admin validation, automatic multi-source hunt, auto-generated case and report, watch-list re-hunts | **done** (ADR 0013, 0014) |
+| 8 Threat map | geographic view of reported intelligence vs own telemetry vs correlations, local GeoIP, OpenCTI feed | **done** (ADR 0016) |
 | 6 AI hunting | provider abstraction, tool system, agent loop, evidence-validated conclusions, NL→query | **done** (ADR 0011) |
 
 ## 7. AI design constraints (implemented in `app/ai/`, ADR 0011)

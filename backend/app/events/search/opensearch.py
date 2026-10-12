@@ -23,6 +23,8 @@ from app.events.search.query import (
 
 log = logging.getLogger("app.search")
 
+BULK_CHUNK = 500  # one bulk request must stay under the node indexing-pressure limit (10% of heap)
+
 FAMILIES = ("events", "network", "authentication", "endpoint", "dns")
 _FAMILY_BY_TYPE = {
     EventType.NETWORK_CONNECTION: "network",
@@ -145,25 +147,29 @@ class OpenSearchBackend:
         result = IndexResult()
         if not events:
             return result
-        lines: list[dict[str, Any]] = []
-        for event in events:
-            lines.append({"create": {"_index": self.index_for(event), "_id": event.id}})
-            lines.append(event.to_document())
-        try:
-            response = await self.client.bulk(body=lines)
-        except OpenSearchException as exc:
-            log.error("bulk indexing failed", extra={"error": type(exc).__name__})
-            raise UpstreamUnavailable("Search backend unavailable") from exc
-        for pos, item in enumerate(response["items"]):
-            op = item["create"]
-            if op["status"] < 300:
-                result.accepted += 1
-            elif op["status"] == 409:
-                result.duplicates += 1
-            else:
-                reason = (op.get("error") or {}).get("type", "index_error")
-                log.warning("event rejected by index", extra={"reason": reason, "detail": str(op.get("error"))[:300]})
-                result.failed.append((pos, reason))
+        for start in range(0, len(events), BULK_CHUNK):
+            chunk = events[start : start + BULK_CHUNK]
+            lines: list[dict[str, Any]] = []
+            for event in chunk:
+                lines.append({"create": {"_index": self.index_for(event), "_id": event.id}})
+                lines.append(event.to_document())
+            try:
+                response = await self.client.bulk(body=lines)
+            except OpenSearchException as exc:
+                log.error("bulk indexing failed", extra={"error": type(exc).__name__})
+                raise UpstreamUnavailable("Search backend unavailable") from exc
+            for pos, item in enumerate(response["items"], start=start):
+                op = item["create"]
+                if op["status"] < 300:
+                    result.accepted += 1
+                elif op["status"] == 409:
+                    result.duplicates += 1
+                else:
+                    reason = (op.get("error") or {}).get("type", "index_error")
+                    log.warning(
+                        "event rejected by index", extra={"reason": reason, "detail": str(op.get("error"))[:300]}
+                    )
+                    result.failed.append((pos, reason))
         return result
 
     # ---- read -------------------------------------------------------------------------------

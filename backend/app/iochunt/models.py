@@ -2,7 +2,7 @@ import uuid
 from datetime import datetime
 from typing import Any
 
-from sqlalchemy import Boolean, DateTime, ForeignKey, Integer, LargeBinary, String, Text, UniqueConstraint, func
+from sqlalchemy import Boolean, DateTime, ForeignKey, Index, Integer, LargeBinary, String, Text, UniqueConstraint, func
 from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -148,7 +148,10 @@ class Ioc(Base):
     """An indicator in the tenant's IOC database. Lifecycle: NEW -> VALIDATED | REJECTED -> EXPIRED."""
 
     __tablename__ = "iocs"
-    __table_args__ = (UniqueConstraint("tenant_id", "type", "value", name="uq_ioc"),)
+    __table_args__ = (
+        UniqueConstraint("tenant_id", "type", "value", name="uq_ioc"),
+        Index("ix_iocs_tenant_type_last_seen", "tenant_id", "type", "last_seen"),
+    )
 
     id: Mapped[uuid.UUID] = _pk()
     tenant_id: Mapped[uuid.UUID] = _tenant()
@@ -250,7 +253,10 @@ class IocMatch(Base):
     """An IOC observed in an event. Unique per (ioc, event): re-hunts never duplicate."""
 
     __tablename__ = "ioc_matches"
-    __table_args__ = (UniqueConstraint("ioc_id", "event_id", name="uq_ioc_match"),)
+    __table_args__ = (
+        UniqueConstraint("ioc_id", "event_id", name="uq_ioc_match"),
+        Index("ix_ioc_matches_tenant_event_ts", "tenant_id", "event_timestamp"),
+    )
 
     id: Mapped[uuid.UUID] = _pk()
     tenant_id: Mapped[uuid.UUID] = _tenant()

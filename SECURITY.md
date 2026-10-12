@@ -23,6 +23,8 @@ Report vulnerabilities privately to the maintainers; do not open public issues f
 | Config hardening | OpenAPI/docs disabled in production; `/metrics` disabled in production unless `METRICS_TOKEN` is set |
 | Deps | `pip-audit`, `bandit`, `ruff` (flake8-bandit rules), `mypy --strict` |
 
+- **Threat map:** read-only, tenant-scoped (`intel:read` + `events:read`), rate limited, indicator views audited. Only globally routable addresses are geolocated, locally (no address leaves the platform); feed text is rendered as text and only http(s) links are followed. Locations are estimates, not attacker locations (ADR 0016).
+
 ## Known gaps / production checklist
 * OpenSearch runs **without** its security plugin in `docker-compose.yml` (loopback-only). Production: enable TLS + authn,
   per-service roles, ideally document-level security keyed on `tenant_id` as defence in depth.

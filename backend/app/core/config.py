@@ -2,7 +2,7 @@ import ipaddress
 from functools import lru_cache
 from typing import Literal
 
-from pydantic import Field, model_validator
+from pydantic import Field, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 DEV_PLACEHOLDER_PREFIX = "dev-only-"
@@ -75,8 +75,26 @@ class Settings(BaseSettings):
     ai_run_timeout_s: int = Field(default=540, ge=20, le=1800)  # wall-clock for one run
     ai_timeout_s: int = Field(default=120, ge=10, le=600)  # one provider HTTP call
 
+    # Threat map. GeoIP is a local MaxMind-format database (GeoLite2, DB-IP Lite); no IP leaves the platform.
+    geoip_provider: Literal["none", "mmdb"] = "mmdb"
+    geoip_db_path: str = "/srv/geoip/dbip-city-lite.mmdb"
+    geoip_asn_db_path: str = "/srv/geoip/dbip-asn-lite.mmdb"
+    # Where the organisation sits, so inbound/outbound arcs have a real far end. Unset => arcs only join two geolocated
+    # public addresses. An operator-supplied deployment fact, never derived from traffic.
+    threatmap_home_lat: float | None = Field(default=None, ge=-90, le=90)
+    threatmap_home_lon: float | None = Field(default=None, ge=-180, le=180)
+    threatmap_home_label: str = "Our network"
+    # Your own public address space (comma-separated CIDRs): treated as "ours", never mapped as remote endpoints.
+    threatmap_own_networks: str = ""
+    threatmap_max_markers: int = Field(default=1500, ge=100, le=10000)
+
     seed_demo_data: bool = False
     seed_password: str = Field(default="", repr=False)
+
+    @field_validator("threatmap_home_lat", "threatmap_home_lon", mode="before")
+    @classmethod
+    def _blank_is_unset(cls, v: object) -> object:
+        return None if isinstance(v, str) and not v.strip() else v
 
     @property
     def cors_origin_list(self) -> list[str]:
@@ -93,6 +111,22 @@ class Settings(BaseSettings):
             for n in self.outbound_allowed_networks.split(",")
             if n.strip()
         ]
+
+    @property
+    def own_networks(self) -> list[ipaddress.IPv4Network | ipaddress.IPv6Network]:
+        return [
+            ipaddress.ip_network(n.strip(), strict=False) for n in self.threatmap_own_networks.split(",") if n.strip()
+        ]
+
+    @model_validator(mode="after")
+    def _validate_own_networks(self) -> "Settings":
+        for raw in self.threatmap_own_networks.split(","):
+            if raw.strip():
+                try:
+                    ipaddress.ip_network(raw.strip(), strict=False)
+                except ValueError:
+                    raise ValueError(f"THREATMAP_OWN_NETWORKS: {raw.strip()!r} is not a valid CIDR") from None
+        return self
 
     @model_validator(mode="after")
     def _validate_outbound_networks(self) -> "Settings":

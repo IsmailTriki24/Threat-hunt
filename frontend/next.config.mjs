@@ -5,7 +5,8 @@ const csp = [
   "default-src 'self'",
   `script-src 'self' 'unsafe-inline'${dev ? " 'unsafe-eval'" : ""}`,
   "style-src 'self' 'unsafe-inline'",
-  "img-src 'self' data:",
+  "img-src 'self' data: blob:",
+  "worker-src 'self' blob:", // MapLibre renders tiles/geometry in a blob: web worker
   "connect-src 'self'",
   "frame-ancestors 'none'",
   "base-uri 'self'",

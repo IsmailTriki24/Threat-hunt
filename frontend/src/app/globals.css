@@ -39,3 +39,13 @@ body { @apply bg-bg text-[#c9d1d9] text-sm antialiased; font-family: ui-sans-ser
   .hr-card { break-inside: avoid; }
   details > *:not(summary) { display: block !important; }
 }
+
+/* Threat map (MapLibre). Cluster counts are DOM labels because the map style ships no font glyphs (the CSP is same-origin only). */
+.maplibregl-map { font-family: inherit; background: #0a1018; }
+.tm-cluster { pointer-events: none; font-size: 11px; font-weight: 600; color: #e6edf3; text-shadow: 0 0 3px #0a1018, 0 0 3px #0a1018; }
+.tm-popup .maplibregl-popup-content { background: #161b22; color: #c9d1d9; border: 1px solid #2a313c; border-radius: 4px; padding: 6px 9px; font-size: 12px; box-shadow: 0 4px 14px rgba(0,0,0,.45); }
+.tm-popup .maplibregl-popup-tip { display: none; }
+.tm-popup .tm-sub { color: #8b949e; font-size: 11px; }
+.maplibregl-ctrl-group { background: #161b22; border: 1px solid #2a313c; box-shadow: none; }
+.maplibregl-ctrl-group button + button { border-top: 1px solid #2a313c; }
+.maplibregl-ctrl-group button .maplibregl-ctrl-icon { filter: invert(1) brightness(.8); }

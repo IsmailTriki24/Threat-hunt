@@ -19,6 +19,7 @@ ENV NODE_ENV=production NEXT_TELEMETRY_DISABLED=1 PORT=3000 HOSTNAME=0.0.0.0
 RUN addgroup -S hunt && adduser -S hunt -G hunt
 COPY --from=build --chown=hunt:hunt /app/.next/standalone ./
 COPY --from=build --chown=hunt:hunt /app/.next/static ./.next/static
+COPY --from=build --chown=hunt:hunt /app/public ./public
 USER hunt
 EXPOSE 3000
 CMD ["node", "server.js"]

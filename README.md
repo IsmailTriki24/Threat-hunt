@@ -77,10 +77,27 @@ port to `OUTBOUND_ALLOWED_PORTS`. TLS is verified; for a self-signed appliance p
 
 ## IOC hunting (automatic)
 *IOC Hunting* is the end-to-end threat-hunt workflow: **feeds → threat bulletins → validation → automatic hunt → case.** Indicators are grouped under the **threat** they belong to (malware family, actor, campaign); the *Threats* table lists them with their IOC / IOA / TTP counts, and opening one shows its bulletin (description, IOCs, behaviours, ATT&CK techniques). Validating the bulletin hunts all of it. For documented techniques and aliases load the full ATT&CK dataset once: `python -m app.cli mitre-load --file enterprise-attack.json` (download from the MITRE CTI repository).
-1. Add feeds under *Feeds* (no-key starters: **URLhaus recent URLs**, **Feodo Tracker**; add your own **Trend Vision One Suspicious Object List** with the same API key as the Trend data source; ThreatFox / OTX / MISP with their keys). Only *recent* indicators are imported (default 14 days) and stale ones expire; private, benign and allow-listed values never enter the database.
+1. Add feeds under *Feeds* (no-key starters: **URLhaus recent URLs**, **Feodo Tracker**; add your own **Trend Vision One Suspicious Object List** with the same API key as the Trend data source; ThreatFox / OTX / MISP / OpenCTI with their keys). Only *recent* indicators are imported (default 14 days) and stale ones expire; private, benign and allow-listed values never enter the database.
 2. In the *Threats* table (sorted by "already in your telemetry", severity, confidence) a **tenant admin** opens a bulletin and validates it (individual IOCs and behaviours can be excluded). *All indicators* still lists the flat queue.
 3. The worker hunts every source within about a minute: ingested telemetry, Trend Vision One upstream search (including datasets you do not ingest), and the whole LogRhythm SIEM (built-in, verified filters per indicator type; no setup beyond the data source; `ioc_search`, `ioc_search_max`, `ioc_batch` and `url_pattern_max` tune it; `ioc_filter_templates` can override a type). See ADR 0015.
 4. A **case is opened automatically whether or not anything is found**: hunt report, per-source coverage, evidence, assets, ATT&CK mappings, severity and recommendations. No match with full coverage closes it; incomplete coverage keeps it open. Validated indicators are re-hunted every few hours and reopen the case on new activity.
+
+## Global threat map
+*Threat Map* (`/threat-map`) separates three questions on one MapLibre world map: **Global threat intelligence** (IP indicators your feeds report; reported, not
+confirmed against you), **Observed network activity** (addresses in your own telemetry; arcs only for source→destination pairs the events establish) and
+**Correlated threats** (observed addresses that are also reported intelligence, plus events an IOC hunt matched). Everything is aggregated server-side from
+real data and filtered by time range, layer, country/region, IOC type, severity, confidence, category, feed, telemetry source, internal/external and a
+search (IP, CIDR, `AS15169`, country, text). Click a marker for the investigation panel and the existing hunt, case and intelligence actions. Empty layers say
+which integration is missing; nothing is simulated. Locations are GeoIP estimates, never an attacker's location. See ADR 0016.
+* **GeoIP (local, no keys):** `scripts/fetch-geoip.sh` downloads DB-IP Lite City + ASN (CC BY 4.0) into `./data/geoip` (git-ignored, mounted read-only into the backend); or place
+  `GeoLite2-City.mmdb` / `GeoLite2-ASN.mmdb` there and set `GEOIP_DB_PATH` / `GEOIP_ASN_DB_PATH`. `GEOIP_PROVIDER=none` disables locations. Restart the backend after changing databases.
+* **Set `THREATMAP_OWN_NETWORKS`** (comma-separated CIDRs of your own public space) or your own addresses appear as the busiest remote "country". Optionally set
+  `THREATMAP_HOME_LAT` / `THREATMAP_HOME_LON` / `THREATMAP_HOME_LABEL` so inbound/outbound arcs have a far end; `THREATMAP_MAX_MARKERS` caps markers per request.
+* **Needs:** an IOC feed (*IOC Hunting → Feeds*: MISP, OpenCTI, OTX, ThreatFox, URLhaus, Feodo, Trend, STIX, text) for the intelligence layer; a source filling `network.src_ip` / `network.dst_ip` /
+  `auth.source_ip` (firewall, IDS/IPS, EDR network, SIEM, identity sign-ins) for observed activity; both for correlation.
+* **API** (all GET, tenant-scoped, `intel:read` + `events:read`): `/api/v1/threat-map/status`, `/data` (cards, countries, markers, rankings, timeline), `/flows`, `/correlations` (paginated), `/indicator?ip=`.
+  Shared query parameters: `layer`, `range` (`1h|24h|7d|30d|custom` + `start`/`end`), `country`, `continent`, `ioc_type`, `severity`, `min_confidence`, `category`, `source` (feed), `log_source`, `scope`, `q`.
+* **Test:** `cd backend && pytest tests/test_threatmap_geo.py tests/test_threatmap_api.py tests/test_opencti_feed.py` (needs the compose Postgres/Redis/OpenSearch) · `cd frontend && npx vitest run src/__tests__/threat-map`.
 
 ## Detection engineering
 *Detections* holds Sigma and hunt-query rules. A new rule is a DRAFT; it needs at least one must-match test case and a passing test run for its

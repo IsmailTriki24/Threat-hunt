@@ -13,3 +13,6 @@ coverage/
 *.log
 .DS_Store
 tsconfig.tsbuildinfo
+
+# GeoIP databases (downloaded by scripts/fetch-geoip.sh; licensed separately)
+data/

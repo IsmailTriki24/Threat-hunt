@@ -15,6 +15,7 @@ from app.investigations.router import router as timeline_router
 from app.iochunt.router import router as ioc_router
 from app.mitre.router import router as mitre_router
 from app.tenants.router import router as tenants_router
+from app.threatmap.router import router as threatmap_router
 from app.users.router import router as users_router
 
 api_router = APIRouter(prefix="/api/v1")
@@ -35,5 +36,6 @@ for r in (
     detections_router,
     ai_router,
     ioc_router,
+    threatmap_router,
 ):
     api_router.include_router(r)

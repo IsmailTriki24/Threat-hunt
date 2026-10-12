@@ -22,6 +22,7 @@ dependencies = [
   "cryptography>=42",
   "httpx>=0.27",
   "pyyaml>=6",
+  "maxminddb>=2.6",
 ]
 
 [project.optional-dependencies]
@@ -55,6 +56,7 @@ ignore = ["S101", "B008"]
 "app/detections/*" = ["E501", "S105"]
 "app/ai/*" = ["E501"]
 "app/iochunt/*" = ["E501"]
+"app/threatmap/*" = ["E501"]
 "app/iochunt/feeds/*" = ["E501"]
 "app/connectors/logrhythm.py" = ["E501"]
 "app/connectors/trend_vision_one.py" = ["E501"]

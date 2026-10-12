@@ -1,7 +1,7 @@
 from app.iochunt.feeds.abusech import FeodoFeed, ThreatFoxFeed, UrlhausCsvFeed
 from app.iochunt.feeds.base import Feed
 from app.iochunt.feeds.generic import StixBundleFeed, TextListFeed
-from app.iochunt.feeds.platforms import MispFeed, OtxFeed, TrendSuspiciousObjectsFeed
+from app.iochunt.feeds.platforms import MispFeed, OpenCtiFeed, OtxFeed, TrendSuspiciousObjectsFeed
 
 FEEDS: dict[str, type[Feed]] = {
     c.feed_type: c
@@ -11,6 +11,7 @@ FEEDS: dict[str, type[Feed]] = {
         ThreatFoxFeed,
         OtxFeed,
         MispFeed,
+        OpenCtiFeed,
         TrendSuspiciousObjectsFeed,
         TextListFeed,
         StixBundleFeed,

@@ -6,6 +6,7 @@ from typing import Any, Literal
 from pydantic import BaseModel, ConfigDict, Field, HttpUrl
 
 from app.connectors._http import SourceError, request_json
+from app.intel import stix
 from app.iochunt.feeds.base import Feed, RawIoc, parse_dt, techniques_in
 
 
@@ -196,6 +197,120 @@ class MispFeed(Feed):
                     techniques=techniques_in(*[t for t in tag_names if "mitre-attack" in t.lower()]),
                 )
             )
+        return out
+
+
+# ---- OpenCTI ----------------------------------------------------------------------------------------------
+class OpenCtiConfig(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    base_url: HttpUrl
+    verify_tls: bool = True
+    ca_pem: str | None = Field(default=None, max_length=20_000)
+    tls_server_name: str | None = Field(default=None, max_length=255, pattern=r"^[A-Za-z0-9.-]+$")
+    page_size: int = Field(default=200, ge=10, le=500)
+    max_pages: int = Field(default=5, ge=1, le=20)
+
+
+_OPENCTI_QUERY = """
+query Indicators($first: Int, $after: ID, $filters: FilterGroup) {
+  indicators(first: $first, after: $after, filters: $filters, orderBy: modified, orderMode: desc) {
+    pageInfo { endCursor hasNextPage }
+    edges { node {
+      id name description pattern pattern_type valid_from valid_until created modified confidence x_opencti_score indicator_types
+      objectLabel { value }
+    } }
+  }
+}
+"""
+
+
+class OpenCtiFeed(Feed):
+    feed_type = "opencti"
+    display_name = "OpenCTI"
+    description = (
+        "STIX indicators modified within the age window, read through the OpenCTI GraphQL API. Only single-observable STIX "
+        "patterns become indicators; revoked ones are excluded by the query."
+    )
+    config_model = OpenCtiConfig
+    secret_names = ["api_key"]
+    needs_secret = True
+
+    async def fetch(self, since: datetime | None, max_age_days: int) -> list[RawIoc]:
+        key = self.secrets.get("api_key")
+        if not key:
+            raise SourceError("no OpenCTI API token configured for this feed")
+        cfg: OpenCtiConfig = self.config  # type: ignore[assignment]
+        base = str(cfg.base_url).rstrip("/")
+        cutoff = (datetime.now(UTC) - timedelta(days=max(1, max_age_days))).strftime("%Y-%m-%dT%H:%M:%SZ")
+        filters = {
+            "mode": "and",
+            "filters": [
+                {"key": ["modified"], "values": [cutoff], "operator": "gt"},
+                {"key": ["revoked"], "values": ["false"], "operator": "eq"},
+            ],
+            "filterGroups": [],
+        }
+        out: list[RawIoc] = []
+        after: str | None = None
+        for _ in range(cfg.max_pages):
+            data = await request_json(
+                "POST",
+                f"{base}/graphql",
+                headers={
+                    "Authorization": f"Bearer {key}",
+                    "Accept": "application/json",
+                    "Content-Type": "application/json",
+                },
+                json_body={
+                    "query": _OPENCTI_QUERY,
+                    "variables": {"first": cfg.page_size, "after": after, "filters": filters},
+                },
+                verify_tls=cfg.verify_tls,
+                ca_pem=cfg.ca_pem,
+                tls_server_name=cfg.tls_server_name,
+            )
+            if isinstance(data, dict) and data.get("errors"):
+                raise SourceError("OpenCTI rejected the query (check the token and its permissions)")
+            conn = ((data or {}).get("data") or {}).get("indicators") if isinstance(data, dict) else None
+            if not isinstance(conn, dict):
+                raise SourceError("unexpected OpenCTI response shape")
+            for edge in conn.get("edges") or []:
+                node = edge.get("node") if isinstance(edge, dict) else None
+                if not isinstance(node, dict) or str(node.get("pattern_type") or "stix").lower() != "stix":
+                    continue
+                labels = [
+                    str(label.get("value"))
+                    for label in node.get("objectLabel") or []
+                    if isinstance(label, dict) and label.get("value")
+                ]
+                score = node.get("x_opencti_score")
+                conf = node.get("confidence")
+                confidence = (
+                    int(score) if isinstance(score, int | float) else int(conf) if isinstance(conf, int | float) else 50
+                )
+                types = node.get("indicator_types") or []
+                for typ, value in stix.patterns(str(node.get("pattern") or "")):
+                    out.append(
+                        RawIoc(
+                            value=value,
+                            type=typ,
+                            first_seen=parse_dt(node.get("valid_from")) or parse_dt(node.get("created")),
+                            last_seen=parse_dt(node.get("modified")),
+                            valid_until=parse_dt(node.get("valid_until")),
+                            confidence=max(0, min(100, confidence)),
+                            threat_type=str(types[0]) if types else "",
+                            description=str(node.get("description") or node.get("name") or "")[:900],
+                            reference=f"{base}/dashboard/observations/indicators/{node.get('id')}"
+                            if node.get("id")
+                            else "",
+                            tags=["opencti", *labels[:8]],
+                            techniques=techniques_in(*labels),
+                        )
+                    )
+            page = conn.get("pageInfo") or {}
+            after = page.get("endCursor") if page.get("hasNextPage") else None
+            if not after:
+                break
         return out
 
 

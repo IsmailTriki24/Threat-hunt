@@ -1,5 +1,6 @@
 import type { AllowEntry, Bulletin, FeedType, Ioa, IocFeed, IocHunt, IocHuntDetail, IocItem, IocOverview, IocPage, ThreatPage, Ttp } from "./ioc";
 import type { AiRun, AiRunBody, AiStatus } from "./ai";
+import type { Correlation, FlowsResponse, IndicatorDetail, MapData, MapStatus } from "./threat-map";
 import type { EvPoint } from "./ai-stream";
 import type { Alert, AlertStatus, Backtest, DetectionOverview, Rule, RuleStatus, TestCase, TestResult } from "./detections";
 import type {
@@ -253,6 +254,11 @@ export const api = {
   addTtp: (id: string, technique_id: string) => request<Ttp>(`/api/v1/ioc/threats/${enc(id)}/ttps`, J({ technique_id })),
   regroupThreats: () => request<{ threats: number }>("/api/v1/ioc/threats/regroup", J({})),
   iocOverview: () => request<IocOverview>("/api/v1/ioc/overview"),
+  threatMapStatus: () => request<MapStatus>("/api/v1/threat-map/status"),
+  threatMapData: (qs: string) => request<MapData>(`/api/v1/threat-map/data?${qs}`),
+  threatMapFlows: (qs: string) => request<FlowsResponse>(`/api/v1/threat-map/flows?${qs}`),
+  threatMapCorrelations: (qs: string) => request<{ total: number; items: Correlation[]; limit: number; offset: number }>(`/api/v1/threat-map/correlations?${qs}`),
+  threatMapIndicator: (ip: string, qs: string) => request<IndicatorDetail>(`/api/v1/threat-map/indicator?${qs}&ip=${encodeURIComponent(ip)}`),
   iocFeedTypes: () => request<FeedType[]>("/api/v1/ioc/feed-types"),
   iocFeeds: () => request<IocFeed[]>("/api/v1/ioc/feeds"),
   createIocFeed: (b: Record<string, unknown>) => request<IocFeed>("/api/v1/ioc/feeds", J(b)),
