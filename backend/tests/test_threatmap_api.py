@@ -600,3 +600,30 @@ async def test_stored_feed_text_is_data_not_markup_or_links(client, make, db):
     assert m["malware"] == [
         "<img src=x onerror=alert(1)>"
     ]  # returned verbatim as a JSON string; the UI renders text only
+
+
+async def test_status_explains_each_feed_and_each_telemetry_source(client, make, db):
+    t = await make.tenant()
+    _, h = await make.login_as(t, Role.SOC_ANALYST)
+    await add_ioc(db, t, DE, source="ThreatFox", hours_ago=1)
+    await add_ioc(db, t, US, source="MISP", hours_ago=24 * 13, first_hours_ago=24 * 14)  # stale feed
+    await add_ioc(db, t, UA, source="MISP", status="REJECTED")  # rejected IOCs do not count as reportable
+    await make.index(
+        t,
+        [
+            conn("10.0.0.5", DE, source="firewall"),
+            conn("10.0.0.6", "10.0.0.7", source="dc-logs"),  # internal-only source: events exist, none can be mapped
+            conn("10.0.0.6", "10.0.0.8", source="dc-logs"),
+        ],
+    )
+    st = (await client.get(f"{BASE}/status", headers=h)).json()
+    stats = {f["name"]: f for f in st["layers"]["intelligence"]["feed_stats"]}
+    assert stats["ThreatFox"]["ips"] == 1 and stats["MISP"]["ips"] == 1
+    assert (
+        stats["MISP"]["last_seen"] < stats["ThreatFox"]["last_seen"]
+    )  # the UI can say "MISP last reported 13 days ago"
+    src = {s["source"]: s for s in st["layers"]["observed"]["sources"]}
+    assert src["firewall"] == {"source": "firewall", "events": 1, "with_public_ip": 1}
+    assert (
+        src["dc-logs"]["events"] == 2 and src["dc-logs"]["with_public_ip"] == 0
+    )  # only private addresses: can never be placed on a map

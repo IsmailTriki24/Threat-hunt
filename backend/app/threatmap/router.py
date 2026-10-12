@@ -7,7 +7,7 @@ from datetime import UTC, datetime, timedelta
 from typing import Annotated, Any, Literal
 
 from fastapi import APIRouter, Depends, Query, Request
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.audit import service as audit
@@ -147,15 +147,17 @@ async def status(
     except UpstreamUnavailable:
         sources, total = [], 0
         telemetry_error = "The search backend is unavailable, so observed activity cannot be checked right now."
-    feeds = (
-        (
-            await session.execute(
-                select(Ioc.source).where(Ioc.tenant_id == principal.tid, Ioc.type == "ip").distinct().limit(50)
-            )
+    feed_rows = (
+        await session.execute(
+            select(Ioc.source, func.count(), func.max(Ioc.last_seen))
+            .where(Ioc.tenant_id == principal.tid, Ioc.type == "ip", Ioc.status != "REJECTED")
+            .group_by(Ioc.source)
+            .limit(50)
         )
-        .scalars()
-        .all()
-    )
+    ).all()
+    feeds = [r[0] for r in feed_rows]
+    # per feed: how many reportable IPs it has and when it last reported one, so an empty filter can say "newest is 13 days old"
+    feed_stats = [{"name": r[0], "ips": int(r[1]), "last_seen": r[2].isoformat() if r[2] else None} for r in feed_rows]
     s = get_settings()
     info = geo.info()
     return {
@@ -169,6 +171,7 @@ async def status(
             "intelligence": {
                 "available": n_ip is not None,
                 "feeds": sorted(feeds),
+                "feed_stats": sorted(feed_stats, key=lambda f: f["name"]),
                 "needs": ""
                 if n_ip
                 else "Add an IOC feed (IOC Hunting → Feeds) or import indicators; only IP indicators have a location.",

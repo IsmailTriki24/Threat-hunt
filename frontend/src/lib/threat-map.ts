@@ -65,7 +65,9 @@ export interface Flow {
 }
 export interface Home { lat: number; lon: number; label: string }
 export interface FlowsResponse { flows: Flow[]; home: Home | null; reason: string; note?: string }
-export interface LayerStatus { available: boolean; needs: string; feeds?: string[]; sources?: Array<{ source: string; events: number }>; error?: string }
+export interface FeedStat { name: string; ips: number; last_seen: string | null }
+export interface SourceStat { source: string; events: number; with_public_ip: number }
+export interface LayerStatus { available: boolean; needs: string; feeds?: string[]; feed_stats?: FeedStat[]; sources?: SourceStat[]; error?: string }
 export interface MapStatus {
   geoip: { provider: string; available: boolean; asn: boolean; attribution: string; built_epoch?: number };
   home: Home | null; layers: Record<Layer, LayerStatus>; mappable_ioc_types: string[]; disclaimer: string;
@@ -233,4 +235,24 @@ export function markerRadius(weight: number, maxWeight: number): number {
 
 export function timelineMax(points: Array<{ count: number }>): number {
   return Math.max(1, ...points.map((p) => p.count));
+}
+
+/** Why a filtered view is empty, in the analyst's terms. Uses what the server knows about each selected feed / telemetry source. */
+export function emptyReasons(f: Pick<MapFilters, "source" | "logSource" | "layer">, range: { start: string } | null, feeds: FeedStat[], sources: SourceStat[], now = Date.now()): string[] {
+  const out: string[] = [];
+  if (f.layer !== "observed") {
+    for (const name of f.source) {
+      const st = feeds.find((x) => x.name === name);
+      if (!st) out.push(`${name} has no reportable IP indicators.`);
+      else if (st.last_seen && range && Date.parse(st.last_seen) < Date.parse(range.start)) out.push(`${name} last reported an IP ${ago(st.last_seen, now)} (${st.ips.toLocaleString("en-US")} IPs in total): widen the time range to see them.`);
+    }
+  }
+  if (f.layer !== "intelligence") {
+    for (const name of f.logSource) {
+      const st = sources.find((x) => x.source === name);
+      if (!st) out.push(`${name} has no events with IP addresses in the last 30 days.`);
+      else if (st.with_public_ip === 0) out.push(`${name} has ${st.events.toLocaleString("en-US")} events with IP addresses, but all of them are internal (private) addresses, which have no geographic location.`);
+    }
+  }
+  return out;
 }

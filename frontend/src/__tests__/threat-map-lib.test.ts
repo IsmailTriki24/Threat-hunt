@@ -1,5 +1,5 @@
 import {
-  activeChips, ago, LAND, arcPoints, choroplethExpression, clearedFilters, customRangeError, defang, defaultFilters, ipRoleLinks, flagEmoji, fmtInt, fmtTs, markerRadius, toParams,
+  activeChips, ago, emptyReasons, LAND, arcPoints, choroplethExpression, clearedFilters, customRangeError, defang, defaultFilters, ipRoleLinks, flagEmoji, fmtInt, fmtTs, markerRadius, toParams,
   type CountryRow,
 } from "@/lib/threat-map";
 
@@ -121,5 +121,24 @@ describe("formatting and links", () => {
     const now = Date.parse("2026-10-12T12:00:00Z");
     expect(ago("2026-10-12T11:59:30Z", now)).toBe("30s ago"); expect(ago("2026-10-12T11:00:00Z", now)).toBe("60m ago");
     expect(ago("2026-10-10T12:00:00Z", now)).toBe("2d ago"); expect(ago(null, now)).toBe("—"); expect(ago("x", now)).toBe("—");
+  });
+});
+
+describe("emptyReasons", () => {
+  const now = Date.parse("2026-10-12T12:00:00Z");
+  const feeds = [{ name: "MISP", ips: 2713, last_seen: "2026-09-29T12:00:00Z" }, { name: "TF", ips: 5, last_seen: "2026-10-12T10:00:00Z" }];
+  const srcs = [{ source: "lr", events: 100, with_public_ip: 0 }, { source: "tv", events: 50, with_public_ip: 40 }];
+  const f = (o: object) => ({ layer: "intelligence" as const, source: [], logSource: [], ...o });
+  it("explains a stale feed only when its latest report predates the range", () => {
+    const range = { start: "2026-10-11T12:00:00Z" };
+    expect(emptyReasons(f({ source: ["MISP"] }), range, feeds, srcs, now)[0]).toMatch(/MISP last reported an IP 13d ago \(2,713 IPs in total\)/);
+    expect(emptyReasons(f({ source: ["TF"] }), range, feeds, srcs, now)).toEqual([]); // fresh feed: no stale-feed claim
+    expect(emptyReasons(f({ source: ["nope"] }), range, feeds, srcs, now)[0]).toMatch(/nope has no reportable IP indicators/);
+  });
+  it("explains an internal-only or silent telemetry source, and ignores the filter that does not apply to the layer", () => {
+    expect(emptyReasons(f({ layer: "observed", logSource: ["lr"] }), null, feeds, srcs, now)[0]).toMatch(/lr has 100 events .* all of them are internal/);
+    expect(emptyReasons(f({ layer: "observed", logSource: ["tv"] }), null, feeds, srcs, now)).toEqual([]);
+    expect(emptyReasons(f({ layer: "observed", logSource: ["gone"] }), null, feeds, srcs, now)[0]).toMatch(/gone has no events with IP addresses/);
+    expect(emptyReasons(f({ layer: "observed", source: ["MISP"] }), { start: "2026-10-11T12:00:00Z" }, feeds, srcs, now)).toEqual([]); // feeds are irrelevant on the observed layer
   });
 });

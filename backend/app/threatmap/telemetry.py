@@ -289,19 +289,32 @@ async def events_for_ip(
 async def telemetry_sources(
     search: OpenSearchBackend, tenant_id: uuid.UUID, start_iso: str, end_iso: str
 ) -> tuple[list[dict[str, Any]], int]:
-    """Which log sources contribute IP-bearing events in the window (drives the source filter and the honest empty state)."""
+    """Which log sources contribute IP-bearing events in the window, and how many of those events carry a *mappable* (non-private) address.
+    Drives the source filter and the honest empty state: a source whose events only carry private addresses can never put a marker on the map."""
     flt = _base_filter(tenant_id, start_iso, end_iso, None, 0)
     flt.append({"bool": {"should": [{"exists": {"field": f}} for f in IP_FIELDS], "minimum_should_match": 1}})
+    mappable = {
+        "filter": {
+            "bool": {
+                "should": [
+                    {"bool": {"filter": [{"exists": {"field": f}}], "must_not": [_cidr_terms(f)]}} for f in IP_FIELDS
+                ],
+                "minimum_should_match": 1,
+            }
+        }
+    }
     body = {
         "size": 0,
         "track_total_hits": True,
         "query": {"bool": {"filter": flt}},
-        "aggs": {"s": {"terms": {"field": "source", "size": 50}}},
+        "aggs": {"s": {"terms": {"field": "source", "size": 50}, "aggs": {"mappable": mappable}}},
     }
     resp = await _search(search, body)
-    return [{"source": str(b["key"]), "events": b["doc_count"]} for b in resp["aggregations"]["s"]["buckets"]], int(
-        resp["hits"]["total"]["value"]
-    )
+    buckets = (resp.get("aggregations") or {}).get("s", {}).get("buckets", [])
+    return [
+        {"source": str(b["key"]), "events": b["doc_count"], "with_public_ip": int(b["mappable"]["doc_count"])}
+        for b in buckets
+    ], int(resp["hits"]["total"]["value"])
 
 
 async def event_scope(

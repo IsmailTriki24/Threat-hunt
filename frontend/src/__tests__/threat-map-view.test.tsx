@@ -41,7 +41,7 @@ const data = (o: Partial<MapData> = {}): MapData => ({
 const st = (o: Partial<MapStatus> = {}): MapStatus => ({
   geoip: { provider: "DBIP-City-Lite", available: true, asn: true, attribution: "IP geolocation by DB-IP (CC BY 4.0)" }, home: null,
   layers: {
-    intelligence: { available: true, needs: "", feeds: ["MISP", "OTX"] }, observed: { available: true, needs: "", sources: [{ source: "firewall", events: 10 }] },
+    intelligence: { available: true, needs: "", feeds: ["MISP", "OTX"] }, observed: { available: true, needs: "", sources: [{ source: "firewall", events: 10, with_public_ip: 10 }] },
     correlated: { available: true, needs: "" },
   }, mappable_ioc_types: ["ip"], disclaimer: "approximate", ...o,
 });
@@ -309,4 +309,43 @@ it("recent correlated detections are paginated from the API", async () => {
   expect(await screen.findByText("reason 9")).toBeInTheDocument();
   expect(urls(m, "/threat-map/correlations")[0]).toContain("offset=8");
   expect(screen.queryByText("reason 1")).toBeNull();
+});
+
+describe("explaining an empty filter", () => {
+  const stale = () => st({ layers: {
+    intelligence: { available: true, needs: "", feeds: ["MISP", "ThreatFox"], feed_stats: [{ name: "MISP", ips: 2713, last_seen: new Date(Date.now() - 13 * 86_400_000).toISOString() }, { name: "ThreatFox", ips: 400, last_seen: new Date().toISOString() }] },
+    observed: { available: true, needs: "", sources: [{ source: "trend", events: 500, with_public_ip: 480 }, { source: "logrhythm", events: 491740, with_public_ip: 0 }] },
+    correlated: { available: true, needs: "" },
+  } });
+
+  it("feed and source options say how much each has and how fresh it is", async () => {
+    base({ "GET /api/v1/threat-map/status": () => stale() });
+    renderWithQuery(<ThreatMapView />);
+    const feed = await screen.findByLabelText("Feed");
+    await waitFor(() => expect(within(feed).getByRole("option", { name: /MISP — 2,713 IPs, latest 13d ago/ })).toBeInTheDocument());
+    await userEvent.click(screen.getByRole("tab", { name: /Observed network activity/ }));
+    const src = await screen.findByLabelText("Telemetry source");
+    expect(within(src).getByRole("option", { name: "logrhythm — 491,740 events, internal addresses only" })).toBeInTheDocument();
+    expect(within(src).getByRole("option", { name: "trend — 500 events" })).toBeInTheDocument();
+  });
+
+  it("a stale feed that matches nothing in the range says when it last reported", async () => {
+    base({ "GET /api/v1/threat-map/status": () => stale(), "GET /api/v1/threat-map/data": () => data({ markers: [], total_markers: 0 }) });
+    renderWithQuery(<ThreatMapView />);
+    const feed = await screen.findByLabelText("Feed");
+    await waitFor(() => expect(within(feed).getAllByRole("option").length).toBeGreaterThan(1));
+    await userEvent.selectOptions(feed, "MISP");
+    const empty = await screen.findByTestId("map-empty");
+    expect(empty).toHaveTextContent(/MISP last reported an IP 13d ago \(2,713 IPs in total\): widen the time range/);
+  });
+
+  it("a telemetry source with only private addresses says why nothing is on the map", async () => {
+    base({ "GET /api/v1/threat-map/status": () => stale(), "GET /api/v1/threat-map/data": () => data({ layer: "observed", markers: [], total_markers: 0 }) });
+    renderWithQuery(<ThreatMapView />);
+    await userEvent.click(await screen.findByRole("tab", { name: /Observed network activity/ }));
+    const src = await screen.findByLabelText("Telemetry source");
+    await waitFor(() => expect(within(src).getAllByRole("option").length).toBeGreaterThan(1));
+    await userEvent.selectOptions(src, "logrhythm");
+    expect(await screen.findByTestId("map-empty")).toHaveTextContent(/logrhythm has 491,740 events with IP addresses, but all of them are internal \(private\) addresses/);
+  });
 });

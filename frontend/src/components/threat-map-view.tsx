@@ -5,7 +5,7 @@ import { useSearchParams } from "next/navigation";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { api } from "@/lib/api";
 import {
-  activeChips, ago, clearedFilters, CONTINENTS, customRangeError, defaultFilters, fmtInt, IOC_FILTER_TYPES, LAYERS, RANGES, SEVERITIES, toParams,
+  activeChips, ago, clearedFilters, emptyReasons, CONTINENTS, customRangeError, defaultFilters, fmtInt, IOC_FILTER_TYPES, LAYERS, RANGES, SEVERITIES, toParams,
   type Layer, type MapData, type MapFilters, type MapStatus, type RangeKey,
 } from "@/lib/threat-map";
 import { Activity, ChevronDown, Flag, Link2, Maximize2, Pause, Play, Radar, ShieldAlert, SlidersHorizontal } from "lucide-react";
@@ -54,11 +54,11 @@ function Segmented<T extends string>({ value, options, onChange, label }: { valu
   );
 }
 
-function MultiSelect({ label, options, value, onChange }: { label: string; options: string[]; value: string[]; onChange: (v: string[]) => void }) {
+function MultiSelect({ label, options, value, onChange }: { label: string; options: Array<string | { value: string; label: string }>; value: string[]; onChange: (v: string[]) => void }) {
   return (
     <select aria-label={label} className="input max-w-[10.5rem]" value="" onChange={(e) => { const v = e.target.value; if (v) onChange(value.includes(v) ? value.filter((x) => x !== v) : [...value, v]); }}>
       <option value="">{label}{value.length ? ` (${value.length})` : ""}…</option>
-      {options.map((o) => <option key={o} value={o}>{value.includes(o) ? "✓ " : ""}{o}</option>)}
+      {options.map((o) => { const v = typeof o === "string" ? o : o.value; const t = typeof o === "string" ? o : o.label; return <option key={v} value={v}>{value.includes(v) ? "✓ " : ""}{t}</option>; })}
     </select>
   );
 }
@@ -111,8 +111,14 @@ export function ThreatMapView() {
   const mapCountries = d?.countries ?? [];
   const mapMarkers = d?.markers ?? [];
   const countryOptions = useMemo(() => [...(d?.countries ?? [])].sort((a, b) => (a.name || a.iso).localeCompare(b.name || b.iso)), [d?.countries]);
-  const feedOptions = st?.layers.intelligence.feeds ?? [];
-  const logOptions = (st?.layers.observed.sources ?? []).map((s) => s.source);
+  const feedStats = st?.layers.intelligence.feed_stats ?? [];
+  const sourceStats = st?.layers.observed.sources ?? [];
+  const feedOptions = (st?.layers.intelligence.feeds ?? []).map((name) => {
+    const f = feedStats.find((x) => x.name === name);
+    return { value: name, label: f ? `${name} — ${fmtInt(f.ips)} IPs${f.last_seen ? `, latest ${ago(f.last_seen)}` : ""}` : name };
+  });
+  const logOptions = sourceStats.map((x) => ({ value: x.source, label: `${x.source} — ${fmtInt(x.events)} events${x.with_public_ip === 0 ? ", internal addresses only" : ""}` }));
+  const reasons = emptyReasons(filters, d?.range ?? null, feedStats, sourceStats);
   const notes = useMemo(() => {
     const out: string[] = [];
     if (d?.truncated) out.push(`Showing the ${fmtInt(d.markers.length)} highest-weight of ${fmtInt(d.total_markers)} located addresses. Narrow the filters to see the rest.`);
@@ -261,6 +267,7 @@ export function ThreatMapView() {
                   <p className="text-sm text-muted">
                     {chips.length ? "Remove a filter or widen the time range." : (layerStatus && !layerStatus.available ? layerStatus.needs : layerStatus?.error || "Try a wider time range.")}
                   </p>
+                  {reasons.map((r) => <p key={r} className="rounded-md border border-line bg-subtle px-3 py-2 text-left text-xs text-ink-2">{r}</p>)}
                   {chips.length > 0 && <button className="btn btn-primary" onClick={() => setFilters(clearedFilters(filters))}>Clear filters</button>}
                   {layer === "observed" && d && d.internal.length > 0 && <p className="text-xs text-muted">{fmtInt(d.internal.length)} internal or non-routable addresses were seen; they have no geographic location.</p>}
                 </div>
