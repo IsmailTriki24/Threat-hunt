@@ -2,10 +2,11 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import Link from "next/link";
 import { X } from "lucide-react";
-import { useState } from "react";
+import { useEffect, useState } from "react";
+import { SiemSearchCard } from "./siem-search-card";
 import { api } from "@/lib/api";
 import {
-  ago, defang, flagEmoji, ipRoleLinks, fmtInt, fmtTs, LAYER_COLOR, timelineMax,
+  ago, defang, flagEmoji, ipRoleLinks, windowFor, fmtInt, fmtTs, LAYER_COLOR, timelineMax,
   type Correlation, type CountryRow, type Layer, type MapFilters, type MapMarker, type Severity,
 } from "@/lib/threat-map";
 import { SeverityBadge as Badge, SeverityDot as Dot } from "./ui/severity";
@@ -33,6 +34,13 @@ export function InvestigationPanel({ ip, filters, rangeQs, onClose }: { ip: stri
   const qc = useQueryClient();
   const q = useQuery({ queryKey: ["tm-indicator", ip, rangeQs], queryFn: () => api.threatMapIndicator(ip, rangeQs), staleTime: 15_000 });
   const [caseOpen, setCaseOpen] = useState(false);
+  // The panel also asks the whole LogRhythm SIEM about this address (the connector only collects a slice), over the map's time range.
+  const siem = useQuery({
+    queryKey: ["tm-siem", ip, filters.range, filters.start, filters.end], queryFn: () => api.siemLookup("ip", ip, windowFor(filters)),
+    enabled: q.isSuccess && q.data.class === "public", staleTime: Infinity, retry: false, refetchOnWindowFocus: false,
+  });
+  const siemImported = siem.data?.imported ?? 0;
+  useEffect(() => { if (siemImported > 0) { void qc.invalidateQueries({ queryKey: ["tm-indicator", ip] }); void qc.invalidateQueries({ queryKey: ["tm-data"] }); } }, [siemImported, siem.dataUpdatedAt, qc, ip]);
   const [note, setNote] = useState("");
   const d = q.data;
   const roles = ipRoleLinks(ip, filters.range, filters.start, filters.end, d?.observed ?? null);
@@ -110,6 +118,12 @@ export function InvestigationPanel({ ip, filters, rangeQs, onClose }: { ip: stri
               <p className="pt-1 text-[11px] text-muted">Reported by a third party. This is not evidence of an attack on your organisation.</p>
             </Section>
 
+            {d.class === "public" && (
+              <section className="border-t border-line px-4 py-3" aria-label="LogRhythm SIEM">
+                <h3 className="eyebrow mb-1.5">LogRhythm SIEM · whole SIEM</h3>
+                <SiemSearchCard query={siem} />
+              </section>
+            )}
             <Section title="Observed in your telemetry">
               {!d.observed ? <p className="text-xs text-muted">No events in the selected range name this address.</p> : (
                 <>

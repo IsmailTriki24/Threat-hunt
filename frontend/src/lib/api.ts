@@ -1,5 +1,6 @@
 import type { AllowEntry, Bulletin, FeedType, Ioa, IocFeed, IocHunt, IocHuntDetail, IocItem, IocOverview, IocPage, ThreatPage, Ttp } from "./ioc";
 import type { AiRun, AiRunBody, AiStatus } from "./ai";
+import type { SiemResult } from "./siem";
 import type { Correlation, FlowsResponse, IndicatorDetail, MapData, MapStatus } from "./threat-map";
 import type { EvPoint } from "./ai-stream";
 import type { Alert, AlertStatus, Backtest, DetectionOverview, Rule, RuleStatus, TestCase, TestResult } from "./detections";
@@ -142,6 +143,8 @@ export const api = {
   },
   fields: () => request<FieldInfo[]>("/api/v1/events/fields"),
   search: (body: EventQueryBody) => request<SearchResult>("/api/v1/events/search", { method: "POST", body }),
+  siemSearch: (body: EventQueryBody) => request<SiemResult>("/api/v1/events/siem-search", { method: "POST", body }),
+  siemLookup: (kind: string, value: string, time_range?: { start: string; end: string }) => request<SiemResult>("/api/v1/events/siem-lookup", { method: "POST", body: { kind, value, ...(time_range ? { time_range } : {}) } }),
   getEvent: (id: string) => request<EventDetail>(`/api/v1/events/${encodeURIComponent(id)}`),
   listHunts: () => request<Hunt[]>("/api/v1/hunts"),
   getHunt: (id: string) => request<Hunt>(`/api/v1/hunts/${enc(id)}`),

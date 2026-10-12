@@ -21,6 +21,7 @@ import { TimelinePanel, type TimelineSource } from "./timeline-view";
 import { Loading } from "./ui/skeleton";
 import { Bookmark, Download, History, Play, Save, Trash2 } from "lucide-react";
 import { useConfirm } from "./ui/confirm";
+import { SiemSearchCard } from "./siem-search-card";
 import { EmptyState } from "./ui/empty-state";
 import { SeverityBadge } from "./ui/severity";
 import { Tabs } from "./ui/tabs";
@@ -82,6 +83,7 @@ function Workspace({ hunt }: { hunt: Hunt }) {
   const [filters, setFilters] = useState<Filter[]>([]);
   const [sort, setSort] = useState<{ field: string; order: "asc" | "desc" } | null>(null);
   const [applied, setApplied] = useState<EventQueryBody | null>(null);
+  const [rerun, setRerun] = useState(0); // same query, fresh run (e.g. after logs were imported from the SIEM)
   const [tab, setTab] = useState<"results" | "timeline" | "mitre">("results");
   const [tlSource, setTlSource] = useState<TimelineSource | null>(null);
   const [openEvent, setOpenEvent] = useState<string | null>(null);
@@ -90,10 +92,15 @@ function Workspace({ hunt }: { hunt: Hunt }) {
 
   const fields = useQuery({ queryKey: ["fields"], queryFn: api.fields, staleTime: Infinity });
   const run = useQuery({
-    queryKey: ["hunt-run", huntId, JSON.stringify(applied)],
+    queryKey: ["hunt-run", huntId, JSON.stringify(applied), rerun],
     queryFn: () => api.runHunt(huntId, applied!),
     enabled: applied !== null,
     retry: false, staleTime: Infinity, refetchOnWindowFocus: false, placeholderData: (p) => p,
+  });
+  // The same query is also run against the whole LogRhythm SIEM; "Show in results" re-runs the hunt query so the imported logs appear.
+  const siem = useQuery({
+    queryKey: ["siem-hunt", huntId, JSON.stringify(applied)], queryFn: () => api.siemSearch({ ...applied!, aggregations: [] }), enabled: applied !== null,
+    staleTime: Infinity, retry: false, refetchOnWindowFocus: false,
   });
   useEffect(() => { if (run.isSuccess) void qc.invalidateQueries({ queryKey: ["history", huntId] }); }, [run.dataUpdatedAt, run.isSuccess, qc, huntId]);
 
@@ -280,6 +287,7 @@ function Workspace({ hunt }: { hunt: Hunt }) {
             <div className="space-y-2">
               {run.error && <p role="alert" className="rounded-lg border border-sev-critical/30 bg-sev-critical-bg px-4 py-3 text-sm text-sev-critical">{errMsg(run.error, "Run failed")}</p>}
               {!applied && <div className="panel"><EmptyState icon={Play} title="Ready when you are">Write a query and press Run. Hunt defaults (window, data sources) apply when you leave them unset.</EmptyState></div>}
+              {applied && <SiemSearchCard query={siem} onShow={() => setRerun((n) => n + 1)} />}
               {data && (
                 <>
                   <div className="flex flex-wrap items-center gap-3 text-sm text-muted">

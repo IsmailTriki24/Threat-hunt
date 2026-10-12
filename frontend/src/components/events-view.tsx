@@ -1,5 +1,5 @@
 "use client";
-import { useQuery } from "@tanstack/react-query";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { usePathname, useRouter, useSearchParams } from "next/navigation";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { api, ApiError } from "@/lib/api";
@@ -14,6 +14,7 @@ import { useAuth } from "@/lib/auth";
 import { FilterBuilder, FilterChips } from "./filter-builder";
 import { ChevronLeft, ChevronRight, CircleAlert, History, Search, SearchX } from "lucide-react";
 import { EmptyState } from "./ui/empty-state";
+import { SiemSearchCard } from "./siem-search-card";
 import { PageHeader } from "./ui/page-header";
 import { SkeletonRows } from "./ui/skeleton";
 import { Histogram } from "./histogram";
@@ -29,6 +30,7 @@ export function EventsView() {
   const [dense, setDense] = useState(true);
   const [showHistory, setShowHistory] = useState(false);
   const { can } = useAuth();
+  const qc = useQueryClient();
   const [caseEvent, setCaseEvent] = useState<string | null>(null);
   const searchRef = useRef<HTMLInputElement>(null);
 
@@ -57,6 +59,15 @@ export function EventsView() {
     placeholderData: (prev) => prev,
   });
 
+  // Every search also asks the whole LogRhythm SIEM (not just the collected slice) for the indicators in it, then re-runs the local search
+  // once if that imported anything, so the extra logs appear in the normal results.
+  const siemOn = !!(state.q.trim() || state.filters.length);
+  const siem = useQuery({
+    queryKey: ["siem", key], queryFn: () => api.siemSearch(toRequestBody({ ...state, event: null }, [])), enabled: siemOn,
+    staleTime: Infinity, retry: false, refetchOnWindowFocus: false, refetchOnMount: false,
+  });
+  const imported = siem.data?.imported ?? 0;
+  useEffect(() => { if (imported > 0) void qc.invalidateQueries({ queryKey: ["events"] }); }, [imported, siem.dataUpdatedAt, qc]);
   const run = () => { if (draft !== state.q) update({ q: draft }); else setNonce((n) => n + 1); };
   const addF = (f: Filter) => update({ filters: addFilter(state.filters, f) });
   const data = search.data;
@@ -96,6 +107,7 @@ export function EventsView() {
         )}
       </div>
       <FilterChips filters={state.filters} onRemove={(i) => update({ filters: state.filters.filter((_, j) => j !== i) })} />
+      {siemOn && <SiemSearchCard query={siem} onShow={() => void qc.invalidateQueries({ queryKey: ["events"] })} />}
 
       {search.error && (
         <p role="alert" className="flex items-start gap-2 rounded-lg border border-sev-critical/30 bg-sev-critical-bg px-4 py-3 text-sm text-sev-critical">

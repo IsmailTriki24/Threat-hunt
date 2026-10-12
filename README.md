@@ -75,7 +75,7 @@ Lookups work with **no API keys** (local heuristics + your own watch-list). Add 
 Both are pull connectors collected by the worker every 5 minutes. Create them under *Data Sources*, then use **Set credential** to add the
 token / API key (write-only, stored encrypted). Trend Vision One: pick a `region` and one `dataset` per source (`alerts`, `oat`, `detections`,
 `endpoint_activity`, `identity_activity`, `email_activity`, `mobile_activity`, `network_activity`, `cloud_activity`, `container_activity`, `audit_logs`, `response_tasks`); `oat` and `endpoint_activity` can be very high volume (a mid-size tenant produced ~50 endpoint events/s, several GB/day), so use the `filter` / `query` options to ingest only what you hunt on.
-LogRhythm: set `base_url` (the :8501 gateway). Private hosts must be allow-listed on the server: `OUTBOUND_ALLOWED_NETWORKS=10.0.0.5/32` and add the
+**Whole-SIEM search:** the connector collects only what its `hostname`/`query_filter` selects, but every search in *Events*, the hunt workspace and the threat map also asks the **whole** LogRhythm SIEM live for the indicators in it (IP, domain, hash, e-mail, host name) and imports the matching logs, so nothing stays invisible because of the collection scope (ADR 0018; switch off with `siem_search: false`). LogRhythm: set `base_url` (the :8501 gateway). Private hosts must be allow-listed on the server: `OUTBOUND_ALLOWED_NETWORKS=10.0.0.5/32` and add the
 port to `OUTBOUND_ALLOWED_PORTS`. TLS is verified; for a self-signed appliance paste its certificate into `ca_pem` and set `tls_server_name` to a name in it.
 
 ## IOC hunting (automatic)

@@ -57,6 +57,10 @@ class LogRhythmConfig(BaseModel):
         default=None,
         description='Per IOC type (ip|domain|url|sha256|sha1|md5|email), a queryFilter captured from the Web Console with the searched value replaced by the string "$IOC". Enables IOC hunts to search LogRhythm itself instead of only ingested data',
     )
+    siem_search: bool = Field(
+        default=True,
+        description="Let every interactive search (Events, hunts, threat map) also query the whole SIEM live for the indicators in the query",
+    )
     ioc_search: bool = Field(
         default=True,
         description="Let IOC hunts search the whole SIEM with the built-in, verified filters (no template needed)",
@@ -457,6 +461,8 @@ def ioc_query_filter(kind: str, values: list[str]) -> dict[str, Any]:
             _item(FT_HOSTNAME, VT_STRING, [_str(v, EXACT) for v in vs]),  # the host itself
             _item(FT_HOSTNAME, VT_STRING, [_str(f"%.{v}", PATTERN) for v in vs]),  # ... or any host under it
         ]
+    elif kind == "hostname":  # exactly this host (as origin or impacted), no subdomain widening
+        items = [_item(FT_HOSTNAME, VT_STRING, [_str(v, EXACT) for v in vs])]
     elif kind == "url_pattern":
         if len(vs) != 1:
             raise ValueError("a URL-pattern search takes exactly one value")

@@ -149,3 +149,23 @@ it("without cases:write the case actions are disabled/hidden", async () => {
   expect(screen.queryByRole("button", { name: /Promote finding/ })).toBeNull();
   expect(screen.getByRole("button", { name: "Add to case…" })).toBeDisabled();
 });
+
+it("running a hunt query also searches the whole LogRhythm SIEM for its indicators, and can re-run to include what was imported", async () => {
+  perms = ["hunts:read", "hunts:write"];
+  const siem = { source: "LogRhythm SIEM", configured: true, status: "ok", detail: "1 search(es) over the whole SIEM, 24 h", searched: [{ kind: "ip", values: ["51.89.20.151"], logs: 3 }],
+    skipped: [], matched: 2, imported: 2, duplicates: 0, truncated: false, samples: [] };
+  const m = routes({ "POST /api/v1/events/siem-search": () => siem });
+  renderWithQuery(<HuntWorkspace id="h1" />);
+  const user = userEvent.setup();
+  await screen.findByDisplayValue("PS hunt");
+  await user.type(screen.getByLabelText("Hunt query"), "network.dst_ip:51.89.20.151");
+  await user.click(screen.getByRole("button", { name: /^Run/ }));
+  expect(await screen.findByText(/2 logs for 51.89.20.151 found across the whole LogRhythm SIEM/)).toBeInTheDocument();
+  const body = m.bodiesFor("POST /api/v1/events/siem-search")[0] as { text: string; time_range: unknown; aggregations: unknown[] };
+  expect(body.text).toBe("network.dst_ip:51.89.20.151");
+  expect(body.time_range).toEqual({ start: "2026-03-01T00:00:00Z", end: "2026-03-02T00:00:00Z" }); // the hunt's own window
+  expect(body.aggregations).toEqual([]);
+  const runs = m.bodiesFor("POST /api/v1/hunts/h1/run").length;
+  await user.click(screen.getByRole("button", { name: "Show in results" }));
+  await waitFor(() => expect(m.bodiesFor("POST /api/v1/hunts/h1/run").length).toBe(runs + 1));
+});

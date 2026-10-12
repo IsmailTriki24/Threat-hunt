@@ -1,23 +1,25 @@
 import re
+from datetime import timedelta
 from typing import Any
 
 from fastapi import APIRouter, Depends, Request
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.audit import service as audit
 from app.auth.deps import Principal, require
 from app.auth.rbac import Permission
 from app.connectors import registry
+from app.core.config import get_settings
 from app.core.db import get_session
 from app.core.errors import AppError, NotFound
 from app.core.metrics import SEARCHES
 from app.core.ratelimit import enforce
-from app.events import service
+from app.events import service, siem_search
 from app.events.fields import FIELDS
 from app.events.pivots import Pivot, pivots_for
 from app.events.search.base import SearchBackend
-from app.events.search.query import EventQuery, SearchResult
+from app.events.search.query import EventQuery, SearchResult, TimeRange
 
 router = APIRouter(prefix="/events", tags=["events"])
 
@@ -67,6 +69,61 @@ async def search_events(
         },
     )
     return result
+
+
+class SiemLookup(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    kind: str = Field(pattern="^(ip|domain|md5|sha1|sha256|email|hostname)$")
+    value: str = Field(min_length=1, max_length=512)
+    time_range: TimeRange | None = None
+
+
+async def _siem(
+    request: Request, principal: Principal, session: AsyncSession, plan: siem_search.Plan, rng: TimeRange, action: str
+) -> dict[str, Any]:
+    await enforce(request, f"siem-search:{principal.user_id}", 12, 60)
+    result = await siem_search.siem_search(session, backend_of(request), get_settings(), principal.tid, plan, rng)
+    await audit.record(
+        request,
+        action,
+        "failure" if result["status"] == "error" else "success",
+        principal=principal,
+        details={
+            "terms": {k: v[:10] for k, v in plan.terms.items()},
+            "status": result["status"],
+            "matched": result["matched"],
+            "imported": result["imported"],
+        },
+    )
+    return result
+
+
+@router.post("/siem-search")
+async def siem_search_events(
+    query: EventQuery,
+    request: Request,
+    principal: Principal = Depends(require(Permission.EVENTS_READ)),
+    session: AsyncSession = Depends(get_session),
+) -> dict[str, Any]:
+    """Run the indicators of a search against the whole LogRhythm SIEM (not only the collected slice).
+    Matching logs are imported as events, so the caller re-runs its normal search to see them."""
+    return await _siem(
+        request, principal, session, siem_search.plan_for(query), query.effective_range(), "event.siem_search"
+    )
+
+
+@router.post("/siem-lookup")
+async def siem_lookup(
+    body: SiemLookup,
+    request: Request,
+    principal: Principal = Depends(require(Permission.EVENTS_READ)),
+    session: AsyncSession = Depends(get_session),
+) -> dict[str, Any]:
+    """Whole-SIEM lookup of one indicator (used by the threat-map investigation panel)."""
+    rng = body.time_range or TimeRange.last(timedelta(hours=24))
+    return await _siem(
+        request, principal, session, siem_search.plan_for_indicator(body.kind, body.value), rng, "event.siem_lookup"
+    )
 
 
 @router.get("/fields", response_model=list[FieldInfo])

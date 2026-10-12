@@ -256,3 +256,11 @@ export function emptyReasons(f: Pick<MapFilters, "source" | "logSource" | "layer
   }
   return out;
 }
+
+const RANGE_MS: Record<string, number> = { "1h": 3_600_000, "24h": 86_400_000, "7d": 7 * 86_400_000, "30d": 30 * 86_400_000 };
+/** The map's time filter as an absolute window (for calls that take one), or undefined to let the server default. */
+export function windowFor(f: Pick<MapFilters, "range" | "start" | "end">, now = Date.now()): { start: string; end: string } | undefined {
+  if (f.range === "custom") return f.start && f.end ? { start: new Date(f.start).toISOString(), end: new Date(f.end).toISOString() } : undefined;
+  const ms = RANGE_MS[f.range];
+  return ms ? { start: new Date(now - ms).toISOString(), end: new Date(now).toISOString() } : undefined;
+}
