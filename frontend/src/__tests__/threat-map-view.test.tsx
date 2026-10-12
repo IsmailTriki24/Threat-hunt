@@ -244,7 +244,7 @@ describe("marker -> investigation panel", () => {
     expect(within(panel).queryByRole("button", { name: "Add to IOC queue" })).toBeNull(); // it is already an IOC
     await userEvent.click(within(panel).getByRole("button", { name: "Launch threat hunt" }));
     await waitFor(() => expect(m.bodiesFor("POST /api/v1/ioc/iocs/validate")[0]).toMatchObject({ ioc_ids: ["i1"], lookback_days: 7 }));
-    expect(await within(panel).findByRole("status")).toHaveTextContent(/Hunt started/);
+    expect(await within(panel).findByText(/Hunt started/)).toBeInTheDocument();
     expect(within(panel).getByRole("link", { name: "Open IOC Hunting" })).toHaveAttribute("href", "/ioc-hunting");
   });
 

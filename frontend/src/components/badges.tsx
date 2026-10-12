@@ -2,6 +2,7 @@ import { Ban, CircleCheck, CircleDot, Lock, Minus, Search, ShieldHalf, type Luci
 import { Check, Copy } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import { ApiError } from "@/lib/api";
+import { copyText } from "@/lib/clipboard";
 import { SeverityBadge } from "./ui/severity";
 export { Modal } from "./ui/overlay";
 
@@ -36,13 +37,14 @@ export function ErrorLine({ error, fallback }: { error: unknown; fallback: strin
 
 /** Button that copies text. Shows a brief confirmation and announces it. Accessible name keeps the existing "<label> <text>" form. */
 export function CopyButton({ text, label = "Copy" }: { text: string; label?: string }) {
-  const [done, setDone] = useState(false);
+  const [state, setState] = useState<"idle" | "done" | "failed">("idle");
   const t = useRef<number | undefined>(undefined);
   useEffect(() => () => window.clearTimeout(t.current), []);
   return (
     <button className="btn btn-sm" aria-label={`${label} ${text.slice(0, 24)}`}
-      onClick={() => { void navigator.clipboard?.writeText(text); setDone(true); window.clearTimeout(t.current); t.current = window.setTimeout(() => setDone(false), 1400); }}>
-      {done ? <Check aria-hidden className="h-3 w-3 text-sev-ok" /> : <Copy aria-hidden className="h-3 w-3" />}{done ? "Copied" : label}
+      onClick={() => { void copyText(text).then((ok) => { setState(ok ? "done" : "failed"); window.clearTimeout(t.current); t.current = window.setTimeout(() => setState("idle"), ok ? 1400 : 2600); }); }}>
+      {state === "done" ? <Check aria-hidden className="h-3 w-3 text-sev-ok" /> : <Copy aria-hidden className="h-3 w-3" />}{state === "done" ? "Copied" : state === "failed" ? "Copy failed" : label}
+      <span role="status" className="sr-only">{state === "done" ? "Copied to clipboard" : state === "failed" ? "Could not copy to clipboard" : ""}</span>
     </button>
   );
 }
