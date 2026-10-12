@@ -1,11 +1,13 @@
 "use client";
 import type { EventDoc } from "@/lib/api-types";
 import { fmtTime } from "@/lib/query";
+import { ArrowDown, ArrowUp, ArrowUpDown } from "lucide-react";
+import { SeverityBadge as Badge, toLevel } from "./ui/severity";
 
+/** Event severity (0-100) as the shared level badge plus the raw number. */
 export function SeverityBadge({ value }: { value?: number }) {
   const v = value ?? 0;
-  const cls = v >= 80 ? "bg-red-900/60 text-red-300" : v >= 50 ? "bg-orange-900/60 text-orange-300" : v >= 20 ? "bg-yellow-900/50 text-yellow-300" : "text-muted";
-  return <span className={`px-1 rounded-sm text-xs tabular-nums ${cls}`}>{v}</span>;
+  return v === 0 ? <span className="text-muted tabular-nums" aria-label="Severity 0">0</span> : <span className="inline-flex items-center gap-1.5"><Badge level={toLevel(v)} compact /><span className="text-xs tabular-nums text-ink-2">{v}</span></span>;
 }
 
 function summary(e: EventDoc): string {
@@ -17,6 +19,11 @@ function summary(e: EventDoc): string {
   return e.action ?? "";
 }
 
+function Outcome({ value }: { value?: string }) {
+  if (!value || value === "unknown") return <span className="text-muted">—</span>;
+  return <span className={`text-xs font-medium ${value === "success" ? "text-sev-ok" : value === "failure" ? "text-sev-critical" : "text-ink-2"}`}>{value === "success" ? "✓ " : value === "failure" ? "✕ " : ""}{value}</span>;
+}
+
 export interface RowSelection { ids: Set<string>; onToggle: (id: string) => void; onToggleAll: (ids: string[], on: boolean) => void }
 
 export function ResultsTable({ hits, dense, selected, onOpen, sort, onSort, selection }: {
@@ -26,12 +33,16 @@ export function ResultsTable({ hits, dense, selected, onOpen, sort, onSort, sele
   const allOn = !!selection && hits.length > 0 && hits.every((h) => selection.ids.has(h.id));
   const head = (label: string, field?: string) => (
     <th className="th" scope="col" aria-sort={field && sort?.field === field ? (sort.order === "asc" ? "ascending" : "descending") : undefined}>
-      {field ? <button onClick={() => onSort(field)} className="hover:text-accent">{label}{sort?.field === field ? (sort.order === "asc" ? " ▲" : " ▼") : ""}</button> : label}
+      {field ? (
+        <button onClick={() => onSort(field)} className="inline-flex items-center gap-1 hover:text-ink">
+          {label}{sort?.field === field ? (sort.order === "asc" ? <ArrowUp aria-hidden className="h-3 w-3 text-accent" /> : <ArrowDown aria-hidden className="h-3 w-3 text-accent" />) : <ArrowUpDown aria-hidden className="h-3 w-3 opacity-40" />}
+        </button>
+      ) : label}
     </th>
   );
   return (
-    <div className="overflow-x-auto">
-      <table className={`w-full ${dense ? "text-xs" : "text-sm"}`}>
+    <div className="table-wrap max-h-[68vh]">
+      <table className={`raw ${dense ? "text-xs" : "text-sm"}`}>
         <thead><tr>
           {selection && <th className="th" scope="col"><input type="checkbox" aria-label="Select all rows" checked={allOn} onChange={(e) => selection.onToggleAll(hits.map((h) => h.id), e.target.checked)} /></th>}
           {head("Time (UTC)", "timestamp")}{head("Type", "event_type")}{head("Host", "host.hostname")}{head("User", "user.name")}
@@ -40,19 +51,19 @@ export function ResultsTable({ hits, dense, selected, onOpen, sort, onSort, sele
         <tbody>
           {hits.map((e) => (
             <tr key={e.id} onClick={() => onOpen(e.id)} tabIndex={0} onKeyDown={(k) => k.key === "Enter" && onOpen(e.id)}
-              className={`cursor-pointer hover:bg-bg ${selected === e.id ? "bg-bg outline outline-1 outline-accent" : ""}`}>
+              className={`cursor-pointer focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-accent-brand ${selected === e.id ? "bg-accent-soft" : ""}`}>
               {selection && (
                 <td className="td" onClick={(ev) => ev.stopPropagation()}>
                   <input type="checkbox" aria-label={`Select event ${e.id.slice(0, 8)}`} checked={selection.ids.has(e.id)} onChange={() => selection.onToggle(e.id)} />
                 </td>
               )}
-              <td className="td whitespace-nowrap font-mono">{fmtTime(e.timestamp)}</td>
+              <td className={`td whitespace-nowrap font-mono ${dense ? "py-1" : "py-2"}`}>{fmtTime(e.timestamp)}</td>
               <td className="td whitespace-nowrap">{e.event_type}</td>
               <td className="td whitespace-nowrap">{e.host?.hostname ?? ""}</td>
               <td className="td whitespace-nowrap">{e.user?.name ?? ""}</td>
               <td className="td whitespace-nowrap">{e.process?.name ?? ""}</td>
               <td className="td max-w-[32rem] truncate font-mono" title={summary(e)}>{summary(e)}</td>
-              <td className="td">{e.outcome ?? ""}</td>
+              <td className="td"><Outcome value={e.outcome} /></td>
               <td className="td"><SeverityBadge value={e.severity} /></td>
             </tr>
           ))}

@@ -4,7 +4,7 @@ import { clampScore, scoreBand, VERDICT_CLASS, VERDICT_NOTE } from "@/lib/intel"
 
 export function VerdictBadge({ verdict }: { verdict: Verdict | string | null }) {
   const v = (verdict ?? "unknown") as Verdict;
-  return <span className={`px-1.5 rounded-sm text-xs ${VERDICT_CLASS[v] ?? VERDICT_CLASS.unknown}`} title={VERDICT_NOTE[v]}>{v}</span>;
+  return <span className={VERDICT_CLASS[v] ?? VERDICT_CLASS.unknown} title={VERDICT_NOTE[v]}>{v}</span>;
 }
 
 const BAR = { high: "bg-red-500", mid: "bg-orange-400", low: "bg-slate-500" } as const;
@@ -27,14 +27,14 @@ export function ConfidenceBadge({ level }: { level: Confidence | string }) {
 }
 
 export function StatusPill({ status }: { status: string }) {
-  const cls = status === "ok" ? "text-green-400" : status === "error" || status === "down" ? "text-red-400" : status === "not_found" ? "text-muted" : "text-yellow-400";
+  const cls = status === "ok" ? "text-green-700" : status === "error" || status === "down" ? "text-red-700" : status === "not_found" ? "text-muted" : "text-yellow-700";
   return <span className={`text-xs ${cls}`}>● {status.replace("_", " ")}</span>;
 }
 
 export function Section({ title, children, actions }: { title: string; children: ReactNode; actions?: ReactNode }) {
   return (
-    <section className="panel p-3 space-y-2">
-      <div className="flex items-center gap-2"><h2 className="text-xs text-muted uppercase">{title}</h2><div className="ml-auto flex gap-1">{actions}</div></div>
+    <section className="panel p-4 space-y-2">
+      <div className="flex items-center gap-2"><h2 className="eyebrow">{title}</h2><div className="ml-auto flex gap-1">{actions}</div></div>
       {children}
     </section>
   );

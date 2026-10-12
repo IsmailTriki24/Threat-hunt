@@ -165,7 +165,7 @@ export function RunReport({ run, evidence, onResume, resuming, compact }: Report
                   <div key={i} className={`space-y-1.5 rounded-md border border-line border-l-4 bg-bg/50 p-3 ${SEV[f.severity] ?? "border-l-slate-500"}`}>
                     <div className="flex flex-wrap items-center gap-2"><b>{f.title}</b><span className="text-xs text-muted">{f.severity}</span>
                       {f.classification && <span className={`ai-chip ${CLASS[f.classification] ?? CLASS.unverified}`}>{f.classification.replace("_", " ")}</span>}
-                      {!f.supported && <span className="text-xs text-red-400">no verified evidence</span>}</div>
+                      {!f.supported && <span className="text-xs text-red-700">no verified evidence</span>}</div>
                     <p className="whitespace-pre-wrap text-xs leading-5">{f.description}</p>
                     {(f.alternative_explanations?.length ?? 0) > 0 && <p className="text-xs text-muted">Benign explanations considered: {f.alternative_explanations?.join("; ")}</p>}
                     {f.event_ids.length > 0 && <p className="text-xs">Evidence: {f.event_ids.map((id) => <Link key={id} className="mr-2 font-mono underline" href={`/events?id=${id}`}>{id.slice(0, 8)}</Link>)}</p>}
@@ -216,7 +216,7 @@ export function RunReport({ run, evidence, onResume, resuming, compact }: Report
         </section>
       )}
 
-      <details className="panel p-3" open={traceOpen} onToggle={(e) => setTraceOpen((e.currentTarget as HTMLDetailsElement).open)}>
+      <details className="panel p-4" open={traceOpen} onToggle={(e) => setTraceOpen((e.currentTarget as HTMLDetailsElement).open)}>
         <summary className="cursor-pointer select-none text-xs font-semibold">
           Investigation trace <span className="font-normal text-muted">· {cov ? `${cov.queries} queries · ${cov.events_reviewed} events · ` : ""}{run.steps.length} steps{cov && cov.errors > 0 ? ` · ${cov.errors} failed` : ""}</span>
         </summary>

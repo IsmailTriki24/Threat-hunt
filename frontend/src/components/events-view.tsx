@@ -12,6 +12,10 @@ import { AddToCaseDialog } from "./add-to-case-dialog";
 import { EventDrawer } from "./event-drawer";
 import { useAuth } from "@/lib/auth";
 import { FilterBuilder, FilterChips } from "./filter-builder";
+import { ChevronLeft, ChevronRight, CircleAlert, History, Search, SearchX } from "lucide-react";
+import { EmptyState } from "./ui/empty-state";
+import { PageHeader } from "./ui/page-header";
+import { SkeletonRows } from "./ui/skeleton";
 import { Histogram } from "./histogram";
 import { ResultsTable } from "./results-table";
 
@@ -61,22 +65,26 @@ export function EventsView() {
   const history = useQuery({ queryKey: ["history", "all"], queryFn: () => api.history(), enabled: showHistory });
 
   return (
-    <div className="space-y-2">
-      <form className="flex gap-1" onSubmit={(e) => { e.preventDefault(); run(); }} role="search">
-        <input ref={searchRef} className="input flex-1 font-mono" value={draft} onChange={(e) => setDraft(e.target.value)} maxLength={state.lang ? 2000 : 512}
+    <div className="space-y-3">
+      <PageHeader title="Events" description="Search every event ingested for this tenant. Click a value in the side panel to filter, or a row for the full event." />
+      <form className="panel flex flex-wrap gap-2 p-3" onSubmit={(e) => { e.preventDefault(); run(); }} role="search" aria-label="Event search">
+        <div className="relative min-w-[16rem] flex-1">
+        <Search aria-hidden className="pointer-events-none absolute left-2.5 top-1/2 h-4 w-4 -translate-y-1/2 text-muted" />
+        <input ref={searchRef} className="input w-full pl-8 font-mono" value={draft} onChange={(e) => setDraft(e.target.value)} maxLength={state.lang ? 2000 : 512}
           aria-label="Search query" placeholder={state.lang ? "process.name:powershell.exe -user.name:svc_*   (hunt query language)" : 'Search events…  e.g. powershell AND "-enc" · NOT chrome · power*   (press / to focus)'} />
+        </div>
         <RangeControl value={state.range} onChange={(range) => update({ range })} />
-        <button className="btn btn-primary" type="submit">Search</button>
+        <button className="btn btn-primary" type="submit"><Search aria-hidden className="h-3.5 w-3.5" />Search</button>
       </form>
 
-      <div className="flex flex-wrap items-center gap-2">
+      <div className="flex flex-wrap items-center gap-3">
         {fields.data && <FilterBuilder fields={fields.data.filter((f) => f.kind !== "date")} onAdd={addF} />}
-        <label className="text-xs flex items-center gap-1"><input type="checkbox" checked={state.lang} onChange={(e) => update({ lang: e.target.checked })} /> Query language</label>
-        <label className="ml-auto text-xs flex items-center gap-1"><input type="checkbox" checked={dense} onChange={(e) => setDense(e.target.checked)} /> Dense</label>
+        <label className="flex items-center gap-1.5 text-sm text-ink-2"><input type="checkbox" checked={state.lang} onChange={(e) => update({ lang: e.target.checked })} /> Query language</label>
+        <label className="ml-auto flex items-center gap-1.5 text-sm text-ink-2"><input type="checkbox" checked={dense} onChange={(e) => setDense(e.target.checked)} /> Dense</label>
       </div>
       {state.lang && <p className="text-xs text-muted">{QueryEditorHint}</p>}
       <div className="text-xs">
-        <button className="btn py-0" onClick={() => setShowHistory((v) => !v)} aria-expanded={showHistory}>History</button>
+        <button className="btn btn-sm" onClick={() => setShowHistory((v) => !v)} aria-expanded={showHistory}><History aria-hidden className="h-3.5 w-3.5" />History</button>
         {showHistory && (
           <select aria-label="Query history" className="input ml-1 max-w-xl" value="" onChange={(e) => {
             const h = history.data?.find((x) => x.id === e.target.value);
@@ -90,31 +98,31 @@ export function EventsView() {
       <FilterChips filters={state.filters} onRemove={(i) => update({ filters: state.filters.filter((_, j) => j !== i) })} />
 
       {search.error && (
-        <p role="alert" className="panel p-2 text-red-400">
-          {search.error instanceof ApiError ? search.error.friendly : "Search failed"}
-          {search.error instanceof ApiError && search.error.requestId ? <span className="text-muted"> (request {search.error.requestId})</span> : null}
+        <p role="alert" className="flex items-start gap-2 rounded-lg border border-sev-critical/30 bg-sev-critical-bg px-4 py-3 text-sm text-sev-critical">
+          <CircleAlert aria-hidden className="mt-0.5 h-4 w-4 shrink-0" /><span>{search.error instanceof ApiError ? search.error.friendly : "Search failed"}
+          {search.error instanceof ApiError && search.error.requestId ? <span className="opacity-80"> (request {search.error.requestId})</span> : null}</span>
         </p>
       )}
 
       {data && (
         <>
-          <div className="text-xs text-muted flex gap-3">
-            <span>{data.total_relation === "gte" ? "≥ " : ""}{data.total.toLocaleString()} events</span>
-            <span>{data.took_ms} ms</span>
-            {search.isFetching && <span>updating…</span>}
+          <div className="flex items-baseline gap-3 text-sm">
+            <span className="font-semibold tabular-nums">{data.total_relation === "gte" ? "≥ " : ""}{data.total.toLocaleString("en-US")} events</span>
+            <span className="text-xs text-muted">{data.took_ms} ms</span>
+            {search.isFetching && <span className="text-xs text-accent" role="status">Updating…</span>}
           </div>
-          <Histogram buckets={data.aggregations.timeline?.buckets ?? []} rangeEnd={data.time_range.end}
-            onSelect={(start, end) => update({ range: { kind: "abs", start, end } })} />
-          <div className="flex gap-3">
-            <div className="flex-1 min-w-0">
-              {data.hits.length === 0 ? <p className="panel p-3 text-muted">No events match this query in the selected time range.</p> : (
+          <div className="panel px-3 pt-2"><Histogram buckets={data.aggregations.timeline?.buckets ?? []} rangeEnd={data.time_range.end}
+            onSelect={(start, end) => update({ range: { kind: "abs", start, end } })} /></div>
+          <div className="flex gap-4">
+            <div className="min-w-0 flex-1">
+              {data.hits.length === 0 ? <div className="panel"><EmptyState icon={SearchX} title="No events match">Nothing matched this query in the selected time range. Widen the range, remove a filter, or check the query syntax.</EmptyState></div> : (
                 <ResultsTable hits={data.hits} dense={dense} selected={state.event} onOpen={(id) => update({ event: id }, false)}
                   sort={state.sort} onSort={(field) => update({ sort: state.sort?.field === field ? { field, order: state.sort.order === "desc" ? "asc" : "desc" } : { field, order: "desc" } })} />
               )}
-              <div className="flex items-center gap-2 mt-2 text-xs">
-                <button className="btn" disabled={offset === 0} onClick={() => update({ offset: Math.max(0, offset - limit) })}>Prev</button>
-                <span className="text-muted">{data.total ? offset + 1 : 0}–{Math.min(offset + limit, data.total)}</span>
-                <button className="btn" disabled={!canNext} onClick={() => update({ offset: offset + limit })}>Next</button>
+              <div className="mt-3 flex items-center gap-2 text-sm">
+                <button className="btn" disabled={offset === 0} onClick={() => update({ offset: Math.max(0, offset - limit) })}><ChevronLeft aria-hidden className="h-4 w-4" />Prev</button>
+                <span className="px-1 tabular-nums text-muted">{data.total ? offset + 1 : 0}–{Math.min(offset + limit, data.total)}</span>
+                <button className="btn" disabled={!canNext} onClick={() => update({ offset: offset + limit })}>Next<ChevronRight aria-hidden className="h-4 w-4" /></button>
                 {data.total > MAX_WINDOW && <span className="text-muted">Only the first {MAX_WINDOW.toLocaleString()} results are pageable; narrow the query.</span>}
               </div>
             </div>
@@ -122,7 +130,7 @@ export function EventsView() {
           </div>
         </>
       )}
-      {search.isLoading && <p className="text-muted">Searching…</p>}
+      {search.isLoading && <div className="panel p-4"><SkeletonRows rows={8} /></div>}
 
       {state.event && (
         <EventDrawer id={state.event} onClose={() => update({ event: null }, false)}

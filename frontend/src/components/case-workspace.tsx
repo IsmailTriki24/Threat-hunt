@@ -7,6 +7,9 @@ import { useAuth } from "@/lib/auth";
 import { isLocked } from "@/lib/cases";
 import { fmtTime } from "@/lib/query";
 import { ErrorLine, LevelBadge } from "./badges";
+import { Loading } from "./ui/skeleton";
+import { Lock, Pencil } from "lucide-react";
+import { Tabs } from "./ui/tabs";
 import { AssetsTab, AuditTab, EvidenceTab, HuntTab, IocsTab, JournalTab, OverviewTab, ReportsTab, TimelineTab } from "./case-tabs";
 import { MitrePanel } from "./mitre-panel";
 import { WorkflowBar } from "./workflow-bar";
@@ -54,18 +57,16 @@ function Header({ c, canEdit }: { c: CaseOut; canEdit: boolean }) {
     );
   }
   return (
-    <div className="flex items-start gap-2">
-      <div className="flex-1 min-w-0">
-        <h1 className="text-base font-semibold flex items-center gap-2 flex-wrap">
-          <span className="font-mono text-muted">{c.case_id}</span><span>{c.title}</span>
-          <LevelBadge level={c.severity} /><span className="text-xs border border-line px-1 rounded-sm">{c.priority}</span>
-        </h1>
-        <p className="text-xs text-muted">
-          Assignee {c.assignee?.email ?? "unassigned"} · created {fmtTime(c.created_at)} · updated {fmtTime(c.updated_at)}
+    <div className="flex items-start gap-3">
+      <div className="min-w-0 flex-1">
+        <div className="mb-1 flex flex-wrap items-center gap-2"><span className="font-mono text-sm text-muted">{c.case_id}</span><LevelBadge level={c.severity} /><span className="badge border-line-strong bg-subtle text-ink-2" title="Priority">{c.priority}</span></div>
+        <h1 className="text-2xl font-semibold tracking-tight">{c.title}</h1>
+        <p className="mt-1 text-sm text-muted">
+          Assignee <span className="text-ink-2">{c.assignee?.email ?? "unassigned"}</span> · created {fmtTime(c.created_at)} · updated {fmtTime(c.updated_at)}
           {c.closed_at ? ` · closed ${fmtTime(c.closed_at)}` : ""}
         </p>
       </div>
-      <button className="btn" disabled={!canEdit} onClick={() => setEditing(true)} title={canEdit ? "" : "Case is read-only for you or closed"}>Edit</button>
+      <button className="btn" disabled={!canEdit} onClick={() => setEditing(true)} title={canEdit ? "" : "Case is read-only for you or closed"}><Pencil aria-hidden className="h-3.5 w-3.5" />Edit</button>
     </div>
   );
 }
@@ -78,9 +79,9 @@ export function CaseWorkspace({ id }: { id: string }) {
   const hasHunt = (reports.data ?? []).some((r) => r.kind === "hunt");
   const tab: Tab = picked ?? (hasHunt ? "hunt" : "overview"); // a case opened from an AI hunt lands on its report
 
-  if (c.isLoading) return <p className="text-muted">Loading case…</p>;
+  if (c.isLoading) return <Loading />;
   if (c.error || !c.data) {
-    return <p role="alert" className="panel p-3 text-red-400">{c.error instanceof ApiError && c.error.status === 404 ? "Case not found." : c.error instanceof ApiError ? c.error.friendly : "Failed to load case"}</p>;
+    return <p role="alert" className="panel p-4 text-sm text-sev-critical">{c.error instanceof ApiError && c.error.status === 404 ? "Case not found." : c.error instanceof ApiError ? c.error.friendly : "Failed to load case"}</p>;
   }
   const kase = c.data;
   const canWrite = can("cases:write");
@@ -94,21 +95,18 @@ export function CaseWorkspace({ id }: { id: string }) {
   ];
 
   return (
-    <div className="space-y-2">
-      <Header key={`${kase.updated_at}`} c={kase} canEdit={mutable} />
-      <WorkflowBar c={kase} canWrite={canWrite} />
+    <div className="space-y-4">
+      <div className="panel space-y-3 p-4">
+        <Header key={`${kase.updated_at}`} c={kase} canEdit={mutable} />
+        <WorkflowBar c={kase} canWrite={canWrite} />
+      </div>
       {locked && (
-        <p role="status" className="panel p-2 text-yellow-300 text-xs">
-          This case is closed and locked: evidence, IOCs, assets and details cannot change until it is reopened. Notes and reports remain available.
+        <p role="status" className="flex items-start gap-2 rounded-lg border border-sev-medium/30 bg-sev-medium-bg px-4 py-2.5 text-sm text-sev-medium">
+          <Lock aria-hidden className="mt-0.5 h-4 w-4 shrink-0" />This case is closed and locked: evidence, IOCs, assets and details cannot change until it is reopened. Notes and reports remain available.
         </p>
       )}
-      {!canWrite && <p className="text-xs text-muted">Read-only: your role cannot modify cases.</p>}
-      <div role="tablist" className="flex gap-0.5 border-b border-line">
-        {tabs.map(([t, label]) => (
-          <button key={t} role="tab" aria-selected={tab === t} onClick={() => setTab(t)}
-            className={`px-3 py-1 border-b-2 ${tab === t ? "border-accent text-accent" : "border-transparent text-muted hover:text-[#c9d1d9]"}`}>{label}</button>
-        ))}
-      </div>
+      {!canWrite && <p className="text-sm text-muted">Read-only: your role cannot modify cases.</p>}
+      <Tabs<Tab> label="Case sections" value={tab} onChange={setTab} tabs={tabs.map(([key, label]) => { const m = /^(.*) \((\d+)\)$/.exec(label); return m ? { key, label: m[1], count: Number(m[2]) } : { key, label }; })} />
       <div role="tabpanel">
         {tab === "hunt" && <HuntTab caseId={id} caseNumber={kase.case_id} />}
         {tab === "overview" && <OverviewTab c={kase} />}

@@ -1,28 +1,26 @@
 "use client";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import Link from "next/link";
+import { X } from "lucide-react";
 import { useState } from "react";
 import { api } from "@/lib/api";
 import {
-  ago, defang, eventsHref, flagEmoji, fmtInt, fmtTs, LAYER_COLOR, SEVERITY_COLOR, SEVERITY_TEXT, timelineMax,
+  ago, defang, flagEmoji, ipRoleLinks, fmtInt, fmtTs, LAYER_COLOR, timelineMax,
   type Correlation, type CountryRow, type Layer, type MapFilters, type MapMarker, type Severity,
 } from "@/lib/threat-map";
+import { SeverityBadge as Badge, SeverityDot as Dot } from "./ui/severity";
 import { AddToCaseDialog } from "./add-to-case-dialog";
 import { CopyButton, ErrorLine } from "./badges";
 import { IntelOpenButton } from "./intel-action";
 
-export function SeverityDot({ severity }: { severity: Severity | string }) {
-  return <span className="inline-block h-2 w-2 rounded-full align-middle" style={{ background: SEVERITY_COLOR[severity as Severity] ?? "#6e7681" }} aria-hidden />;
-}
-export function SeverityTag({ severity }: { severity: string }) {
-  return <span className={`inline-flex items-center gap-1 text-xs ${SEVERITY_TEXT[severity] ?? ""}`}><SeverityDot severity={severity} />{severity}</span>;
-}
+export function SeverityDot({ severity }: { severity: Severity | string }) { return <Dot level={severity} />; }
+export function SeverityTag({ severity }: { severity: string }) { return <Badge level={severity} />; }
 const Chip = ({ children, tone }: { children: React.ReactNode; tone?: string }) => (
-  <span className={`rounded px-1.5 py-px text-[11px] ${tone ?? "border border-line text-muted"}`}>{children}</span>
+  <span className={`badge ${tone ?? "border-line-strong bg-subtle text-ink-2"}`}>{children}</span>
 );
 const Section = ({ title, children, count }: { title: string; children: React.ReactNode; count?: number }) => (
-  <section className="border-t border-line px-3 py-2">
-    <h3 className="mb-1 text-[11px] font-semibold uppercase tracking-wide text-muted">{title}{count !== undefined && <span className="ml-1 font-normal">({count})</span>}</h3>
+  <section className="border-t border-line px-4 py-3">
+    <h3 className="eyebrow mb-1.5">{title}{count !== undefined && <span className="ml-1 font-normal">({count})</span>}</h3>
     {children}
   </section>
 );
@@ -37,6 +35,7 @@ export function InvestigationPanel({ ip, filters, rangeQs, onClose }: { ip: stri
   const [caseOpen, setCaseOpen] = useState(false);
   const [note, setNote] = useState("");
   const d = q.data;
+  const roles = ipRoleLinks(ip, filters.range, filters.start, filters.end, d?.observed ?? null);
   const refresh = () => { void qc.invalidateQueries({ queryKey: ["tm-indicator", ip] }); void qc.invalidateQueries({ queryKey: ["tm-data"] }); };
 
   const hunt = useMutation({
@@ -49,36 +48,35 @@ export function InvestigationPanel({ ip, filters, rangeQs, onClose }: { ip: stri
   });
 
   return (
-    <aside aria-label="Indicator investigation" className="panel flex h-full min-h-0 flex-col overflow-hidden">
-      <header className="flex items-start gap-2 px-3 py-2">
+    <aside aria-label="Indicator investigation" className="panel flex h-full min-h-0 flex-col overflow-hidden shadow-card">
+      <header className="flex items-start gap-2 px-4 py-3">
         <div className="min-w-0 flex-1">
           <div className="font-mono text-base break-all" data-testid="panel-ip">{ip}</div>
           <div className="flex flex-wrap gap-1 pt-1">
             {d && <Chip>{d.class === "public" ? "public IP" : `${d.class} address`}</Chip>}
-            {d?.correlated && <Chip tone="bg-red-500/15 text-red-300 border border-red-500/40">correlated</Chip>}
-            {d && d.intel.length > 0 && <Chip tone="bg-yellow-500/10 text-yellow-300 border border-yellow-500/30">reported by intelligence</Chip>}
-            {d?.observed && <Chip tone="bg-sky-500/10 text-sky-300 border border-sky-500/30">seen in your telemetry</Chip>}
+            {d?.correlated && <Chip tone="border-sev-critical/30 bg-sev-critical-bg text-sev-critical">correlated</Chip>}
+            {d && d.intel.length > 0 && <Chip tone="border-sev-medium/30 bg-sev-medium-bg text-sev-medium">reported by intelligence</Chip>}
+            {d?.observed && <Chip tone="border-accent/30 bg-accent-soft text-accent">seen in your telemetry</Chip>}
           </div>
         </div>
-        <button className="btn py-0" aria-label="Close investigation panel" onClick={onClose}>✕</button>
+        <button className="btn btn-ghost px-1.5" aria-label="Close investigation panel" onClick={onClose}><X aria-hidden className="h-4 w-4" /></button>
       </header>
       <div className="min-h-0 flex-1 overflow-y-auto">
-        {q.isLoading && <div className="px-3 py-4 text-muted animate-pulse">Loading indicator…</div>}
-        {q.isError && <div className="px-3 py-2"><ErrorLine error={q.error} fallback="Could not load this indicator" /> <button className="btn py-0 text-xs" onClick={() => void q.refetch()}>Retry</button></div>}
+        {q.isLoading && <div className="px-4 py-4 text-muted" role="status"><span className="animate-pulse">Loading indicator…</span></div>}
+        {q.isError && <div className="px-4 py-3"><ErrorLine error={q.error} fallback="Could not load this indicator" /> <button className="btn btn-sm" onClick={() => void q.refetch()}>Retry</button></div>}
         {d && (
           <>
-            <div className="flex flex-wrap gap-1 px-3 pb-2" role="group" aria-label="Actions">
+            <div className="flex flex-wrap gap-1.5 px-4 pb-3" role="group" aria-label="Actions">
               <CopyButton text={d.ip} label="Copy IOC" />
               <CopyButton text={defang(d.ip)} label="Copy defanged" />
-              {d.actions.investigate && <Link className="btn text-xs" href={eventsHref(d.ip, filters.range, filters.start, filters.end)}>Investigate this IP</Link>}
-              {d.actions.investigate && d.events_total > 0 && <Link className="btn text-xs" href={eventsHref(d.ip, filters.range, filters.start, filters.end)}>View related events ({fmtInt(d.events_total)})</Link>}
-              {d.actions.hunt && d.intel.length > 0 && <button className="btn btn-primary text-xs" disabled={hunt.isPending} onClick={() => hunt.mutate()}>{hunt.isPending ? "Starting…" : "Launch threat hunt"}</button>}
-              {d.actions.add_to_watchlist && d.intel.length === 0 && <button className="btn text-xs" disabled={queue.isPending || queue.isSuccess} onClick={() => queue.mutate()}>Add to IOC queue</button>}
+              {d.actions.investigate && <Link className="btn btn-sm" href={roles[0].href}>Investigate this IP</Link>}
+              {d.actions.hunt && d.intel.length > 0 && <button className="btn btn-primary btn-sm" disabled={hunt.isPending} onClick={() => hunt.mutate()}>{hunt.isPending ? "Starting…" : "Launch threat hunt"}</button>}
+              {d.actions.add_to_watchlist && d.intel.length === 0 && <button className="btn btn-sm" disabled={queue.isPending || queue.isSuccess} onClick={() => queue.mutate()}>Add to IOC queue</button>}
               {d.actions.intel_lookup && <IntelOpenButton type="ip" value={d.ip} label="Open intelligence record" />}
-              {d.actions.add_to_case && d.events.length > 0 && <button className="btn text-xs" onClick={() => setCaseOpen(true)}>Add to case</button>}
+              {d.actions.add_to_case && d.events.length > 0 && <button className="btn btn-sm" onClick={() => setCaseOpen(true)}>Add to case</button>}
             </div>
-            {note && <div role="status" className="mx-3 mb-2 rounded border border-green-500/40 bg-green-500/10 px-2 py-1 text-xs text-green-300">{note} <Link className="underline" href="/ioc-hunting">Open IOC Hunting</Link></div>}
-            <div className="px-3"><ErrorLine error={hunt.error ?? queue.error} fallback="Action failed" /></div>
+            {note && <div role="status" className="mx-4 mb-3 rounded-md border border-sev-ok/30 bg-sev-ok-bg px-3 py-2 text-xs text-sev-ok">{note} <Link className="underline" href="/ioc-hunting">Open IOC Hunting</Link></div>}
+            <div className="px-4"><ErrorLine error={hunt.error ?? queue.error} fallback="Action failed" /></div>
 
             <Section title="Location (approximate)">
               {d.geo ? (
@@ -99,7 +97,7 @@ export function InvestigationPanel({ ip, filters, rangeQs, onClose }: { ip: stri
                     <li key={i.id} className="rounded border border-line/70 px-2 py-1">
                       <div className="flex flex-wrap items-center gap-1.5 text-xs">
                         <strong>{i.source}</strong><SeverityTag severity={i.severity} /><span className="text-muted">confidence {i.confidence}</span>
-                        {i.stale && <Chip tone="border border-orange-500/40 text-orange-300">stale</Chip>}<Chip>{i.status.toLowerCase()}</Chip>
+                        {i.stale && <Chip tone="border-sev-high/30 bg-sev-high-bg text-sev-high">stale</Chip>}<Chip>{i.status.toLowerCase()}</Chip>
                       </div>
                       {(i.threat || i.malware || i.threat_type) && <div className="text-xs">{[i.threat, i.malware, i.threat_type].filter(Boolean).join(" · ")}</div>}
                       {i.description && <div className="text-xs text-muted break-words">{i.description}</div>}
@@ -120,6 +118,10 @@ export function InvestigationPanel({ ip, filters, rangeQs, onClose }: { ip: stri
                   <KV k="First / last seen" v={`${fmtTs(d.observed.first_seen)} → ${fmtTs(d.observed.last_seen)}`} />
                   <KV k="Highest event severity" v={<SeverityTag severity={d.observed.max_severity} />} />
                   {d.observed.ports.length > 0 && <KV k="Destination ports" v={d.observed.ports.join(", ")} />}
+                  {d.actions.investigate && <div className="flex flex-wrap items-center gap-1.5 pt-2" role="group" aria-label="View related events">
+                    <span className="text-xs text-muted">View events:</span>
+                    {roles.filter((r) => r.count > 0).map((r) => <Link key={r.key} className="btn btn-sm" href={r.href}>{r.label} ({fmtInt(r.count)})</Link>)}
+                  </div>}
                   <KV k="Log sources" v={d.observed.sources.join(", ")} />
                 </>
               )}
@@ -172,8 +174,8 @@ export function InvestigationPanel({ ip, filters, rangeQs, onClose }: { ip: stri
 // ---- supporting panels ------------------------------------------------------------------------------------
 const Card = ({ title, children, action }: { title: string; children: React.ReactNode; action?: React.ReactNode }) => (
   <section className="panel flex min-h-0 flex-col">
-    <header className="flex items-center justify-between border-b border-line px-3 py-1.5"><h2 className="text-xs font-semibold uppercase tracking-wide text-muted">{title}</h2>{action}</header>
-    <div className="min-h-0 flex-1 overflow-auto px-3 py-2">{children}</div>
+    <header className="flex items-center justify-between border-b border-line px-4 py-2.5"><h2 className="text-sm font-semibold text-ink">{title}</h2>{action}</header>
+    <div className="min-h-0 flex-1 overflow-auto px-4 py-3">{children}</div>
   </section>
 );
 const Empty = ({ children }: { children: React.ReactNode }) => <p className="py-3 text-center text-xs text-muted">{children}</p>;
@@ -187,7 +189,7 @@ export function TopCountries({ rows, layer, onPick, active }: { rows: CountryRow
         <ul className="space-y-1">
           {rows.map((r) => (
             <li key={r.iso}>
-              <button className={`group w-full text-left ${active.includes(r.iso) ? "text-accent" : ""}`} onClick={() => onPick(r.iso)} aria-label={`Filter to ${r.name}`}>
+              <button className={`group w-full text-left ${active.includes(r.iso) ? "text-accent" : ""}`} onClick={() => onPick(r.iso)} title={`Filter to ${r.name}`}>
                 <div className="flex justify-between text-xs"><span>{flagEmoji(r.iso)} {r.name || r.iso}</span><span className="tabular-nums">{fmtInt(r.value)}</span></div>
                 <div className="h-1 rounded bg-line"><div className="h-1 rounded" style={{ width: `${(r.value / max) * 100}%`, background: LAYER_COLOR[layer] }} /></div>
               </button>
@@ -206,7 +208,7 @@ export function TopIps({ rows, layer, onPick, selected }: { rows: MapMarker[]; l
         <ul className="space-y-0.5">
           {rows.map((m) => (
             <li key={m.ip}>
-              <button className={`flex w-full items-center gap-2 rounded px-1 py-0.5 text-left text-xs hover:bg-bg ${selected === m.ip ? "bg-bg" : ""}`} onClick={() => onPick(m.ip)}>
+              <button className={`flex w-full items-center gap-2 rounded px-1.5 py-1 text-left text-xs hover:bg-accent-soft ${selected === m.ip ? "bg-bg" : ""}`} onClick={() => onPick(m.ip)}>
                 <SeverityDot severity={m.severity} />
                 <span className="font-mono">{m.ip}</span>
                 <span className="text-muted">{m.geo?.country ?? "—"}</span>
@@ -227,9 +229,9 @@ export function RecentCorrelations({ rows, total, offset, setOffset, loading, on
   return (
     <Card title="Recent correlated detections" action={total > page && (
       <span className="flex items-center gap-1 text-xs text-muted">
-        <button className="btn py-0" disabled={offset === 0 || loading} onClick={() => setOffset(Math.max(0, offset - page))} aria-label="Newer correlations">‹</button>
+        <button className="btn btn-sm" disabled={offset === 0 || loading} onClick={() => setOffset(Math.max(0, offset - page))} aria-label="Newer correlations">‹</button>
         <span className="tabular-nums">{offset + 1}–{Math.min(total, offset + page)} of {total}</span>
-        <button className="btn py-0" disabled={offset + page >= total || loading} onClick={() => setOffset(offset + page)} aria-label="Older correlations">›</button>
+        <button className="btn btn-sm" disabled={offset + page >= total || loading} onClick={() => setOffset(offset + page)} aria-label="Older correlations">›</button>
       </span>
     )}>
       {rows.length === 0 ? <Empty>No observed activity matches reported intelligence or an IOC hunt in this range.</Empty> : (

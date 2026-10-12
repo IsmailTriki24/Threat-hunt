@@ -1,5 +1,6 @@
 import type { Metadata } from "next";
 import type { ReactNode } from "react";
+import "@fontsource-variable/inter";
 import { Providers } from "@/components/providers";
 import "./globals.css";
 

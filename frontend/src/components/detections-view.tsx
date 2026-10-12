@@ -9,6 +9,11 @@ import {
 } from "@/lib/detections";
 import { fmtTime } from "@/lib/query";
 import { ErrorLine } from "./badges";
+import { Grid3x3, ShieldCheck, Siren } from "lucide-react";
+import { KpiCard } from "./ui/kpi-card";
+import { PageHeader } from "./ui/page-header";
+import { Tabs } from "./ui/tabs";
+import { useConfirm } from "./ui/confirm";
 
 const SIGMA_TEMPLATE = `title: Encoded PowerShell
 description: PowerShell started with an encoded command
@@ -56,10 +61,11 @@ function RuleDetail({ rule, onClose }: { rule: Rule; onClose: () => void }) {
   const run = useMutation({ mutationFn: () => api.runRuleTests(rule.id), onSuccess: refresh });
   const back = useMutation({ mutationFn: () => api.backtestRule(rule.id) });
   const del = useMutation({ mutationFn: () => api.deleteRule(rule.id), onSuccess: () => { refresh(); onClose(); } });
+  const { confirm, node: confirmNode } = useConfirm();
   const blocker = activationBlocker(rule);
   const dirty = content !== rule.content;
   return (
-    <section className="panel p-3 space-y-3" aria-label="Rule detail">
+    <section className="panel p-4 space-y-3" aria-label="Rule detail">
       <div className="flex items-center gap-2">
         <h2 className="font-semibold">{rule.title}</h2><StatusPill status={rule.status} />
         <span className="text-xs text-muted">v{rule.version} · {rule.severity} · {rule.format}</span>
@@ -68,7 +74,7 @@ function RuleDetail({ rule, onClose }: { rule: Rule; onClose: () => void }) {
       {rule.techniques.length > 0 && <p className="text-xs">ATT&amp;CK: {rule.techniques.map((t) => <Link key={t} className="underline mr-2" href={`/mitre?technique=${t}`}>{t}</Link>)}</p>}
       {rule.unsupported.length > 0 && <p role="alert" className="text-orange-300 text-xs">Not executable: {rule.unsupported.join("; ")}</p>}
       {rule.warnings.length > 0 && <p className="text-xs text-muted">Notes: {rule.warnings.join("; ")}</p>}
-      {rule.last_run_status === "error" && <p role="alert" className="text-red-400 text-xs">Last scheduled run failed: {rule.last_run_error}</p>}
+      {rule.last_run_status === "error" && <p role="alert" className="text-red-700 text-xs">Last scheduled run failed: {rule.last_run_error}</p>}
       <textarea aria-label="Rule source" className="input w-full font-mono text-xs h-56" value={content} onChange={(e) => setContent(e.target.value)} disabled={!write} spellCheck={false} />
       <div className="flex gap-2 flex-wrap items-center">
         <button className="btn btn-primary" disabled={!write || !dirty || save.isPending} onClick={() => save.mutate()}>Save new version</button>
@@ -79,18 +85,18 @@ function RuleDetail({ rule, onClose }: { rule: Rule; onClose: () => void }) {
           return <button key={to} className="btn" disabled={off || move.isPending} onClick={() => move.mutate(to)}
             title={to === "ACTIVE" && blocker ? blocker : prod && !manage ? "Requires detections:manage" : ""}>Move to {to}</button>;
         })}
-        {manage && <button className="btn" disabled={del.isPending} onClick={() => { if (confirm("Delete this rule and its alerts?")) del.mutate(); }}>Delete</button>}
+        {manage && <button className="btn" disabled={del.isPending} onClick={() => confirm({ title: "Delete this rule?", message: "The rule and all alerts it raised are permanently deleted.", confirmLabel: "Delete rule", run: () => del.mutate() })}>Delete</button>}
       </div>
       <ErrorLine error={save.error ?? move.error ?? del.error} fallback="Action failed" />
 
       <div className="space-y-2">
-        <h3 className="font-semibold text-xs">Unit tests ({rule.test_count}) {rule.tests_passed === true && <span className="text-green-300">· passing</span>}{rule.tests_passed === false && <span className="text-red-400">· failing</span>}</h3>
+        <h3 className="font-semibold text-xs">Unit tests ({rule.test_count}) {rule.tests_passed === true && <span className="text-green-300">· passing</span>}{rule.tests_passed === false && <span className="text-red-700">· failing</span>}</h3>
         {tests.data?.map((c) => {
           const r = run.data?.results.find((x) => x.case_id === c.id);
           return <div key={c.id} className="flex items-center gap-2 text-xs">
             <span>{c.name}</span><span className="text-muted">must {c.expect_match ? "match" : "not match"}</span>
-            {r && <span className={r.passed ? "text-green-300" : "text-red-400"}>{r.passed ? "pass" : `FAIL (${r.matched ? "matched" : "did not match"})`}{r.explanation.length > 0 && ` · selections: ${r.explanation.join(", ")}`}</span>}
-            <button className="btn py-0 ml-auto" disabled={!write} onClick={() => delTest.mutate(c.id)} aria-label={`Delete test ${c.name}`}>Remove</button>
+            {r && <span className={r.passed ? "text-green-300" : "text-red-700"}>{r.passed ? "pass" : `FAIL (${r.matched ? "matched" : "did not match"})`}{r.explanation.length > 0 && ` · selections: ${r.explanation.join(", ")}`}</span>}
+            <button className="btn btn-sm ml-auto" disabled={!write} onClick={() => delTest.mutate(c.id)} aria-label={`Delete test ${c.name}`}>Remove</button>
           </div>;
         })}
         <div className="flex gap-2 items-start">
@@ -102,7 +108,7 @@ function RuleDetail({ rule, onClose }: { rule: Rule; onClose: () => void }) {
             <button className="btn block" disabled={!write || !rule.executable || run.isPending} onClick={() => run.mutate()}>Run tests</button>
           </div>
         </div>
-        {localErr && <p role="alert" className="text-red-400 text-xs">{localErr}</p>}
+        {localErr && <p role="alert" className="text-red-700 text-xs">{localErr}</p>}
         <ErrorLine error={addTest.error ?? run.error} fallback="Test action failed" />
       </div>
 
@@ -113,6 +119,7 @@ function RuleDetail({ rule, onClose }: { rule: Rule; onClose: () => void }) {
         {back.data && <p className="text-xs">{back.data.total} matching event(s) in {back.data.run.took_ms} ms{back.data.total > back.data.hits.length ? ` (showing ${back.data.hits.length})` : ""}.</p>}
         <ErrorLine error={back.error} fallback="Backtest failed" />
       </div>
+      {confirmNode}
     </section>
   );
 }
@@ -137,7 +144,7 @@ function RulesTab() {
         <span className="text-xs text-muted">Rules are stored as DRAFT. A rule runs only after its tests pass and a manager activates it.</span>
       </div>
       {adding && (
-        <div className="panel p-3 space-y-2">
+        <div className="panel p-4 space-y-2">
           <select aria-label="Rule format" className="input" value={fmt} onChange={(e) => { setFmt(e.target.value); setText(e.target.value === "sigma" ? SIGMA_TEMPLATE : "# title: My query\n# level: medium\nprocess.name:powershell.exe"); }}>
             <option value="sigma">Sigma</option><option value="hunt_query">Hunt query</option>
           </select>
@@ -147,7 +154,7 @@ function RulesTab() {
         </div>
       )}
       <ErrorLine error={rules.error} fallback="Failed to load rules" />
-      {rules.data && (rules.data.length === 0 ? <p className="panel p-3 text-muted">No detection rules yet.</p> : (
+      {rules.data && (rules.data.length === 0 ? <p className="panel p-4 text-muted">No detection rules yet.</p> : (
         <table className="w-full text-xs">
           <thead className="text-left text-muted"><tr><th>Rule</th><th>Status</th><th>Severity</th><th>ATT&amp;CK</th><th>Tests</th><th>Open alerts</th><th>Updated</th></tr></thead>
           <tbody>{rules.data.map((r) => (
@@ -178,7 +185,7 @@ function AlertsTab() {
         <option value="">all</option><option>OPEN</option><option>ACKNOWLEDGED</option><option>CLOSED</option>
       </select>
       <ErrorLine error={alerts.error ?? upd.error ?? toCase.error} fallback="Alert action failed" />
-      {alerts.data && (alerts.data.length === 0 ? <p className="panel p-3 text-muted">No alerts.</p> : (
+      {alerts.data && (alerts.data.length === 0 ? <p className="panel p-4 text-muted">No alerts.</p> : (
         <table className="w-full text-xs">
           <thead className="text-left text-muted"><tr><th>Time</th><th>Rule</th><th>Severity</th><th>Status</th><th>Event</th><th /></tr></thead>
           <tbody>{alerts.data.map((a) => (
@@ -186,10 +193,10 @@ function AlertsTab() {
               <td>{fmtTime(a.event_timestamp)}</td><td>{a.rule_title} <span className="text-muted">v{a.rule_version}</span></td><td>{a.severity}</td><td>{a.status}</td>
               <td className="font-mono"><Link className="underline" href={`/events?id=${a.event_id}`}>{a.event_id.slice(0, 8)}</Link></td>
               <td className="space-x-1 text-right">
-                {a.status === "OPEN" && <button className="btn py-0" disabled={!can("detections:write")} onClick={() => upd.mutate({ a, s: "ACKNOWLEDGED" })}>Acknowledge</button>}
-                {a.status !== "CLOSED" && <button className="btn py-0" disabled={!can("detections:write")} onClick={() => upd.mutate({ a, s: "CLOSED" })}>Close</button>}
+                {a.status === "OPEN" && <button className="btn btn-sm" disabled={!can("detections:write")} onClick={() => upd.mutate({ a, s: "ACKNOWLEDGED" })}>Acknowledge</button>}
+                {a.status !== "CLOSED" && <button className="btn btn-sm" disabled={!can("detections:write")} onClick={() => upd.mutate({ a, s: "CLOSED" })}>Close</button>}
                 {a.case_id ? <Link className="underline" href={`/cases/${a.case_id}`}>Case</Link>
-                  : <button className="btn py-0" disabled={!can("cases:write") || !can("detections:write")} onClick={() => toCase.mutate(a)}>Open case</button>}
+                  : <button className="btn btn-sm" disabled={!can("cases:write") || !can("detections:write")} onClick={() => toCase.mutate(a)}>Open case</button>}
               </td>
             </tr>))}
           </tbody>
@@ -202,17 +209,17 @@ function AlertsTab() {
 export function DetectionsView() {
   const [tab, setTab] = useState<"rules" | "alerts">("rules");
   const ov = useQuery({ queryKey: ["det-overview"], queryFn: () => api.detOverview() });
+  const d = ov.data;
   return (
-    <section className="space-y-3">
-      <div className="flex items-center gap-3">
-        <h1 className="text-base font-semibold">Detections</h1>
-        {ov.data && <span className="text-xs text-muted">{ov.data.rules_by_status.ACTIVE ?? 0} active · {ov.data.open_alerts} open alert(s) · {ov.data.coverage.length} technique(s) covered</span>}
+    <section className="space-y-4">
+      <PageHeader title="Detections" description="Sigma and hunt-query rules run against new telemetry. A rule is a draft until its tests pass and a manager activates it." />
+      <div className="grid gap-3 sm:grid-cols-3">
+        <KpiCard label="Active rules" icon={ShieldCheck} value={d?.rules_by_status.ACTIVE ?? 0} loading={ov.isLoading} unavailable={ov.isError} hint="Evaluated every 5 minutes" />
+        <KpiCard label="Open alerts" icon={Siren} value={d?.open_alerts ?? 0} tone={d?.open_alerts ? "high" : "ok"} loading={ov.isLoading} unavailable={ov.isError}
+          hint={d ? (Object.entries(d.alerts_by_severity).filter(([, n]) => n).map(([k, n]) => `${n} ${k.toLowerCase()}`).join(" · ") || "Nothing awaiting triage") : undefined} />
+        <KpiCard label="ATT&CK techniques covered" icon={Grid3x3} value={d?.coverage.length ?? 0} loading={ov.isLoading} unavailable={ov.isError} href="/mitre" hint="By active rules" />
       </div>
-      <div role="tablist" className="flex gap-2">
-        {(["rules", "alerts"] as const).map((t) => (
-          <button key={t} role="tab" aria-selected={tab === t} className={`btn ${tab === t ? "btn-primary" : ""}`} onClick={() => setTab(t)}>{t === "rules" ? "Rules" : "Alerts"}</button>
-        ))}
-      </div>
+      <Tabs<"rules" | "alerts"> label="Detections sections" value={tab} onChange={setTab} tabs={[{ key: "rules", label: "Rules" }, { key: "alerts", label: "Alerts", count: d?.open_alerts ?? null }]} />
       {tab === "rules" ? <RulesTab /> : <AlertsTab />}
     </section>
   );

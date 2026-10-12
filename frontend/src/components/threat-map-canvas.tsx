@@ -3,7 +3,7 @@ import "maplibre-gl/dist/maplibre-gl.css";
 import { LngLatBounds, Map as MapLibre, Marker, NavigationControl, Popup, type GeoJSONSource, type MapGeoJSONFeature } from "maplibre-gl";
 import { useEffect, useRef } from "react";
 import {
-  arcPoints, choroplethExpression, fmtInt, LAYER_COLOR, markerRadius, SEVERITY_COLOR, SEVERITIES,
+  arcPoints, choroplethExpression, fmtInt, LAND, LAYER_COLOR, markerRadius, SEVERITY_COLOR, SEVERITIES,
   type CountryRow, type Flow, type Home, type Layer, type MapMarker,
 } from "@/lib/threat-map";
 
@@ -26,10 +26,10 @@ interface PointGeom { coordinates: [number, number] }
 // Disputed/unrecognised territories in the boundary file have an empty ISO code, so "no country" must not be "".
 const NO_COUNTRY = "--";
 const EMPTY = { type: "FeatureCollection", features: [] } as const;
-const FLOW_COLOR = { inbound: "#f0883e", outbound: "#39c5cf", external: "#8b949e" } as const;
+const FLOW_COLOR = { inbound: "#C2410C", outbound: "#0E7490", external: "#667085" } as const;
 // Offline by design: no tile server, no glyph server. The page's CSP only allows same-origin requests, and a SOC console
 // should not leak which regions an analyst is looking at to a third-party tile provider.
-const STYLE = { version: 8 as const, sources: {}, layers: [{ id: "ocean", type: "background" as const, paint: { "background-color": "#0a1018" } }] };
+const STYLE = { version: 8 as const, sources: {}, layers: [{ id: "ocean", type: "background" as const, paint: { "background-color": "#E3E8F4" } }] };
 
 function markerCollection(markers: MapMarker[], layer: Layer) {
   const max = Math.max(0, ...markers.map((m) => m.weight));
@@ -91,21 +91,21 @@ export default function ThreatMapCanvas(props: CanvasProps) {
       map.addSource("markers", { type: "geojson", data: EMPTY, cluster: true, clusterRadius: 46, clusterMaxZoom: 5, clusterProperties: { maxSev: ["max", ["get", "sev"]], weight: ["+", ["get", "weight"]] } });
       map.addSource("arcs", { type: "geojson", data: EMPTY });
       map.addSource("home", { type: "geojson", data: EMPTY });
-      map.addLayer({ id: "country-fill", type: "fill", source: "countries", paint: { "fill-color": "#121a24", "fill-opacity": 1 } });
-      map.addLayer({ id: "country-line", type: "line", source: "countries", paint: { "line-color": "#2a3544", "line-width": 0.6 } });
-      map.addLayer({ id: "country-hover", type: "line", source: "countries", filter: ["==", ["get", "iso"], NO_COUNTRY], paint: { "line-color": "#c9d1d9", "line-width": 1.4 } });
+      map.addLayer({ id: "country-fill", type: "fill", source: "countries", paint: { "fill-color": LAND, "fill-opacity": 1 } });
+      map.addLayer({ id: "country-line", type: "line", source: "countries", paint: { "line-color": "#C3CADB", "line-width": 0.6 } });
+      map.addLayer({ id: "country-hover", type: "line", source: "countries", filter: ["==", ["get", "iso"], NO_COUNTRY], paint: { "line-color": "#181C2D", "line-width": 1.4 } });
       map.addLayer({ id: "arcs", type: "line", source: "arcs", layout: { "line-cap": "round" }, paint: { "line-color": ["get", "color"], "line-width": ["get", "width"], "line-opacity": 0.55, "line-dasharray": [1, 0] } });
-      map.addLayer({ id: "home", type: "circle", source: "home", paint: { "circle-radius": 6, "circle-color": "#0a1018", "circle-stroke-color": "#c9d1d9", "circle-stroke-width": 2 } });
+      map.addLayer({ id: "home", type: "circle", source: "home", paint: { "circle-radius": 6, "circle-color": "#FFFFFF", "circle-stroke-color": "#181C2D", "circle-stroke-width": 2.5 } });
       map.addLayer({ id: "cluster", type: "circle", source: "markers", filter: ["has", "point_count"], paint: {
         "circle-color": ["step", ["get", "maxSev"], SEVERITY_COLOR.info, 1, SEVERITY_COLOR.low, 2, SEVERITY_COLOR.medium, 3, SEVERITY_COLOR.high, 4, SEVERITY_COLOR.critical],
-        "circle-opacity": 0.28, "circle-stroke-width": 1.5, "circle-stroke-color": ["step", ["get", "maxSev"], SEVERITY_COLOR.info, 1, SEVERITY_COLOR.low, 2, SEVERITY_COLOR.medium, 3, SEVERITY_COLOR.high, 4, SEVERITY_COLOR.critical],
+        "circle-opacity": 0.22, "circle-stroke-width": 1.75, "circle-stroke-color": ["step", ["get", "maxSev"], SEVERITY_COLOR.info, 1, SEVERITY_COLOR.low, 2, SEVERITY_COLOR.medium, 3, SEVERITY_COLOR.high, 4, SEVERITY_COLOR.critical],
         "circle-radius": ["step", ["get", "point_count"], 13, 10, 17, 50, 22, 200, 28],
       } });
-      map.addLayer({ id: "halo", type: "circle", source: "markers", filter: ["all", ["!", ["has", "point_count"]], ["==", ["get", "corr"], 1]], paint: { "circle-radius": ["+", ["get", "radius"], 7], "circle-color": "#f85149", "circle-opacity": 0.16, "circle-blur": 0.6 } });
+      map.addLayer({ id: "halo", type: "circle", source: "markers", filter: ["all", ["!", ["has", "point_count"]], ["==", ["get", "corr"], 1]], paint: { "circle-radius": ["+", ["get", "radius"], 7], "circle-color": "#D92D20", "circle-opacity": 0.18, "circle-blur": 0.6 } });
       map.addLayer({ id: "point", type: "circle", source: "markers", filter: ["!", ["has", "point_count"]], paint: {
-        "circle-radius": ["get", "radius"], "circle-color": ["get", "color"], "circle-opacity": 0.82, "circle-stroke-width": 1.25, "circle-stroke-color": "#0a1018",
+        "circle-radius": ["get", "radius"], "circle-color": ["get", "color"], "circle-opacity": 0.85, "circle-stroke-width": 1.25, "circle-stroke-color": "#FFFFFF",
       } });
-      map.addLayer({ id: "selected", type: "circle", source: "markers", filter: ["==", ["get", "ip"], ""], paint: { "circle-radius": ["+", ["get", "radius"], 5], "circle-color": "rgba(0,0,0,0)", "circle-stroke-color": "#ffffff", "circle-stroke-width": 2 } });
+      map.addLayer({ id: "selected", type: "circle", source: "markers", filter: ["==", ["get", "ip"], ""], paint: { "circle-radius": ["+", ["get", "radius"], 5], "circle-color": "rgba(0,0,0,0)", "circle-stroke-color": "#181C2D", "circle-stroke-width": 2.5 } });
       ready.current = true;
       apply();
     });
@@ -177,8 +177,8 @@ export default function ThreatMapCanvas(props: CanvasProps) {
       map.setPaintProperty("country-fill", "fill-color", choroplethExpression(p.countries, p.layer) as never);
       (map.getSource("arcs") as GeoJSONSource).setData(p.showFlows ? flowCollection(p.flows) : EMPTY);
       (map.getSource("home") as GeoJSONSource).setData(p.showFlows && p.home ? { type: "FeatureCollection", features: [{ type: "Feature", geometry: { type: "Point", coordinates: [p.home.lon, p.home.lat] }, properties: {} }] } : EMPTY);
-      map.setPaintProperty("point", "circle-stroke-color", p.layer === "intelligence" ? LAYER_COLOR.intelligence : "#0a1018");
-      map.setPaintProperty("point", "circle-opacity", p.layer === "intelligence" ? 0.6 : 0.85);
+      map.setPaintProperty("point", "circle-stroke-color", p.layer === "intelligence" ? LAYER_COLOR.intelligence : "#FFFFFF");
+      map.setPaintProperty("point", "circle-opacity", p.layer === "intelligence" ? 0.55 : 0.85);
       map.setPaintProperty("point", "circle-stroke-width", p.layer === "intelligence" ? 2 : 1.25);
       map.setFilter("selected", ["==", ["get", "ip"], p.selectedIp ?? ""]);
     }

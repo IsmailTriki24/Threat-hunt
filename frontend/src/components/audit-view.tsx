@@ -5,6 +5,7 @@ import { api } from "@/lib/api";
 import { auditQuery, auditSummary, defaultAuditFilters, type AuditFilters } from "@/lib/cases";
 import { fmtTime } from "@/lib/query";
 import { ErrorLine } from "./badges";
+import { Loading } from "./ui/skeleton";
 
 const PAGE = 50;
 
@@ -33,8 +34,8 @@ export function AuditView() {
         <button className="btn" type="button" onClick={() => { setDraft(defaultAuditFilters()); setApplied(defaultAuditFilters()); setOffset(0); }}>Reset</button>
       </form>
       <ErrorLine error={rows.error} fallback="Failed to load the audit trail" />
-      {rows.isLoading && <p className="text-muted">Loading…</p>}
-      {rows.data && (rows.data.length === 0 ? <p className="panel p-3 text-muted">No audit records match.</p> : (
+      {rows.isLoading && <Loading />}
+      {rows.data && (rows.data.length === 0 ? <p className="panel p-4 text-muted">No audit records match.</p> : (
         <table className="w-full">
           <thead><tr>{["Time (UTC)", "Action", "Outcome", "Actor", "Resource", "IP", ""].map((h) => <th key={h} className="th" scope="col">{h}</th>)}</tr></thead>
           <tbody>
@@ -47,7 +48,7 @@ export function AuditView() {
                   <td className="td">{r.actor}</td>
                   <td className="td font-mono text-xs">{auditSummary(r)}</td>
                   <td className="td font-mono">{r.ip}</td>
-                  <td className="td"><button className="btn py-0 text-xs" aria-expanded={open === r.id} onClick={() => setOpen(open === r.id ? null : r.id)}>Details</button></td>
+                  <td className="td"><button className="btn btn-sm" aria-expanded={open === r.id} onClick={() => setOpen(open === r.id ? null : r.id)}>Details</button></td>
                 </tr>
                 {open === r.id && (
                   <tr><td colSpan={7} className="td bg-bg"><pre className="text-xs whitespace-pre-wrap break-all">{JSON.stringify({ ...r.details, request_id: r.request_id, resource_id: r.resource_id }, null, 2)}</pre></td></tr>

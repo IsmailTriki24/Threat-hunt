@@ -3,6 +3,7 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { useState, type ReactNode } from "react";
 import { AuthProvider } from "@/lib/auth";
 import { ApiError } from "@/lib/api";
+import { ToastProvider } from "./ui/toast";
 
 export function Providers({ children }: { children: ReactNode }) {
   const [client] = useState(() => new QueryClient({
@@ -11,5 +12,5 @@ export function Providers({ children }: { children: ReactNode }) {
       retry: (n, err) => !(err instanceof ApiError && err.status < 500) && n < 2,
     } },
   }));
-  return <QueryClientProvider client={client}><AuthProvider>{children}</AuthProvider></QueryClientProvider>;
+  return <QueryClientProvider client={client}><AuthProvider><ToastProvider>{children}</ToastProvider></AuthProvider></QueryClientProvider>;
 }

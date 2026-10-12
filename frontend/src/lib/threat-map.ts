@@ -1,23 +1,25 @@
 /** Threat map: types for /api/v1/threat-map, filter state <-> query string, and the small pure helpers the map and panels share. */
 
+import { fieldSearchHref } from "./global-search";
+
 export type Layer = "intelligence" | "observed" | "correlated";
 export type RangeKey = "1h" | "24h" | "7d" | "30d" | "custom";
 export type Severity = "info" | "low" | "medium" | "high" | "critical";
 export type Scope = "any" | "external" | "internal";
 
 export const LAYERS: Array<{ key: Layer; label: string; blurb: string; color: string }> = [
-  { key: "intelligence", label: "Global threat intelligence", blurb: "Indicators reported by your feeds. Reported, not confirmed against you.", color: "#e3b341" },
-  { key: "observed", label: "Observed network activity", blurb: "Addresses seen in your own telemetry.", color: "#58a6ff" },
-  { key: "correlated", label: "Correlated threats", blurb: "Observed activity that matches reported intelligence or an IOC hunt.", color: "#f85149" },
+  { key: "intelligence", label: "Global threat intelligence", blurb: "Indicators your feeds report. Reported, not confirmed against you.", color: "#B7791F" },
+  { key: "observed", label: "Observed network activity", blurb: "Addresses seen in your own telemetry.", color: "#7568E9" },
+  { key: "correlated", label: "Correlated threats", blurb: "Observed activity that matches intelligence or an IOC hunt.", color: "#D92D20" },
 ];
-export const LAYER_COLOR: Record<Layer, string> = { intelligence: "#e3b341", observed: "#58a6ff", correlated: "#f85149" };
+export const LAYER_COLOR: Record<Layer, string> = { intelligence: "#B7791F", observed: "#7568E9", correlated: "#D92D20" };
 export const RANGES: Array<{ key: RangeKey; label: string }> = [
   { key: "1h", label: "1 h" }, { key: "24h", label: "24 h" }, { key: "7d", label: "7 d" }, { key: "30d", label: "30 d" }, { key: "custom", label: "Custom" },
 ];
 export const SEVERITIES: Severity[] = ["info", "low", "medium", "high", "critical"];
-export const SEVERITY_COLOR: Record<Severity, string> = { info: "#6e7681", low: "#58a6ff", medium: "#d29922", high: "#f0883e", critical: "#f85149" };
+export const SEVERITY_COLOR: Record<Severity, string> = { info: "#667085", low: "#2E6FE0", medium: "#D58A0A", high: "#E0561B", critical: "#D92D20" };
 export const SEVERITY_TEXT: Record<string, string> = {
-  info: "text-slate-300", low: "text-sky-300", medium: "text-yellow-300", high: "text-orange-300", critical: "text-red-400",
+  info: "text-sev-info", low: "text-sev-low", medium: "text-sev-medium", high: "text-sev-high", critical: "text-sev-critical",
 };
 export const CONTINENTS: Array<[string, string]> = [["AF", "Africa"], ["AN", "Antarctica"], ["AS", "Asia"], ["EU", "Europe"], ["NA", "North America"], ["OC", "Oceania"], ["SA", "South America"]];
 export const IOC_FILTER_TYPES = ["ip", "domain", "url", "sha256", "sha1", "md5", "email"];
@@ -166,12 +168,19 @@ export function flagEmoji(iso: string): string {
   return String.fromCodePoint(...[...iso].map((c) => 0x1f1e6 + c.charCodeAt(0) - 65));
 }
 
-/** Link into the Events search for every event that names this address (existing hunt query language). */
-export function eventsHref(ip: string, range: RangeKey, start: string, end: string): string {
-  const p = new URLSearchParams({ lang: "1", q: `network.src_ip:${ip} OR network.dst_ip:${ip} OR auth.source_ip:${ip}` });
-  if (range === "custom") { p.set("start", new Date(start).toISOString()); p.set("end", new Date(end).toISOString()); }
-  else p.set("range", range === "1h" ? "1h" : range);
-  return `/events?${p.toString()}`;
+export interface RoleLink { key: "dst" | "src" | "auth"; label: string; count: number; href: string }
+
+/** Event searches for an address, one per role it plays (the hunt query language cannot OR across fields). Only roles with events are listed;
+ *  with no observation at all the default (destination) search is returned so "Investigate" still works. Sorted busiest-first. */
+export function ipRoleLinks(ip: string, range: RangeKey, start: string, end: string, observed: Pick<Activity, "as_source" | "as_destination" | "as_signin_source"> | null): RoleLink[] {
+  const win = { range, start, end };
+  const all: RoleLink[] = [
+    { key: "dst", label: "As destination", count: observed?.as_destination ?? 0, href: fieldSearchHref("network.dst_ip", ip, win) },
+    { key: "src", label: "As source", count: observed?.as_source ?? 0, href: fieldSearchHref("network.src_ip", ip, win) },
+    { key: "auth", label: "As sign-in source", count: observed?.as_signin_source ?? 0, href: fieldSearchHref("auth.source_ip", ip, win) },
+  ];
+  const present = all.filter((r) => r.count > 0).sort((a, b) => b.count - a.count);
+  return present.length ? present : [all[0]];
 }
 
 /** Great-circle path between two points as [lon, lat] samples. Longitudes are unwrapped so the line never jumps across the map. */
@@ -199,19 +208,22 @@ export function arcPoints(a: [number, number], b: [number, number], steps = 48):
 }
 
 /** Fill colour per country for the choropleth: sqrt-scaled so one very busy country does not flatten the rest. */
+/** Country fill with no data. */
+export const LAND = "#F6F7FB";
+
 export function choroplethExpression(rows: CountryRow[], layer: Layer): unknown {
   const max = Math.max(0, ...rows.map((r) => r.value));
-  const ramp = { intelligence: ["#2a2412", "#e3b341"], observed: ["#0f2238", "#58a6ff"], correlated: ["#2c1315", "#f85149"] }[layer];
+  const ramp = { intelligence: ["#FCF4E0", "#E3AE4B"], observed: ["#EFECFD", "#8E83EE"], correlated: ["#FDEDEB", "#E8756B"] }[layer];
   const mix = (t: number): string => {
     const h = (s: string, i: number) => parseInt(s.slice(1 + i * 2, 3 + i * 2), 16);
     const c = [0, 1, 2].map((i) => Math.round(h(ramp[0], i) + (h(ramp[1], i) - h(ramp[0], i)) * t));
     return `rgb(${c[0]},${c[1]},${c[2]})`;
   };
-  if (!max) return "#121a24";
+  if (!max) return LAND;
   const expr: unknown[] = ["match", ["get", "iso"]];
-  for (const r of rows) if (r.value > 0 && r.iso) expr.push(r.iso, mix(0.18 + 0.82 * Math.sqrt(r.value / max)));
-  expr.push("#121a24");
-  return expr.length <= 4 ? "#121a24" : expr;
+  for (const r of rows) if (r.value > 0 && r.iso) expr.push(r.iso, mix(0.16 + 0.84 * Math.pow(r.value / max, 0.7)));
+  expr.push(LAND);
+  return expr.length <= 4 ? LAND : expr;
 }
 
 export function markerRadius(weight: number, maxWeight: number): number {

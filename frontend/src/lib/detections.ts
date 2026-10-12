@@ -17,8 +17,8 @@ export interface Backtest { total: number; hits: Record<string, unknown>[]; run:
 export interface DetectionOverview { rules_by_status: Record<string, number>; open_alerts: number; alerts_by_severity: Record<string, number>; coverage: string[] }
 
 export const STATUS_CLASS: Record<RuleStatus, string> = {
-  DRAFT: "text-muted border border-line", TESTING: "bg-blue-900/50 text-blue-200", ACTIVE: "bg-green-900/40 text-green-300",
-  DISABLED: "bg-orange-900/50 text-orange-300", ARCHIVED: "text-muted border border-line",
+  DRAFT: "badge border-line-strong bg-subtle text-muted", TESTING: "badge border-sev-low/30 bg-sev-low-bg text-sev-low", ACTIVE: "badge border-sev-ok/30 bg-sev-ok-bg text-sev-ok",
+  DISABLED: "badge border-sev-high/30 bg-sev-high-bg text-sev-high", ARCHIVED: "badge border-line-strong bg-subtle text-muted",
 };
 
 /** Next states offered in the UI; the server remains the authority (tests must pass before ACTIVE). */

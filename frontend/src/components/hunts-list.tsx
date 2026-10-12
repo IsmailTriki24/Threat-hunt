@@ -9,6 +9,10 @@ import { fmtTime } from "@/lib/query";
 import { useAuth } from "@/lib/auth";
 import type { MitreMapping } from "@/lib/api-types";
 import { TechniqueChips } from "./mitre-panel";
+import { Loading } from "./ui/skeleton";
+import { useConfirm } from "./ui/confirm";
+import { Crosshair } from "lucide-react";
+import { EmptyState } from "./ui/empty-state";
 
 export const STATUSES: HuntStatus[] = ["DRAFT", "ACTIVE", "COMPLETED", "ARCHIVED"];
 
@@ -44,7 +48,7 @@ export function NewHuntForm({ onCreated }: { onCreated: (id: string) => void }) 
   }
 
   return (
-    <form onSubmit={submit} className="panel p-3 space-y-2 max-w-3xl" aria-label="New hunt">
+    <form onSubmit={submit} className="panel p-4 space-y-2 max-w-3xl" aria-label="New hunt">
       <div className="grid grid-cols-[8rem_1fr] gap-2 items-start">
         <label htmlFor="h-title">Title</label>
         <input id="h-title" className="input" value={title} maxLength={200} onChange={(e) => setTitle(e.target.value)} />
@@ -65,13 +69,14 @@ export function NewHuntForm({ onCreated }: { onCreated: (id: string) => void }) 
         <label htmlFor="h-src">Data sources</label>
         <input id="h-src" className="input" value={sources} onChange={(e) => setSources(e.target.value)} placeholder="sysmon, windows (optional; limits runs to these sources)" />
       </div>
-      {error && <p role="alert" className="text-red-400">{error}</p>}
+      {error && <p role="alert" className="text-red-700">{error}</p>}
       <button className="btn btn-primary" type="submit" disabled={create.isPending}>Create hunt</button>
     </form>
   );
 }
 
 export function HuntsList() {
+  const { confirm, node: confirmNode } = useConfirm();
   const { can } = useAuth();
   const router = useRouter();
   const qc = useQueryClient();
@@ -100,18 +105,18 @@ export function HuntsList() {
       </div>
       {!canWrite && <p className="text-xs text-muted">Read-only: your role does not allow creating or editing hunts.</p>}
       {showNew && canWrite && <NewHuntForm onCreated={(id) => router.push(`/hunts/${id}`)} />}
-      {hunts.isLoading && <p className="text-muted">Loading…</p>}
-      {hunts.error && <p role="alert" className="text-red-400">{hunts.error instanceof ApiError ? hunts.error.friendly : "Failed to load hunts"}</p>}
-      {hunts.data && (rows.length === 0 ? <p className="panel p-3 text-muted">No hunts{filter !== "ALL" ? ` with status ${filter}` : " yet"}.</p> : (
+      {hunts.isLoading && <Loading />}
+      {hunts.error && <p role="alert" className="text-red-700">{hunts.error instanceof ApiError ? hunts.error.friendly : "Failed to load hunts"}</p>}
+      {hunts.data && (rows.length === 0 ? <div className="panel"><EmptyState icon={Crosshair} title={filter !== "ALL" ? `No ${filter.toLowerCase()} hunts` : "No hunts yet"}>{filter !== "ALL" ? "Try another status filter." : "Start a hunt from a hypothesis, or let IOC Hunting open one automatically when you validate a threat."}</EmptyState></div> : (
         <table className="w-full">
           <thead><tr>
-            {["Title", "Status", "Hypothesis", "ATT&CK", "Findings", "Queries", "Updated", ""].map((h) => <th key={h} className="th" scope="col">{h}</th>)}
+            {["Title", "Status", "Hypothesis", "ATT&CK", "Findings", "Queries", "Updated", ""].map((h, i) => <th key={i} className="th" scope="col">{h || <span className="sr-only">Actions</span>}</th>)}
           </tr></thead>
           <tbody>
             {rows.map((h) => (
               <tr key={h.id} className="hover:bg-bg">
                 <td className="td"><Link className="text-accent hover:underline" href={`/hunts/${h.id}`}>{h.title}</Link></td>
-                <td className="td">{h.status}</td>
+                <td className="td"><span className={{ DRAFT: "badge border-line-strong bg-subtle text-muted", ACTIVE: "badge border-sev-low/30 bg-sev-low-bg text-sev-low", COMPLETED: "badge border-sev-ok/30 bg-sev-ok-bg text-sev-ok", ARCHIVED: "badge border-line-strong bg-subtle text-muted" }[h.status]}>{h.status}</span></td>
                 <td className="td max-w-[28rem] truncate text-muted" title={h.hypothesis}>{h.hypothesis.slice(0, 120)}</td>
                 <td className="td"><TechniqueChips mappings={byHunt.get(h.id) ?? []} max={3} /></td>
                 <td className="td tabular-nums">{h.finding_count}</td>
@@ -119,7 +124,7 @@ export function HuntsList() {
                 <td className="td font-mono whitespace-nowrap">{fmtTime(h.updated_at)}</td>
                 <td className="td">
                   {can("hunts:delete") && (
-                    <button className="btn py-0 text-xs" onClick={() => { if (confirm(`Delete hunt “${h.title}”?`)) del.mutate(h.id); }}>Delete</button>
+                    <button className="btn btn-sm" onClick={() => confirm({ title: `Delete hunt “${h.title}”?`, message: "The hunt, its saved queries, findings and notes are permanently removed. Cases created from it are kept.", confirmLabel: "Delete hunt", run: () => del.mutate(h.id) })}>Delete</button>
                   )}
                 </td>
               </tr>
@@ -127,7 +132,8 @@ export function HuntsList() {
           </tbody>
         </table>
       ))}
-      {del.error && <p role="alert" className="text-red-400">{del.error instanceof ApiError ? del.error.friendly : "Delete failed"}</p>}
+      {del.error && <p role="alert" className="text-red-700">{del.error instanceof ApiError ? del.error.friendly : "Delete failed"}</p>}
+      {confirmNode}
     </div>
   );
 }

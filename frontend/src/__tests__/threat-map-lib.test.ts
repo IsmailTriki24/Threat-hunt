@@ -1,5 +1,5 @@
 import {
-  activeChips, ago, arcPoints, choroplethExpression, clearedFilters, customRangeError, defang, defaultFilters, eventsHref, flagEmoji, fmtInt, fmtTs, markerRadius, toParams,
+  activeChips, ago, LAND, arcPoints, choroplethExpression, clearedFilters, customRangeError, defang, defaultFilters, ipRoleLinks, flagEmoji, fmtInt, fmtTs, markerRadius, toParams,
   type CountryRow,
 } from "@/lib/threat-map";
 
@@ -72,16 +72,16 @@ describe("arcs", () => {
 });
 
 describe("choropleth", () => {
-  it("is a flat colour with no data and shades busier countries brighter", () => {
-    expect(choroplethExpression([], "observed")).toBe("#121a24");
-    expect(choroplethExpression([row("DE", 0)], "observed")).toBe("#121a24");
+  it("is a flat colour with no data and shades busier countries stronger", () => {
+    expect(choroplethExpression([], "observed")).toBe(LAND);
+    expect(choroplethExpression([row("DE", 0)], "observed")).toBe(LAND);
     const e = choroplethExpression([row("DE", 100), row("FR", 4), row("XX", 0)], "intelligence") as unknown[];
     expect(e.slice(0, 2)).toEqual(["match", ["get", "iso"]]);
     expect(e).toContain("DE"); expect(e).toContain("FR"); expect(e).not.toContain("XX");
     const colour = (iso: string) => String(e[e.indexOf(iso) + 1]);
     const lum = (c: string) => c.match(/\d+/g)!.map(Number).reduce((a, b) => a + b, 0);
-    expect(lum(colour("DE"))).toBeGreaterThan(lum(colour("FR")));
-    expect(e[e.length - 1]).toBe("#121a24");
+    expect(lum(colour("DE"))).toBeLessThan(lum(colour("FR"))); // busier = more saturated (darker on the light basemap)
+    expect(e[e.length - 1]).toBe(LAND);
   });
 
   it("scales markers between a floor and a ceiling", () => {
@@ -101,14 +101,19 @@ describe("formatting and links", () => {
     expect(flagEmoji("DE")).toBe("🇩🇪");
     expect(flagEmoji("")).toBe(""); expect(flagEmoji("Germany")).toBe("");
   });
-  it("links to the existing events search for every field that can name the address", () => {
-    const u = new URL(eventsHref("8.8.8.8", "7d", "", ""), "http://x");
-    expect(u.pathname).toBe("/events");
-    expect(u.searchParams.get("lang")).toBe("1");
-    expect(u.searchParams.get("q")).toBe("network.src_ip:8.8.8.8 OR network.dst_ip:8.8.8.8 OR auth.source_ip:8.8.8.8");
-    expect(u.searchParams.get("range")).toBe("7d");
-    const c = new URL(eventsHref("8.8.8.8", "custom", "2026-10-01T00:00:00Z", "2026-10-02T00:00:00Z"), "http://x");
-    expect(c.searchParams.get("start")).toBe("2026-10-01T00:00:00.000Z");
+  it("builds one valid single-field events search per role (the query language cannot OR across fields)", () => {
+    const q = (href: string) => new URL(href, "http://x").searchParams;
+    const none = ipRoleLinks("8.8.8.8", "7d", "", "", null);
+    expect(none).toHaveLength(1); // nothing observed: still offer the default so "Investigate" works
+    expect(q(none[0].href).get("q")).toBe("network.dst_ip:8.8.8.8");
+    expect(q(none[0].href).get("lang")).toBe("1"); expect(q(none[0].href).get("range")).toBe("7d");
+    const roles = ipRoleLinks("8.8.8.8", "24h", "", "", { as_destination: 4, as_source: 9, as_signin_source: 0 });
+    expect(roles.map((r) => [r.label, r.count])).toEqual([["As source", 9], ["As destination", 4]]); // busiest first, empty roles omitted
+    expect(roles.map((r) => q(r.href).get("q"))).toEqual(["network.src_ip:8.8.8.8", "network.dst_ip:8.8.8.8"]);
+    for (const r of ipRoleLinks("8.8.8.8", "7d", "", "", { as_destination: 1, as_source: 1, as_signin_source: 1 })) expect(q(r.href).get("q")).not.toMatch(/\bOR\b|\bAND\b/);
+    const c = ipRoleLinks("2606:4700::1111", "custom", "2026-10-01T00:00:00Z", "2026-10-02T00:00:00Z", null)[0];
+    expect(q(c.href).get("start")).toBe("2026-10-01T00:00:00.000Z");
+    expect(q(c.href).get("q")).toBe("network.dst_ip:2606:4700::1111");
   });
   it("formats numbers and times, tolerating nulls and garbage", () => {
     expect(fmtInt(1234567)).toBe("1,234,567"); expect(fmtInt(null)).toBe("—"); expect(fmtInt(undefined)).toBe("—");

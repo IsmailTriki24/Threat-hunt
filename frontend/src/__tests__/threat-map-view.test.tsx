@@ -92,6 +92,7 @@ it("filters are real: they reach the API, show as removable chips, and can be cl
   renderWithQuery(<ThreatMapView />);
   await screen.findByRole("group", { name: "Unique malicious IPs" });
   await userEvent.selectOptions(screen.getByLabelText("Minimum severity"), "high");
+  await userEvent.click(screen.getByRole("button", { name: /More filters/ })); // advanced filters are behind progressive disclosure
   await userEvent.selectOptions(screen.getByLabelText("Region"), "EU");
   await userEvent.type(screen.getByLabelText("Minimum confidence"), "{backspace}70");
   await waitFor(() => expect(urls(m, "/threat-map/data").some((u) => u.includes("severity=high") && u.includes("continent=EU") && u.includes("min_confidence=70"))).toBe(true));
@@ -234,8 +235,10 @@ describe("marker -> investigation panel", () => {
     const inv = await within(panel).findByRole("link", { name: "Investigate this IP" });
     const href = new URL(inv.getAttribute("href")!, "http://x");
     expect(href.pathname).toBe("/events");
-    expect(href.searchParams.get("q")).toContain("network.dst_ip:185.220.101.5");
-    expect(within(panel).getByRole("link", { name: /View related events \(4\)/ })).toBeInTheDocument();
+    expect(href.searchParams.get("q")).toBe("network.dst_ip:185.220.101.5"); // a single valid field search, not an OR the server would reject
+    const roles = within(panel).getByRole("group", { name: "View related events" });
+    expect(within(roles).getByRole("link", { name: "As destination (4)" })).toHaveAttribute("href", expect.stringContaining("network.dst_ip"));
+    expect(within(roles).queryByRole("link", { name: /As source/ })).toBeNull(); // only roles that have events are offered
     expect(within(panel).getByRole("button", { name: /^Copy IOC/ })).toBeInTheDocument();
     expect(within(panel).getByRole("button", { name: /^Copy defanged/ })).toBeInTheDocument();
     expect(within(panel).queryByRole("button", { name: "Add to IOC queue" })).toBeNull(); // it is already an IOC

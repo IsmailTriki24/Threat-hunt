@@ -91,7 +91,7 @@ export function Markdown({ source }: { source: string }) {
         const task = /^\[( |x)\]\s+(.*)$/i.exec(t);
         return (
           <li key={j} className="my-0.5">
-            {task ? <><span className={`mr-1.5 ${task[1].toLowerCase() === "x" ? "text-emerald-400" : "text-muted"}`} aria-label={task[1].toLowerCase() === "x" ? "done" : "not done"}>{task[1].toLowerCase() === "x" ? "✓" : "○"}</span>{inline(task[2], `li${n}-${j}`)}</> : inline(t, `li${n}-${j}`)}
+            {task ? <><span className={`mr-1.5 ${task[1].toLowerCase() === "x" ? "text-emerald-700" : "text-muted"}`} aria-label={task[1].toLowerCase() === "x" ? "done" : "not done"}>{task[1].toLowerCase() === "x" ? "✓" : "○"}</span>{inline(task[2], `li${n}-${j}`)}</> : inline(t, `li${n}-${j}`)}
           </li>
         );
       });

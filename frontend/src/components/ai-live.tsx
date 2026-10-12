@@ -242,7 +242,7 @@ export function PlaybookChecklist({ pb }: { pb: PlaybookProgress }) {
       <ul className="space-y-0.5 text-xs">
         {pb.steps.map((st, i) => (
           <li key={i} className={`flex gap-2 ${st.done ? "text-slate-200" : "text-muted"}`}>
-            <span className={`w-3 shrink-0 text-center ${st.done ? "text-emerald-400" : ""}`} aria-label={st.done ? "done" : "not run"}>{st.done ? "✓" : "○"}</span>
+            <span className={`w-3 shrink-0 text-center ${st.done ? "text-emerald-700" : ""}`} aria-label={st.done ? "done" : "not run"}>{st.done ? "✓" : "○"}</span>
             <span className="min-w-0 flex-1">{st.goal}</span>
             <span className={`shrink-0 text-[10px] ${!st.done && (st.purpose === "refute" || st.purpose === "scope") ? "text-amber-300" : "text-muted"}`}>{st.purpose}</span>
           </li>
@@ -525,7 +525,7 @@ export function Feed({ items, state, animate, hypothesis, focus, scroll = false 
     if (!target) return;
     setOpened((o) => new Set(o).add(target.id));
     setFlash(target.id);
-    const t1 = setTimeout(() => document.getElementById(`step-${focus.ref}`)?.scrollIntoView({ behavior: "smooth", block: "center" }), 60);
+    const t1 = setTimeout(() => document.getElementById(`step-${focus.ref}`)?.scrollIntoView?.({ behavior: "smooth", block: "center" }), 60);
     const t2 = setTimeout(() => setFlash(null), 1800);
     return () => { clearTimeout(t1); clearTimeout(t2); };
   }, [focus, items]);
@@ -556,9 +556,9 @@ function Glyph({ item }: { item: ToolItem }) {
   const s = item.step;
   if (item.running) return <span className="mt-[3px] inline-block h-3 w-3 shrink-0 animate-spin rounded-full border-2 border-violet-300/30 border-t-violet-300" aria-label="running" />;
   if (s?.cached) return <span className="w-3 shrink-0 text-center text-slate-400" title="served from cache">↺</span>;
-  if (s?.status === "error" || s?.error) return <span className="w-3 shrink-0 text-center text-red-400" title="failed">✕</span>;
+  if (s?.status === "error" || s?.error) return <span className="w-3 shrink-0 text-center text-red-700" title="failed">✕</span>;
   if (s?.status === "empty") return <span className="w-3 shrink-0 text-center text-slate-500" title="no matches">∅</span>;
-  return <span className="w-3 shrink-0 text-center text-emerald-400" title="ok">✓</span>;
+  return <span className="w-3 shrink-0 text-center text-emerald-700" title="ok">✓</span>;
 }
 
 /** Every call the agent makes, with the exact query or arguments, as it happens - like a terminal tailing the investigation. */
@@ -576,7 +576,7 @@ export function QueryLog({ items, state }: { items: FeedItem[]; state?: LiveStat
   const cached = calls.filter((c) => c.step?.cached).length;
   const thinking = state && (state.phase === "running" || state.phase === "connecting") && live === 0;
   return (
-    <div className="flex min-h-0 flex-1 flex-col overflow-hidden rounded-md border border-line bg-[#0a0e14]" aria-label="Live queries">
+    <div className="flex min-h-0 flex-1 flex-col overflow-hidden rounded-md border border-line bg-subtle" aria-label="Live queries">
       <div className="flex shrink-0 flex-wrap items-center gap-x-3 gap-y-1 border-b border-line px-3 py-1.5 text-xs">
         <span className="font-semibold text-slate-200">Live queries</span>
         <span className="font-mono text-muted">{calls.length} call{calls.length === 1 ? "" : "s"}</span>
@@ -595,7 +595,7 @@ export function QueryLog({ items, state }: { items: FeedItem[]; state?: LiveStat
           const s = c.step;
           const isOpen = open === c.id;
           return (
-            <div key={c.id} className={`animate-feed-in rounded px-1 ${c.running ? "bg-violet-500/10" : isOpen ? "bg-white/[.03]" : ""}`}>
+            <div key={c.id} className={`animate-feed-in rounded px-1 ${c.running ? "bg-violet-500/10" : isOpen ? "bg-line/40" : ""}`}>
               <button type="button" aria-expanded={isOpen} onClick={() => setOpen(isOpen ? null : c.id)} className="flex w-full items-start gap-2 text-left">
                 <span className="w-7 shrink-0 text-right text-slate-600">{c.ref ?? "··"}</span>
                 <Glyph item={c} />
@@ -701,7 +701,7 @@ export function Overview({ state, elapsed }: { state: LiveState; elapsed: number
 }
 
 const HYP: Record<string, { tone: Tone; label: string }> = {
-  open: { tone: "sky", label: "open" }, supported: { tone: "red", label: "supported" }, refuted: { tone: "green", label: "refuted" }, inconclusive: { tone: "amber", label: "inconclusive" },
+  open: { tone: "sky", label: "open" }, supported: { tone: "violet", label: "supported" }, refuted: { tone: "slate", label: "refuted" }, inconclusive: { tone: "amber", label: "inconclusive" },
 };
 
 /** Hypotheses as they are stated and resolved; selecting one filters the activity to the queries that test it. */
@@ -710,6 +710,7 @@ export function HypothesisList({ state, hypothesis, onHypothesis }: { state: Liv
   if (!p || p.hypotheses.length === 0) return <p className="text-xs text-muted">None yet. The agent must state falsifiable hypotheses and then try to disprove them.</p>;
   return (
     <div className="space-y-1.5">
+      <p className="text-[11px] leading-4 text-muted">Stated by the AI agent, not by you. “Supported” means the events it cites back the statement; it is a lead to verify, not a verdict.</p>
       {p.hypotheses.map((h) => {
         const s = HYP[h.status] ?? HYP.open;
         const n = state.items.filter((i) => itemHyp(i) === h.id).length;

@@ -42,7 +42,7 @@ it("closed cases show a lock banner and disable mutating controls but keep notes
     "GET /api/v1/cases/c1/activity": () => [],
   });
   renderWithQuery(<CaseWorkspace id="c1" />);
-  expect(await screen.findByRole("status")).toHaveTextContent(/closed and locked/);
+  expect(await screen.findByText(/closed and locked/)).toBeInTheDocument();
   expect(screen.getByRole("button", { name: "Edit" })).toBeDisabled();
 
   await userEvent.click(screen.getByRole("tab", { name: /Evidence/ }));

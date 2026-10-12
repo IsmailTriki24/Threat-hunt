@@ -19,9 +19,9 @@ export function ReportsIndex() {
     <div className="space-y-2">
       <p className="text-xs text-muted">Reports are immutable, versioned Markdown snapshots of a case. Open a case’s Reports tab to read or download them.</p>
       <ErrorLine error={cases.error ?? gen.error} fallback="Failed to load reports" />
-      {cases.data && (cases.data.length === 0 ? <p className="panel p-3 text-muted">No cases yet.</p> : (
+      {cases.data && (cases.data.length === 0 ? <p className="panel p-4 text-muted">No cases yet.</p> : (
         <table className="w-full">
-          <thead><tr>{["Case", "Title", "Status", "Latest report", "Generated", ""].map((h) => <th key={h} className="th" scope="col">{h}</th>)}</tr></thead>
+          <thead><tr>{["Case", "Title", "Status", "Latest report", "Generated", ""].map((h, i) => <th key={i} className="th" scope="col">{h || <span className="sr-only">Actions</span>}</th>)}</tr></thead>
           <tbody>
             {cases.data.map((c, i) => {
               const latest = reports[i]?.data?.[0];
@@ -33,8 +33,8 @@ export function ReportsIndex() {
                   <td className="td">{reports[i]?.isLoading ? "…" : latest ? `v${latest.version}` : <span className="text-muted">none</span>}</td>
                   <td className="td font-mono">{latest ? fmtTime(latest.created_at) : ""}</td>
                   <td className="td whitespace-nowrap">
-                    {latest && <Link className="btn py-0 text-xs" href={`/cases/${c.id}`}>Open</Link>}{" "}
-                    <button className="btn py-0 text-xs" disabled={!can("cases:write") || gen.isPending} onClick={() => gen.mutate(c.id)}>Generate</button>
+                    {latest && <Link className="btn btn-sm" href={`/cases/${c.id}`}>Open</Link>}{" "}
+                    <button className="btn btn-sm" disabled={!can("cases:write") || gen.isPending} onClick={() => gen.mutate(c.id)}>Generate</button>
                   </td>
                 </tr>
               );

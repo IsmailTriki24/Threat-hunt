@@ -11,6 +11,7 @@ import { AddToCaseDialog } from "./add-to-case-dialog";
 import { ErrorLine, LevelBadge, StatusBadge } from "./badges";
 import { EventDrawer } from "./event-drawer";
 import { ResultsTable } from "./results-table";
+import { Loading } from "./ui/skeleton";
 
 export function AssetsList() {
   const { can } = useAuth();
@@ -60,7 +61,7 @@ export function AssetsList() {
         </form>
       )}
       <ErrorLine error={assets.error} fallback="Failed to load assets" />
-      {assets.data && (assets.data.length === 0 ? <p className="panel p-3 text-muted">No assets. Use “Discover from telemetry” to populate the inventory.</p> : (
+      {assets.data && (assets.data.length === 0 ? <p className="panel p-4 text-muted">No assets. Use “Discover from telemetry” to populate the inventory.</p> : (
         <table className="w-full">
           <thead><tr>{["Type", "Asset", "Criticality", "Owner", "Events", "First seen", "Last seen"].map((h) => <th key={h} className="th" scope="col">{h}</th>)}</tr></thead>
           <tbody>
@@ -102,7 +103,7 @@ export function AssetView({ id }: { id: string }) {
     onSuccess: () => { setOwner(null); setTags(null); setCrit(null); void qc.invalidateQueries({ queryKey: ["asset", id] }); void qc.invalidateQueries({ queryKey: ["assets"] }); },
   });
 
-  if (asset.isLoading) return <p className="text-muted">Loading…</p>;
+  if (asset.isLoading) return <Loading />;
   if (asset.error || !asset.data) return <ErrorLine error={asset.error} fallback="Asset not found" />;
   const a = asset.data;
   const canWrite = can("assets:write");
@@ -110,10 +111,10 @@ export function AssetView({ id }: { id: string }) {
 
   return (
     <div className="space-y-3">
-      <h1 className="text-base font-semibold flex gap-2 items-center"><span className="text-muted">{a.type}</span>{a.display_name}<LevelBadge level={a.criticality} /></h1>
+      <h1 className="flex flex-wrap items-center gap-2 text-2xl font-semibold tracking-tight"><span className="badge border-line-strong bg-subtle text-ink-2">{a.type}</span>{a.display_name}<LevelBadge level={a.criticality} /></h1>
       <div className="grid md:grid-cols-3 gap-3">
-        <section className="panel p-3 space-y-1" aria-label="Attributes">
-          <h2 className="text-xs text-muted uppercase">Attributes</h2>
+        <section className="panel p-4 space-y-1" aria-label="Attributes">
+          <h2 className="eyebrow">Attributes</h2>
           <label className="block text-xs">Criticality
             <select className="input w-full" disabled={!canWrite} value={crit ?? a.criticality} onChange={(e) => setCrit(e.target.value as Criticality)}>{CRITICALITIES.map((c) => <option key={c}>{c}</option>)}</select>
           </label>
@@ -131,8 +132,8 @@ export function AssetView({ id }: { id: string }) {
             <dt className="text-muted">Last seen</dt><dd className="font-mono">{a.last_seen ? fmtTime(a.last_seen) : "—"}</dd>
           </dl>
         </section>
-        <section className="panel p-3" aria-label="Related entities">
-          <h2 className="text-xs text-muted uppercase mb-1">Related (derived from telemetry, 7d)</h2>
+        <section className="panel p-4" aria-label="Related entities">
+          <h2 className="eyebrow mb-1.5">Related (derived from telemetry, 7d)</h2>
           <ErrorLine error={related.error} fallback="Failed to load relationships" />
           {related.data && Object.entries(related.data).map(([group, items]) => (
             <div key={group} className="mb-1">
@@ -140,14 +141,14 @@ export function AssetView({ id }: { id: string }) {
               {items.length === 0 ? <p className="text-xs text-muted">none</p> : (
                 <ul className="text-xs">{items.map((r) => {
                   const href = relatedPivotHref(group, r.key);
-                  return <li key={String(r.key)} className="flex justify-between">{href ? <Link className="hover:text-accent font-mono" href={href}>{String(r.key)}</Link> : <span>{String(r.key)}</span>}<span className="text-muted tabular-nums">{r.count}</span></li>;
+                  return <li key={String(r.key)} className="flex justify-between">{href ? <Link className="inline-block py-1 font-mono hover:text-accent" href={href}>{String(r.key)}</Link> : <span>{String(r.key)}</span>}<span className="text-muted tabular-nums">{r.count}</span></li>;
                 })}</ul>
               )}
             </div>
           ))}
         </section>
-        <section className="panel p-3" aria-label="Linked cases">
-          <h2 className="text-xs text-muted uppercase mb-1">Cases</h2>
+        <section className="panel p-4" aria-label="Linked cases">
+          <h2 className="eyebrow mb-1.5">Cases</h2>
           {cases.data?.length === 0 && <p className="text-xs text-muted">Not linked to any case.</p>}
           <ul>{cases.data?.map((c) => (
             <li key={c.id} className="flex gap-2 text-xs"><Link className="text-accent hover:underline font-mono" href={`/cases/${c.id}`}>CASE-{String(c.number).padStart(4, "0")}</Link><span className="truncate">{c.title}</span><span className="ml-auto"><StatusBadge status={c.status} /></span></li>
@@ -155,9 +156,9 @@ export function AssetView({ id }: { id: string }) {
         </section>
       </div>
       <section aria-label="Recent events">
-        <h2 className="text-xs text-muted uppercase mb-1">Recent events {events.data ? `(${events.data.total.toLocaleString()} in 7d)` : ""}</h2>
+        <h2 className="eyebrow mb-1.5">Recent events {events.data ? `(${events.data.total.toLocaleString()} in 7d)` : ""}</h2>
         <ErrorLine error={events.error} fallback="Failed to load events" />
-        {events.data && (events.data.hits.length === 0 ? <p className="panel p-3 text-muted">No telemetry for this asset in the last 7 days.</p> : (
+        {events.data && (events.data.hits.length === 0 ? <p className="panel p-4 text-muted">No telemetry for this asset in the last 7 days.</p> : (
           <ResultsTable hits={events.data.hits} dense selected={open} onOpen={setOpen} sort={null} onSort={() => undefined} />
         ))}
       </section>

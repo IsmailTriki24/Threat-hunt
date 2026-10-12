@@ -1,9 +1,10 @@
+import { PageHeader } from "@/components/ui/page-header";
 import { DataSourcesView } from "@/components/data-sources-view";
 
 export default function Page() {
   return (
-    <section className="space-y-2">
-      <h1 className="text-base font-semibold">Data Sources</h1>
+    <section>
+      <PageHeader title="Data Sources" description="Connectors that bring telemetry in. Credentials are write-only and stored encrypted." />
       <DataSourcesView />
     </section>
   );

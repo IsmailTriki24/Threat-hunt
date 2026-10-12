@@ -1,4 +1,5 @@
 "use client";
+import { CircleAlert, ShieldCheck } from "lucide-react";
 import { useState, type FormEvent } from "react";
 import { useRouter } from "next/navigation";
 import { ApiError } from "@/lib/api";
@@ -24,16 +25,19 @@ export function LoginForm() {
   }
 
   return (
-    <form onSubmit={submit} className="panel w-80 p-4 space-y-3" aria-label="Sign in">
-      <h1 className="text-base font-semibold">Threat Hunting Platform</h1>
-      <label className="block text-xs text-muted">Email
-        <input className="input w-full mt-1" type="email" autoComplete="username" required value={email} onChange={(e) => setEmail(e.target.value)} />
+    <form onSubmit={submit} className="panel w-full max-w-sm space-y-4 p-6 shadow-card" aria-label="Sign in">
+      <div className="flex items-center gap-3">
+        <span className="grid h-10 w-10 place-items-center rounded-xl bg-accent-brand text-white shadow-sm"><ShieldCheck aria-hidden className="h-5 w-5" /></span>
+        <div><h1 className="text-lg font-semibold leading-tight">Threat Hunting Platform</h1><p className="text-xs text-muted">Sign in to your investigation workspace</p></div>
+      </div>
+      <label className="block text-sm font-medium text-ink-2">Email
+        <input className="input mt-1 w-full py-2" type="email" autoComplete="username" required autoFocus value={email} onChange={(e) => setEmail(e.target.value)} />
       </label>
-      <label className="block text-xs text-muted">Password
-        <input className="input w-full mt-1" type="password" autoComplete="current-password" required value={password} onChange={(e) => setPassword(e.target.value)} />
+      <label className="block text-sm font-medium text-ink-2">Password
+        <input className="input mt-1 w-full py-2" type="password" autoComplete="current-password" required value={password} onChange={(e) => setPassword(e.target.value)} />
       </label>
-      {error && <p role="alert" className="text-xs text-red-400">{error}</p>}
-      <button className="btn btn-primary w-full" disabled={busy}>{busy ? "Signing in…" : "Sign in"}</button>
+      {error && <p role="alert" className="flex items-start gap-1.5 rounded-md border border-sev-critical/30 bg-sev-critical-bg px-3 py-2 text-sm text-sev-critical"><CircleAlert aria-hidden className="mt-0.5 h-4 w-4 shrink-0" />{error}</p>}
+      <button className="btn btn-primary w-full py-2" disabled={busy}>{busy ? "Signing in…" : "Sign in"}</button>
     </form>
   );
 }

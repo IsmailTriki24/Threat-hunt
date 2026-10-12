@@ -314,7 +314,7 @@ export function HuntReportView({ data: d, markdown, caseNumber }: { data: HuntRe
                     <summary className="cursor-pointer text-muted hover:text-slate-200">Step checklist</summary>
                     <ul className="mt-2 space-y-1">{p.steps.map((st, i) => (
                       <li key={i} className={`flex gap-2 ${st.done ? "text-slate-200" : "text-muted"}`}>
-                        <span className={st.done ? "text-emerald-400" : ""} aria-label={st.done ? "done" : "not run"}>{st.done ? "✓" : "○"}</span>
+                        <span className={st.done ? "text-emerald-700" : ""} aria-label={st.done ? "done" : "not run"}>{st.done ? "✓" : "○"}</span>
                         <span className="min-w-0 flex-1">{st.goal}</span><span className="shrink-0 text-[10px] text-muted">{st.purpose}</span>
                       </li>
                     ))}</ul>

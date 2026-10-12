@@ -24,7 +24,7 @@ export function TimelineList({ timeline, onOpen }: { timeline: Timeline; onOpen:
     refs.current.get(target.id)?.scrollIntoView?.({ block: "center", behavior: "smooth" });
   }
 
-  if (!timeline.entries.length) return <p className="panel p-3 text-muted">No events in this scope.</p>;
+  if (!timeline.entries.length) return <p className="panel p-4 text-muted">No events in this scope.</p>;
   return (
     <div>
       <p className="text-xs text-muted mb-1">
@@ -97,7 +97,7 @@ export function TimelinePanel({ source, onOpen }: { source: TimelineSource | nul
     staleTime: Infinity,
     refetchOnWindowFocus: false,
   });
-  if (!source) return <p className="panel p-3 text-muted">Build a timeline from the current query, or open an event and choose “Timeline around this event”.</p>;
+  if (!source) return <p className="panel p-4 text-muted">Build a timeline from the current query, or open an event and choose “Timeline around this event”.</p>;
   return (
     <div className="space-y-2">
       <div className="flex items-center gap-3 text-xs">
@@ -107,7 +107,7 @@ export function TimelinePanel({ source, onOpen }: { source: TimelineSource | nul
         </label>
       </div>
       {q.isLoading && <p className="text-muted">Building timeline…</p>}
-      {q.error && <p role="alert" className="panel p-2 text-red-400">{q.error instanceof ApiError ? q.error.friendly : "Timeline failed"}</p>}
+      {q.error && <p role="alert" className="panel p-2 text-red-700">{q.error instanceof ApiError ? q.error.friendly : "Timeline failed"}</p>}
       {q.data && <TimelineList timeline={q.data} onOpen={onOpen} />}
     </div>
   );

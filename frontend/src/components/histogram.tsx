@@ -31,14 +31,14 @@ export function Histogram({ buckets, rangeEnd, onSelect }: Props) {
           <g key={String(b.key)} onMouseDown={() => setDrag({ from: i, to: i })}
             onMouseEnter={() => drag && setDrag({ ...drag, to: i })} onMouseUp={() => finish(i)} className="cursor-crosshair">
             <rect x={i * bw} y={0} width={bw} height={H} fill="transparent" />
-            <rect x={i * bw + 0.5} y={H - h} width={Math.max(bw - 1, 1)} height={h} fill={sel ? "#d29922" : "#58a6ff"}>
+            <rect x={i * bw + 0.5} y={H - h} width={Math.max(bw - 1, 1)} height={h} fill={sel ? "#B93808" : "#7568E9"}>
               <title>{`${String(b.key)} — ${b.count}`}</title>
             </rect>
           </g>
         );
       })}
-      <text x={0} y={H + 10} fontSize="9" fill="#8b949e">{new Date(starts[0]).toISOString().slice(0, 16).replace("T", " ")}</text>
-      <text x={W} y={H + 10} fontSize="9" fill="#8b949e" textAnchor="end">{rangeEnd.slice(0, 16).replace("T", " ")}</text>
+      <text x={0} y={H + 10} fontSize="9" fill="#5D647A">{new Date(starts[0]).toISOString().slice(0, 16).replace("T", " ")}</text>
+      <text x={W} y={H + 10} fontSize="9" fill="#5D647A" textAnchor="end">{rangeEnd.slice(0, 16).replace("T", " ")}</text>
     </svg>
   );
 }

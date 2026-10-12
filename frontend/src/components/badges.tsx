@@ -1,49 +1,48 @@
-import type { ReactNode } from "react";
+import { Ban, CircleCheck, CircleDot, Lock, Minus, Search, ShieldHalf, type LucideIcon } from "lucide-react";
+import { Check, Copy } from "lucide-react";
+import { useEffect, useRef, useState } from "react";
 import { ApiError } from "@/lib/api";
+import { SeverityBadge } from "./ui/severity";
+export { Modal } from "./ui/overlay";
 
-const SEV: Record<string, string> = {
-  CRITICAL: "bg-red-900/70 text-red-200", HIGH: "bg-red-900/50 text-red-300", MEDIUM: "bg-orange-900/50 text-orange-300",
-  LOW: "bg-yellow-900/40 text-yellow-300", INFO: "text-muted border border-line",
-};
-const STATUS: Record<string, string> = {
-  OPEN: "text-accent border border-accent", INVESTIGATING: "text-yellow-300 border border-yellow-700",
-  CONTAINED: "text-orange-300 border border-orange-700", RESOLVED: "text-green-400 border border-green-700",
-  FALSE_POSITIVE: "text-muted border border-line", CLOSED: "text-muted border border-line",
+const STATUS: Record<string, { cls: string; icon: LucideIcon }> = {
+  OPEN: { cls: "border-accent/40 bg-accent-soft text-accent", icon: CircleDot },
+  INVESTIGATING: { cls: "border-sev-medium/30 bg-sev-medium-bg text-sev-medium", icon: Search },
+  CONTAINED: { cls: "border-sev-high/30 bg-sev-high-bg text-sev-high", icon: ShieldHalf },
+  RESOLVED: { cls: "border-sev-ok/30 bg-sev-ok-bg text-sev-ok", icon: CircleCheck },
+  FALSE_POSITIVE: { cls: "border-line-strong bg-subtle text-muted", icon: Ban },
+  CLOSED: { cls: "border-line-strong bg-subtle text-muted", icon: Lock },
 };
 
+/** Case/alert severity (CRITICAL..INFO). Icon + label + colour. */
 export function LevelBadge({ level }: { level: string }) {
-  return <span className={`px-1.5 rounded-sm text-xs ${SEV[level] ?? "text-muted"}`}>{level}</span>;
+  return <SeverityBadge level={level} label={level} />;
 }
 export function StatusBadge({ status }: { status: string }) {
-  return <span className={`px-1.5 rounded-sm text-xs whitespace-nowrap ${STATUS[status] ?? "text-muted border border-line"}`}>{status.replace("_", " ")}</span>;
+  const { cls, icon: Icon } = STATUS[status] ?? { cls: "border-line-strong bg-subtle text-muted", icon: Minus };
+  return <span className={`badge ${cls}`}><Icon aria-hidden className="h-3 w-3" strokeWidth={2.4} />{status.replace("_", " ")}</span>;
 }
 export function HealthBadge({ status }: { status: string }) {
-  const cls = status === "ok" ? "text-green-400" : status === "down" ? "text-red-400" : status === "degraded" ? "text-yellow-400" : "text-muted";
-  return <span className={cls}>● {status}</span>;
+  const level = status === "ok" ? "ok" : status === "down" ? "critical" : status === "degraded" ? "medium" : "info";
+  return <SeverityBadge level={level} label={status} />;
 }
 
 export const errText = (e: unknown, fallback: string): string => (e instanceof ApiError ? e.friendly : fallback);
 
 export function ErrorLine({ error, fallback }: { error: unknown; fallback: string }) {
   if (!error) return null;
-  return <p role="alert" className="text-red-400 text-xs">{errText(error, fallback)}</p>;
+  return <p role="alert" className="text-xs text-sev-critical">{errText(error, fallback)}</p>;
 }
 
-/** Minimal modal. Content is rendered by the caller; closing is the caller's state change. */
-export function Modal({ title, onClose, children, wide }: { title: string; onClose: () => void; children: ReactNode; wide?: boolean }) {
-  return (
-    <div className="fixed inset-0 z-20 bg-black/60 flex items-start justify-center pt-24" role="presentation">
-      <div role="dialog" aria-modal="true" aria-label={title} className={`panel p-3 ${wide ? "w-[44rem]" : "w-[30rem]"} max-w-full space-y-2`}>
-        <div className="flex items-center">
-          <h2 className="font-semibold">{title}</h2>
-          <button className="btn ml-auto py-0" onClick={onClose} aria-label="Close dialog">Close</button>
-        </div>
-        {children}
-      </div>
-    </div>
-  );
-}
-
+/** Button that copies text. Shows a brief confirmation and announces it. Accessible name keeps the existing "<label> <text>" form. */
 export function CopyButton({ text, label = "Copy" }: { text: string; label?: string }) {
-  return <button className="btn py-0 text-xs" onClick={() => void navigator.clipboard?.writeText(text)} aria-label={`${label} ${text.slice(0, 24)}`}>{label}</button>;
+  const [done, setDone] = useState(false);
+  const t = useRef<number | undefined>(undefined);
+  useEffect(() => () => window.clearTimeout(t.current), []);
+  return (
+    <button className="btn btn-sm" aria-label={`${label} ${text.slice(0, 24)}`}
+      onClick={() => { void navigator.clipboard?.writeText(text); setDone(true); window.clearTimeout(t.current); t.current = window.setTimeout(() => setDone(false), 1400); }}>
+      {done ? <Check aria-hidden className="h-3 w-3 text-sev-ok" /> : <Copy aria-hidden className="h-3 w-3" />}{done ? "Copied" : label}
+    </button>
+  );
 }

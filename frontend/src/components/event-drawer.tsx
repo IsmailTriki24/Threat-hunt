@@ -1,6 +1,8 @@
 "use client";
 import { useQuery } from "@tanstack/react-query";
-import { useState } from "react";
+import { Clock, X } from "lucide-react";
+import { useEffect, useState } from "react";
+import { CopyValue } from "./ui/copy-value";
 import { api, ApiError } from "@/lib/api";
 import type { EventDoc, Filter, TimelineScope } from "@/lib/api-types";
 import { useOptionalAuth } from "@/lib/auth";
@@ -10,6 +12,8 @@ import { IntelOpenButton } from "./intel-action";
 import { SeverityBadge } from "./results-table";
 
 type Row = [string, unknown];
+/** Indicator-like fields get a one-click copy. */
+const COPYABLE = new Set(["sha256", "md5", "ip", "source ip", "dst domain", "question", "hostname"]);
 const rows = (pairs: Row[]): Row[] => pairs.filter(([, v]) => v !== undefined && v !== null && v !== "" && !(Array.isArray(v) && !v.length));
 
 function sections(e: EventDoc): Array<[string, Row[]]> {
@@ -47,31 +51,35 @@ export function EventDrawer({ id, onClose, onPivot, onPivotQuery, onTimeline, on
   const q = snapshot ? { isLoading: false, error: null, data: { event: snapshot, pivots: [] } } : live;
   const [showRaw, setShowRaw] = useState(false);
   const canIntel = useOptionalAuth()?.can("intel:write") ?? false;
+  useEffect(() => { const k = (e: KeyboardEvent) => { if (e.key === "Escape") onClose(); }; document.addEventListener("keydown", k); return () => document.removeEventListener("keydown", k); }, [onClose]);
 
   return (
-    <aside className="panel fixed right-0 top-9 bottom-0 w-[34rem] max-w-full overflow-y-auto p-3 z-10 shadow-xl" aria-label="Event detail">
-      <div className="flex items-center mb-2">
-        <h2 className="font-semibold">Event detail</h2>
-        {onAddToCase && <button className="btn ml-auto" onClick={() => onAddToCase(id)}>Add to case…</button>}
-        <button className={`btn ${onAddToCase ? "ml-1" : "ml-auto"}`} onClick={onClose} aria-label="Close detail">Close</button>
+    <aside className="fixed bottom-0 right-0 top-[var(--header-h)] z-30 flex w-[36rem] max-w-full flex-col border-l border-line bg-panel shadow-drawer animate-slide-in" aria-label="Event detail">
+      <div className="flex items-center gap-2 border-b border-line px-4 py-3">
+        <h2 className="text-base font-semibold">Event detail</h2>
+        <div className="ml-auto flex items-center gap-1.5">
+          {onAddToCase && <button className="btn btn-sm" onClick={() => onAddToCase(id)}>Add to case…</button>}
+          <button className="btn btn-ghost px-1.5" onClick={onClose} aria-label="Close detail"><X aria-hidden className="h-4 w-4" /></button>
+        </div>
       </div>
-      {q.isLoading && <p className="text-muted">Loading…</p>}
-      {q.error && <p role="alert" className="text-red-400">{q.error instanceof ApiError ? q.error.friendly : "Failed to load event"}</p>}
+      <div className="min-h-0 flex-1 space-y-4 overflow-y-auto px-4 py-3">
+      {q.isLoading && <p className="text-muted" role="status">Loading…</p>}
+      {q.error && <p role="alert" className="text-sm text-sev-critical">{q.error instanceof ApiError ? q.error.friendly : "Failed to load event"}</p>}
       {q.data && (
-        <div className="space-y-3">
-          <div className="flex items-center gap-2">Severity <SeverityBadge value={q.data.event.severity} /></div>
+        <div className="space-y-4">
+          <div className="flex items-center gap-2 text-sm text-muted"><Clock aria-hidden className="h-3.5 w-3.5" />{fmtTime(q.data.event.timestamp)}<span className="mx-1">·</span>Severity <SeverityBadge value={q.data.event.severity} /></div>
           {q.data.pivots.length > 0 && (
             <section>
-              <h3 className="text-xs text-muted uppercase mb-1">Pivot</h3>
+              <h3 className="eyebrow mb-1.5">Pivot</h3>
               <div className="flex flex-wrap gap-1">
                 {q.data.pivots.map((p) => (
-                  <span key={`${p.field}-${p.value}`} className="inline-flex">
-                    <button className="btn text-xs" title={`Filter ${p.field} = ${p.value}`}
+                  <span key={`${p.field}-${p.value}`} className="inline-flex gap-0.5">
+                    <button className="btn btn-sm" title={`Filter ${p.field} = ${p.value}`}
                       onClick={() => onPivot({ field: p.field, op: "eq", value: String(p.value) })}>
                       {p.label}: <span className="font-mono">{String(p.value).slice(0, 40)}</span>
                     </button>
                     {onPivotQuery && (
-                      <button className="btn text-xs" aria-label={`Pivot into hunt query: ${p.field}`} title={`Append ${p.field}:${p.value} to the hunt query`}
+                      <button className="btn btn-sm" aria-label={`Pivot into hunt query: ${p.field}`} title={`Append ${p.field}:${p.value} to the hunt query`}
                         onClick={() => onPivotQuery(p.field, p.value)}>+query</button>
                     )}
                   </span>
@@ -81,7 +89,7 @@ export function EventDrawer({ id, onClose, onPivot, onPivotQuery, onTimeline, on
           )}
           {onTimeline && (
             <section>
-              <h3 className="text-xs text-muted uppercase mb-1">Timeline</h3>
+              <h3 className="eyebrow mb-1.5">Timeline</h3>
               <div className="flex items-center gap-1 text-xs">
                 <select aria-label="Timeline scope" className="input" value={scope} onChange={(e) => setScope(e.target.value as TimelineScope)}>
                   <option value="host">Host</option><option value="user">User</option><option value="host_user">Host + user</option>
@@ -95,7 +103,7 @@ export function EventDrawer({ id, onClose, onPivot, onPivotQuery, onTimeline, on
           )}
           {canIntel && eventIndicators(q.data.event).length > 0 && (
             <section>
-              <h3 className="text-xs text-muted uppercase mb-1">Threat intelligence</h3>
+              <h3 className="eyebrow mb-1.5">Threat intelligence</h3>
               <ul className="text-xs space-y-0.5">
                 {eventIndicators(q.data.event).map((i) => (
                   <li key={i.value} className="flex items-center gap-2"><span className="text-muted w-24">{i.label}</span><span className="font-mono break-all flex-1">{i.value}</span><IntelOpenButton type={i.type} value={i.value} /></li>
@@ -105,18 +113,19 @@ export function EventDrawer({ id, onClose, onPivot, onPivotQuery, onTimeline, on
           )}
           {sections(q.data.event).filter(([, r]) => r.length).map(([title, r]) => (
             <section key={title}>
-              <h3 className="text-xs text-muted uppercase mb-0.5">{title}</h3>
-              <dl className="grid grid-cols-[8rem_1fr] gap-x-2">
-                {r.map(([k, v]) => (<div key={k} className="contents"><dt className="text-muted">{k}</dt><dd className="font-mono break-all">{String(v)}</dd></div>))}
+              <h3 className="eyebrow mb-1">{title}</h3>
+              <dl className="grid grid-cols-[8rem_1fr] gap-x-3 gap-y-1 text-sm">
+                {r.map(([k, v]) => (<div key={k} className="contents"><dt className="text-muted">{k}</dt><dd className="break-all font-mono text-[13px]">{COPYABLE.has(k) ? <CopyValue value={String(v)} max={64} /> : String(v)}</dd></div>))}
               </dl>
             </section>
           ))}
           <section>
             <button className="btn" onClick={() => setShowRaw((s) => !s)} aria-expanded={showRaw}>{showRaw ? "Hide" : "Show"} raw event</button>
-            {showRaw && <pre className="mt-2 bg-bg border border-line p-2 text-xs overflow-x-auto">{JSON.stringify(q.data.event.raw ?? q.data.event, null, 2)}</pre>}
+            {showRaw && <pre className="mt-2 overflow-x-auto rounded-md border border-line bg-subtle p-3 text-xs">{JSON.stringify(q.data.event.raw ?? q.data.event, null, 2)}</pre>}
           </section>
         </div>
       )}
+      </div>
     </aside>
   );
 }

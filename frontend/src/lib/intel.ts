@@ -8,8 +8,8 @@ import { defang as baseDefang, buildConfig, fieldsFromSchema, type FormField } f
 export const defangEntity = (type: EntityType | string, value: string): string => baseDefang(type, value);
 
 export const VERDICT_CLASS: Record<Verdict, string> = {
-  malicious: "bg-red-900/60 text-red-200", suspicious: "bg-orange-900/50 text-orange-300",
-  benign: "bg-green-900/40 text-green-300", unknown: "text-muted border border-line",
+  malicious: "badge border-sev-critical/30 bg-sev-critical-bg text-sev-critical", suspicious: "badge border-sev-high/30 bg-sev-high-bg text-sev-high",
+  benign: "badge border-sev-ok/30 bg-sev-ok-bg text-sev-ok", unknown: "badge border-line-strong bg-subtle text-muted",
 };
 export const VERDICT_NOTE: Record<Verdict, string> = {
   malicious: "Score ≥ 70", suspicious: "Score 35–69", benign: "A trusted benign signal and no threat signal",
@@ -87,8 +87,8 @@ export const CONF_RANK: Record<Confidence, number> = { LOW: 1, MEDIUM: 2, HIGH: 
 
 /** Restrained palette: unmapped cells stay neutral; colour encodes the strongest confidence, opacity-free. */
 export function cellClass(t: Pick<MatrixTechnique, "mapping_count" | "top_confidence">): string {
-  if (!t.mapping_count || !t.top_confidence) return "border-line text-muted";
-  return { HIGH: "border-red-700 bg-red-900/40 text-red-100", MEDIUM: "border-orange-700 bg-orange-900/30 text-orange-100", LOW: "border-yellow-700 bg-yellow-900/20 text-yellow-100" }[t.top_confidence];
+  if (!t.mapping_count || !t.top_confidence) return "border-line bg-panel text-muted hover:border-line-strong";
+  return { HIGH: "border-sev-critical/40 bg-sev-critical-bg text-sev-critical font-medium", MEDIUM: "border-sev-high/40 bg-sev-high-bg text-sev-high font-medium", LOW: "border-sev-medium/40 bg-sev-medium-bg text-sev-medium font-medium" }[t.top_confidence];
 }
 
 export function filterMatrix(cols: MatrixColumn[], query: string, mappedOnly: boolean): MatrixColumn[] {
@@ -115,7 +115,7 @@ export const matrixTotals = (cols: MatrixColumn[]): { techniques: number; mapped
 export const summaryLine = (s: Pick<TechniqueSummary, "evidence_events" | "hosts" | "users" | "risk">): string =>
   `Evidence: ${s.evidence_events} events · Hosts: ${s.hosts.count} · Users: ${s.users.count} · Risk: ${s.risk}`;
 
-export const RISK_CLASS = { HIGH: "text-red-300", MEDIUM: "text-orange-300", LOW: "text-yellow-300" } as const;
+export const RISK_CLASS = { HIGH: "text-sev-critical", MEDIUM: "text-sev-high", LOW: "text-sev-medium" } as const;
 
 export const mapHref = (objectType: string, id: string): string | null =>
   objectType === "case" ? `/cases/${id}` : objectType === "hunt" ? `/hunts/${id}` : null;

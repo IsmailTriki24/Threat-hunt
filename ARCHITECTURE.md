@@ -76,5 +76,8 @@ The model never receives credentials or shell access. It can only call registere
 apply unchanged), are rate- and size-limited, and write audit records. Model-generated queries are parsed into `EventQuery`
 — the same validator as human queries — before execution. Event content, IOCs and model output are treated as untrusted data.
 
+## 7b. Frontend
+Next.js (App Router) + Tailwind + TanStack Query. Design tokens in `globals.css`; shared kit in `components/ui/`; navigation model in `lib/nav.ts`; threat map on MapLibre with an offline basemap. See `docs/design-system.md`.
+
 ## 8. Decisions
 See `docs/adr/`.

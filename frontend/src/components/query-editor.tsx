@@ -46,7 +46,7 @@ export function QueryEditor({ value, onChange, onRun, readOnly = false, delayMs 
       <div className="text-xs min-h-4" aria-live="polite">
         {value.trim() === "" ? <span className="text-muted">{HINT}</span>
           : pending || parsed.isFetching ? <span className="text-muted">Validating…</span>
-          : err ? <span role="alert" className="text-red-400">{err}</span>
+          : err ? <span role="alert" className="text-red-700">{err}</span>
           : parsed.data ? (
             <span className="flex flex-wrap gap-1 items-center" aria-label="Parsed query">
               <span className="text-muted">Parsed:</span>

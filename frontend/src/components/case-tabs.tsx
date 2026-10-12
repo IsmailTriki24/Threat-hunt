@@ -9,7 +9,7 @@ import { IOC_TYPES, type CaseOut, type IocType } from "@/lib/api-types";
 import { defang, describeActivity, mergeJournal } from "@/lib/cases";
 import { downloadBlob } from "@/lib/hunt-query";
 import { fmtTime } from "@/lib/query";
-import { ErrorLine, CopyButton, LevelBadge } from "./badges";
+import { ErrorLine, CopyButton, LevelBadge, StatusBadge } from "./badges";
 import { EventDrawer } from "./event-drawer";
 import { HuntReportView } from "./hunt-report-view";
 import type { HuntReportData } from "@/lib/hunt-report";
@@ -18,6 +18,7 @@ import { IntelOpenButton } from "./intel-action";
 import { ScoreBar, VerdictBadge } from "./intel-bits";
 import { CaseTechniqueChips } from "./mitre-panel";
 import { TimelineList } from "./timeline-view";
+import { Loading } from "./ui/skeleton";
 
 const invalidate = (qc: ReturnType<typeof useQueryClient>, id: string, ...keys: string[]) => {
   for (const k of ["case", "cases", ...keys]) void qc.invalidateQueries({ queryKey: k === "cases" ? ["cases"] : [k, id] });
@@ -26,18 +27,18 @@ const invalidate = (qc: ReturnType<typeof useQueryClient>, id: string, ...keys: 
 
 export function OverviewTab({ c }: { c: CaseOut }) {
   return (
-    <div className="grid md:grid-cols-3 gap-3">
-      <section className="panel p-3 md:col-span-2 space-y-2">
-        <h2 className="text-xs text-muted uppercase">Description</h2>
-        <p className="whitespace-pre-wrap">{c.description || <span className="text-muted">No description.</span>}</p>
-        {c.resolution && (<><h2 className="text-xs text-muted uppercase">Resolution</h2><p className="whitespace-pre-wrap">{c.resolution}</p></>)}
+    <div className="grid gap-4 lg:grid-cols-3">
+      <section className="panel space-y-3 p-4 lg:col-span-2">
+        <h2 className="eyebrow">Description</h2>
+        {c.description ? <Markdown source={c.description} /> : <p className="text-muted">No description.</p>}
+        {c.resolution && (<><h2 className="eyebrow pt-2">Resolution</h2><Markdown source={c.resolution} /></>)}
         {c.hunt_id && <p className="text-xs"><Link className="text-accent hover:underline" href={`/hunts/${c.hunt_id}`}>Originating hunt →</Link></p>}
         <CaseTechniqueChips caseId={c.id} />
       </section>
-      <section className="panel p-3">
-        <h2 className="text-xs text-muted uppercase mb-1">Summary</h2>
-        <dl className="grid grid-cols-[7rem_1fr]">
-          <dt className="text-muted">Status</dt><dd>{c.status}</dd>
+      <section className="panel h-fit p-4">
+        <h2 className="eyebrow mb-2">Summary</h2>
+        <dl className="grid grid-cols-[7rem_1fr] gap-y-1.5 text-sm">
+          <dt className="text-muted">Status</dt><dd><StatusBadge status={c.status} /></dd>
           <dt className="text-muted">Severity</dt><dd><LevelBadge level={c.severity} /></dd>
           <dt className="text-muted">Priority</dt><dd>{c.priority}</dd>
           <dt className="text-muted">Evidence</dt><dd className="tabular-nums">{c.evidence_count}</dd>
@@ -118,8 +119,8 @@ export function EvidenceTab({ caseId, mutable }: { caseId: string; mutable: bool
         <button className="btn" type="submit" disabled={!mutable || !ids.trim() || add.isPending}>Add evidence</button>
       </form>
       <ErrorLine error={add.error ?? remove.error} fallback="Evidence change failed" />
-      {ev.isLoading && <p className="text-muted">Loading…</p>}
-      {ev.data && (ev.data.length === 0 ? <p className="panel p-3 text-muted">No evidence attached yet.</p> : (
+      {ev.isLoading && <Loading />}
+      {ev.data && (ev.data.length === 0 ? <p className="panel p-4 text-muted">No evidence attached yet.</p> : (
         <table className="w-full">
           <thead><tr>{["Time (UTC)", "Event", "Host", "Comment", ""].map((h) => <th key={h} className="th" scope="col">{h}</th>)}</tr></thead>
           <tbody>
@@ -129,7 +130,7 @@ export function EvidenceTab({ caseId, mutable }: { caseId: string; mutable: bool
                 <td className="td"><button className="hover:text-accent text-left" onClick={() => setOpen(e.event_id)}>{e.summary}</button></td>
                 <td className="td">{e.snapshot.host?.hostname ?? ""}</td>
                 <td className="td text-muted">{e.comment}</td>
-                <td className="td"><button className="btn py-0 text-xs" disabled={!mutable} aria-label={`Remove evidence ${e.event_id.slice(0, 8)}`} onClick={() => remove.mutate(e.id)}>Remove</button></td>
+                <td className="td"><button className="btn btn-sm" disabled={!mutable} aria-label={`Remove evidence ${e.event_id.slice(0, 8)}`} onClick={() => remove.mutate(e.id)}>Remove</button></td>
               </tr>
             ))}
           </tbody>
@@ -174,7 +175,7 @@ export function IocsTab({ caseId, mutable }: { caseId: string; mutable: boolean 
       </div>
       <ErrorLine error={add.error ?? remove.error ?? extract.error ?? enrich.error} fallback="IOC change failed" />
       {enrich.data && <p role="status" className="text-xs panel p-1.5">Enrichment finished: {enrichSummary(enrich.data)}.</p>}
-      {iocs.data && (iocs.data.length === 0 ? <p className="panel p-3 text-muted">No indicators yet. Attach evidence or add one manually.</p> : (
+      {iocs.data && (iocs.data.length === 0 ? <p className="panel p-4 text-muted">No indicators yet. Attach evidence or add one manually.</p> : (
         <table className="w-full">
           <thead><tr>{["Type", "Value", "Intel", "Source", "Seen", "Context", ""].map((h) => <th key={h} className="th" scope="col">{h}</th>)}</tr></thead>
           <tbody>
@@ -197,7 +198,7 @@ export function IocsTab({ caseId, mutable }: { caseId: string; mutable: boolean 
                   <td className="td">{i.source}</td>
                   <td className="td tabular-nums">{i.occurrences}</td>
                   <td className="td text-muted">{i.context}</td>
-                  <td className="td"><button className="btn py-0 text-xs" disabled={!mutable} aria-label={`Remove IOC ${i.value}`} onClick={() => remove.mutate(i.id)}>Remove</button></td>
+                  <td className="td"><button className="btn btn-sm" disabled={!mutable} aria-label={`Remove IOC ${i.value}`} onClick={() => remove.mutate(i.id)}>Remove</button></td>
                 </tr>
               );
             })}
@@ -228,14 +229,14 @@ export function AssetsTab({ caseId, mutable }: { caseId: string; mutable: boolea
             {found.data.map((a) => (
               <li key={a.id} className="px-2 py-0.5 flex items-center gap-2">
                 <span className="flex-1 truncate">{a.type}: {a.display_name}</span>
-                <button className="btn py-0 text-xs" disabled={linkedIds.has(a.id) || link.isPending} onClick={() => link.mutate(a.id)}>{linkedIds.has(a.id) ? "Linked" : "Link"}</button>
+                <button className="btn btn-sm" disabled={linkedIds.has(a.id) || link.isPending} onClick={() => link.mutate(a.id)}>{linkedIds.has(a.id) ? "Linked" : "Link"}</button>
               </li>
             ))}
           </ul>
         )}
       </div>
       <ErrorLine error={link.error ?? unlink.error} fallback="Asset change failed" />
-      {linked.data && (linked.data.length === 0 ? <p className="panel p-3 text-muted">No assets linked.</p> : (
+      {linked.data && (linked.data.length === 0 ? <p className="panel p-4 text-muted">No assets linked.</p> : (
         <table className="w-full">
           <thead><tr>{["Type", "Asset", "Criticality", "Last seen", ""].map((h) => <th key={h} className="th" scope="col">{h}</th>)}</tr></thead>
           <tbody>
@@ -245,7 +246,7 @@ export function AssetsTab({ caseId, mutable }: { caseId: string; mutable: boolea
                 <td className="td"><Link className="text-accent hover:underline" href={`/assets/${a.id}`}>{a.display_name}</Link></td>
                 <td className="td"><LevelBadge level={a.criticality} /></td>
                 <td className="td font-mono">{a.last_seen ? fmtTime(a.last_seen) : ""}</td>
-                <td className="td"><button className="btn py-0 text-xs" disabled={!mutable} aria-label={`Unlink ${a.display_name}`} onClick={() => unlink.mutate(a.id)}>Unlink</button></td>
+                <td className="td"><button className="btn btn-sm" disabled={!mutable} aria-label={`Unlink ${a.display_name}`} onClick={() => unlink.mutate(a.id)}>Unlink</button></td>
               </tr>
             ))}
           </tbody>
@@ -272,7 +273,7 @@ export function JournalTab({ caseId, canWrite }: { caseId: string; canWrite: boo
         {(act.data ?? []).map((a) => (
           <li key={a.id} className={`panel p-2 text-xs ${a.kind === "note" ? "" : "text-muted"}`}>
             <div className="flex gap-2"><span className="font-mono">{fmtTime(a.created_at)}</span><span>{a.actor_email ?? "system"}</span><span className="ml-auto uppercase">{a.kind.replace(/_/g, " ")}</span></div>
-            <p className="whitespace-pre-wrap text-[#c9d1d9]">{describeActivity(a)}</p>
+            <p className="whitespace-pre-wrap text-ink">{describeActivity(a)}</p>
           </li>
         ))}
       </ol>
@@ -287,13 +288,13 @@ export function HuntTab({ caseId, caseNumber }: { caseId: string; caseNumber: st
   const [version, setVersion] = useState<number | null>(null);
   const current = hunts.find((r) => r.version === version) ?? hunts[0];
   if (reports.isLoading) return <p className="text-muted">Loading the hunt report…</p>;
-  if (!current) return <p className="panel p-3 text-muted">This case has no AI hunt report.</p>;
+  if (!current) return <p className="panel p-4 text-muted">This case has no AI hunt report.</p>;
   return (
     <div className="space-y-3">
       {hunts.length > 1 && (
         <div className="flex items-center gap-2 text-xs text-muted" role="group" aria-label="Hunt report version">
           Version
-          {hunts.map((r) => <button key={r.id} className={`btn py-0 text-xs ${r.version === current.version ? "border-accent text-accent" : ""}`} aria-pressed={r.version === current.version} onClick={() => setVersion(r.version)}>v{r.version}</button>)}
+          {hunts.map((r) => <button key={r.id} className={`btn btn-sm ${r.version === current.version ? "border-accent text-accent" : ""}`} aria-pressed={r.version === current.version} onClick={() => setVersion(r.version)}>v{r.version}</button>)}
           <span>generated {fmtTime(current.created_at)}</span>
         </div>
       )}
@@ -320,12 +321,12 @@ export function ReportsTab({ caseId, canWrite, caseNumber }: { caseId: string; c
       <div className="flex gap-2 items-center text-xs">
         <button className="btn btn-primary" disabled={!canWrite || gen.isPending} onClick={() => gen.mutate()}>Generate new version</button>
         {reports.data?.map((r) => (
-          <button key={r.id} className={`btn py-0 ${current?.version === r.version ? "border-accent text-accent" : ""}`} onClick={() => setVersion(r.version)}>v{r.version}</button>
+          <button key={r.id} className={`btn btn-sm ${current?.version === r.version ? "border-accent text-accent" : ""}`} onClick={() => setVersion(r.version)}>v{r.version}</button>
         ))}
         {current && (
           <span className="ml-auto flex gap-1">
             <CopyButton text={current.content} label="Copy markdown" />
-            <button className="btn py-0 text-xs" onClick={() => downloadBlob(new Blob([current.content], { type: "text/markdown" }), `${caseNumber}-report-v${current.version}.md`)}>Download .md</button>
+            <button className="btn btn-sm" onClick={() => downloadBlob(new Blob([current.content], { type: "text/markdown" }), `${caseNumber}-report-v${current.version}.md`)}>Download .md</button>
           </span>
         )}
       </div>
@@ -336,18 +337,18 @@ export function ReportsTab({ caseId, canWrite, caseNumber }: { caseId: string; c
             <span>Version {current.version} · generated {fmtTime(current.created_at)}</span>
             {current.kind === "hunt" && <span className="ai-chip border-violet-400/40 bg-violet-400/10 text-violet-200">AI hunt report</span>}
             <span className="ml-auto flex gap-1" role="group" aria-label="Report view">
-              {current.data && <button type="button" className={`btn py-0 text-xs ${mode === "presentation" ? "border-accent text-accent" : ""}`} aria-pressed={mode === "presentation"} onClick={() => setView("presentation")}>Presentation</button>}
-              <button type="button" className={`btn py-0 text-xs ${mode === "markdown" ? "border-accent text-accent" : ""}`} aria-pressed={mode === "markdown"} onClick={() => setView("markdown")}>Rendered</button>
-              <button type="button" className={`btn py-0 text-xs ${mode === "source" ? "border-accent text-accent" : ""}`} aria-pressed={mode === "source"} onClick={() => setView("source")}>Source</button>
+              {current.data && <button type="button" className={`btn btn-sm ${mode === "presentation" ? "border-accent text-accent" : ""}`} aria-pressed={mode === "presentation"} onClick={() => setView("presentation")}>Presentation</button>}
+              <button type="button" className={`btn btn-sm ${mode === "markdown" ? "border-accent text-accent" : ""}`} aria-pressed={mode === "markdown"} onClick={() => setView("markdown")}>Rendered</button>
+              <button type="button" className={`btn btn-sm ${mode === "source" ? "border-accent text-accent" : ""}`} aria-pressed={mode === "source"} onClick={() => setView("source")}>Source</button>
             </span>
           </div>
           {mode === "presentation" && current.data
             ? <HuntReportView data={current.data as unknown as HuntReportData} markdown={current.content} caseNumber={caseNumber} />
             : mode === "source"
-              ? <pre className="panel p-3 text-xs whitespace-pre-wrap break-words max-h-[60vh] overflow-y-auto">{current.content}</pre>
+              ? <pre className="panel p-4 text-xs whitespace-pre-wrap break-words max-h-[60vh] overflow-y-auto">{current.content}</pre>
               : <article className="panel p-4 max-h-[70vh] overflow-y-auto" aria-label="Report"><Markdown source={current.content} /></article>}
         </div>
-      ) : <p className="panel p-3 text-muted">No reports yet. Generate one to snapshot the case as Markdown.</p>}
+      ) : <p className="panel p-4 text-muted">No reports yet. Generate one to snapshot the case as Markdown.</p>}
     </div>
   );
 }
@@ -357,7 +358,7 @@ export function AuditTab({ caseId }: { caseId: string }) {
   return (
     <div>
       <ErrorLine error={a.error} fallback="Failed to load audit trail" />
-      {a.data && (a.data.length === 0 ? <p className="panel p-3 text-muted">No audit records.</p> : (
+      {a.data && (a.data.length === 0 ? <p className="panel p-4 text-muted">No audit records.</p> : (
         <table className="w-full">
           <thead><tr>{["Time (UTC)", "Action", "Outcome", "Actor", "IP", "Details"].map((h) => <th key={h} className="th" scope="col">{h}</th>)}</tr></thead>
           <tbody>

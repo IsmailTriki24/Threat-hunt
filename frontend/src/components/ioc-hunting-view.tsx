@@ -5,16 +5,24 @@ import { useMemo, useState } from "react";
 import { api } from "@/lib/api";
 import { useAuth } from "@/lib/auth";
 import {
-  age, bulletinPlan, COVERAGE_CLASS, defangIoc, HUNT_STATUS_CLASS, IOC_TYPES, KIND_LABEL, selectable, SEVERITY_CLASS, TTP_SOURCE_NOTE, typeBreakdown, validationSummary,
+  age, bulletinPlan, COVERAGE_CLASS, defangIoc, HUNT_STATUS_CLASS, IOC_TYPES, KIND_LABEL, selectable, TTP_SOURCE_NOTE, typeBreakdown, validationSummary,
   type FeedType, type IocFeed, type IocHunt, type IocItem, type ThreatRow,
 } from "@/lib/ioc";
 import { fmtTime } from "@/lib/query";
 import { ErrorLine, Modal } from "./badges";
+import { useConfirm } from "./ui/confirm";
+import { EmptyState } from "./ui/empty-state";
+import { Drawer } from "./ui/overlay";
+import { PageHeader } from "./ui/page-header";
+import { SeverityBadge } from "./ui/severity";
+import { Tabs } from "./ui/tabs";
+import { useToast } from "./ui/toast";
+import { Lock } from "lucide-react";
 
 type Tab = "threats" | "queue" | "hunts" | "feeds" | "allow";
 
 function Stat({ label, value, tone }: { label: string; value: number | string; tone?: string }) {
-  return <div className="panel px-3 py-2"><div className={`text-lg font-semibold ${tone ?? ""}`}>{value}</div><div className="text-xs text-muted">{label}</div></div>;
+  return <div className="panel px-4 py-3"><div className={`text-2xl font-semibold tabular-nums ${tone ?? ""}`}>{value}</div><div className="mt-0.5 text-xs text-muted">{label}</div></div>;
 }
 
 function Overview() {
@@ -29,14 +37,14 @@ function Overview() {
       <Stat label="IOCs already in your telemetry" value={d.seen_in_environment} tone={d.seen_in_environment ? "text-orange-300" : ""} />
       <Stat label="threats on the watch list" value={th.VALIDATED ?? 0} />
       <Stat label="open threat cases" value={d.open_ioc_cases} />
-      <Stat label="feeds failing" value={`${d.feeds_failing}/${d.feeds}`} tone={d.feeds_failing ? "text-red-400" : ""} />
+      <Stat label="feeds failing" value={`${d.feeds_failing}/${d.feeds}`} tone={d.feeds_failing ? "text-red-700" : ""} />
     </div>
   );
 }
 
+/** Confidence is *how sure the source is*, not how bad it is, so it is never drawn in a severity colour. */
 function ConfidenceBar({ value }: { value: number }) {
-  const tone = value >= 75 ? "bg-red-500" : value >= 45 ? "bg-orange-400" : "bg-slate-500";
-  return <div className="flex items-center gap-1" title={`confidence ${value}`}><div className="w-14 h-1.5 bg-line rounded"><div className={`h-1.5 rounded ${tone}`} style={{ width: `${value}%` }} /></div><span className="text-xs tabular-nums">{value}</span></div>;
+  return <div className="flex items-center gap-2" title={`confidence ${value} / 100`}><div className="h-1.5 w-14 rounded-full bg-line"><div className="h-1.5 rounded-full bg-accent-brand" style={{ width: `${value}%` }} /></div><span className="text-xs tabular-nums text-ink-2">{value}</span></div>;
 }
 
 function ValidateDialog({ items, onClose, onDone }: { items: IocItem[]; onClose: () => void; onDone: (hunt: IocHunt) => void }) {
@@ -80,7 +88,7 @@ function AddIocDialog({ onClose, onDone }: { onClose: () => void; onDone: () => 
 }
 
 function Chip({ children, cls }: { children: React.ReactNode; cls?: string }) {
-  return <span className={`px-1.5 rounded text-xs ${cls ?? "border border-line text-muted"}`}>{children}</span>;
+  return <span className={`badge ${cls ?? "border-line-strong bg-subtle text-ink-2"}`}>{children}</span>;
 }
 
 function BulletinDrawer({ id, onClose, onHunt }: { id: string; onClose: () => void; onHunt: () => void }) {
@@ -105,18 +113,16 @@ function BulletinDrawer({ id, onClose, onHunt }: { id: string; onClose: () => vo
   const shown = (d?.iocs ?? []).filter((i) => !typeFilter || i.type === typeFilter);
   const pending = d ? d.iocs.filter((i) => selectable(i)).length : 0;
   return (
-    <div className="fixed inset-0 z-20 bg-black/60 flex justify-end" role="presentation" onClick={onClose}>
-      <aside role="dialog" aria-modal="true" aria-label="Threat bulletin" className="panel w-[64rem] max-w-full h-full overflow-y-auto p-4 space-y-3" onClick={(e) => e.stopPropagation()}>
+    <Drawer width="max-w-5xl" onClose={onClose} title={d?.name ?? "Loading…"} subtitle="Threat bulletin">
+      <div className="space-y-4 p-5">
         <div className="flex items-start gap-2">
           <div>
-            <h2 className="text-lg font-semibold">{d?.name ?? "Loading…"}</h2>
-            {d && <div className="flex flex-wrap gap-1 mt-1">
-              <Chip>{KIND_LABEL[d.kind] ?? d.kind}</Chip><Chip cls={SEVERITY_CLASS[d.severity]}>{d.severity}</Chip><Chip>confidence {d.confidence}</Chip><Chip>{d.status}</Chip>
+            {d && <div className="flex flex-wrap items-center gap-1.5">
+              <Chip>{KIND_LABEL[d.kind] ?? d.kind}</Chip><SeverityBadge level={d.severity} label={d.severity} /><Chip>confidence {d.confidence}</Chip><Chip>{d.status}</Chip>
               {d.mitre_id && <a className="underline text-xs" href={`https://attack.mitre.org/${d.mitre_id.startsWith("G") ? "groups" : "software"}/${d.mitre_id}/`} target="_blank" rel="noreferrer noopener">ATT&amp;CK {d.mitre_id}</a>}
               {d.seen_count > 0 && <Chip cls="bg-orange-900/50 text-orange-300">{d.seen_count} event(s) already in your telemetry</Chip>}
             </div>}
           </div>
-          <button className="btn ml-auto" onClick={onClose} aria-label="Close bulletin">Close</button>
         </div>
         <ErrorLine error={b.error} fallback="Failed to load the bulletin" />
         {d && (
@@ -129,11 +135,8 @@ function BulletinDrawer({ id, onClose, onHunt }: { id: string; onClose: () => vo
             {d.references.length > 0 && <p className="text-xs">References: {d.references.slice(0, 5).map((r) => <a key={r} className="underline mr-2" href={r} target="_blank" rel="noreferrer noopener">{r.replace(/^https?:\/\//, "").slice(0, 48)}</a>)}</p>}
             {d.case_id && <p className="text-xs">Case: <Link className="underline" href={`/cases/${d.case_id}`}>CASE-{String(d.case_number).padStart(4, "0")}</Link> ({d.case_status})</p>}
 
-            <div role="tablist" className="flex gap-2">
-              {([["iocs", `IOCs (${d.ioc_count})`], ["ioas", `IOAs (${d.ioas.length})`], ["ttps", `TTPs (${d.ttps.length})`], ["hunts", `Hunts (${d.hunts.length})`]] as const).map(([k, label]) => (
-                <button key={k} role="tab" aria-selected={sub === k} className={`btn ${sub === k ? "btn-primary" : ""}`} onClick={() => setSub(k)}>{label}</button>
-              ))}
-            </div>
+            <Tabs<"iocs" | "ioas" | "ttps" | "hunts"> label="Bulletin sections" value={sub} onChange={setSub}
+              tabs={[{ key: "iocs", label: "IOCs", count: d.ioc_count }, { key: "ioas", label: "Behaviours (IOAs)", count: d.ioas.length }, { key: "ttps", label: "Techniques (TTPs)", count: d.ttps.length }, { key: "hunts", label: "Hunts", count: d.hunts.length }]} />
 
             {sub === "iocs" && (
               <div className="space-y-1">
@@ -158,7 +161,7 @@ function BulletinDrawer({ id, onClose, onHunt }: { id: string; onClose: () => vo
                 <tbody>{d.ioas.map((a) => (
                   <tr key={a.id} className="border-t border-line align-top">
                     <td><input type="checkbox" aria-label={`Hunt behaviour ${a.name}`} disabled={!validate || !signals} checked={signals && !dropIoa.has(a.id)} onChange={() => toggle(dropIoa, setDropIoa, a.id)} /></td>
-                    <td>{a.name}<div className="text-muted">{a.description}</div></td><td>{a.technique_id}</td><td><Chip cls={SEVERITY_CLASS[a.severity]}>{a.severity}</Chip></td><td>{a.source}</td>
+                    <td>{a.name}<div className="text-muted">{a.description}</div></td><td>{a.technique_id}</td><td><SeverityBadge level={a.severity} label={a.severity} /></td><td>{a.source}</td>
                     <td className="font-mono text-muted">{a.query_text}{a.trend_query && <div title={a.trend_query}>+ Trend Vision One query</div>}</td>
                   </tr>))}
                 </tbody></table>
@@ -175,10 +178,10 @@ function BulletinDrawer({ id, onClose, onHunt }: { id: string; onClose: () => vo
             ))}
 
             {sub === "hunts" && (d.hunts.length === 0 ? <p className="text-xs text-muted">This bulletin has not been hunted yet.</p> : (
-              <ul className="text-xs space-y-1">{d.hunts.map((h) => <li key={h.id}><span className={`px-1.5 rounded ${HUNT_STATUS_CLASS[h.status] ?? ""}`}>{h.status}</span> {fmtTime(h.created_at)} · {h.match_count} indicator match(es), {h.signal_count ?? 0} behaviour/technique event(s){h.case_id && <> · <Link className="underline" href={`/cases/${h.case_id}`}>case</Link></>}</li>)}</ul>
+              <ul className="text-xs space-y-1">{d.hunts.map((h) => <li key={h.id}><span className={HUNT_STATUS_CLASS[h.status] ?? "badge"}>{h.status}</span> {fmtTime(h.created_at)} · {h.match_count} indicator match(es), {h.signal_count ?? 0} behaviour/technique event(s){h.case_id && <> · <Link className="underline" href={`/cases/${h.case_id}`}>case</Link></>}</li>)}</ul>
             ))}
 
-            <div className="panel p-3 space-y-2 text-xs border-t border-line">
+            <div className="panel p-4 space-y-2 text-xs border-t border-line">
               <p>Validating hunts: <b>{bulletinPlan(d, dropIoc.size, dropIoa.size, signals)}</b> across ingested telemetry, Trend Vision One and LogRhythm, then opens a case with the result (whether or not anything is found).</p>
               <div className="flex flex-wrap items-center gap-3">
                 <label>Look back <input aria-label="Lookback days" type="number" min={1} max={30} className="input w-16" value={days} onChange={(e) => setDays(Math.max(1, Math.min(30, Number(e.target.value) || 7)))} /> days</label>
@@ -194,8 +197,8 @@ function BulletinDrawer({ id, onClose, onHunt }: { id: string; onClose: () => vo
             </div>
           </>
         )}
-      </aside>
-    </div>
+      </div>
+    </Drawer>
   );
 }
 
@@ -215,33 +218,35 @@ function ThreatsTab({ onHunt }: { onHunt: () => void }) {
   const rows = page.data?.items ?? [];
   return (
     <div className="space-y-2">
-      <div className="flex flex-wrap gap-2 text-xs items-center">
+      <div className="panel flex flex-wrap items-center gap-2 p-3 text-sm">
         <select aria-label="Threat status" className="input" value={status} onChange={(e) => setStatus(e.target.value)}>{["NEW", "VALIDATED", "REJECTED", "EXPIRED", ""].map((s) => <option key={s} value={s}>{s ? (s === "NEW" ? "awaiting review" : s.toLowerCase()) : "all"}</option>)}</select>
         <select aria-label="Threat kind" className="input" value={kind} onChange={(e) => setKind(e.target.value)}><option value="">all kinds</option>{Object.entries(KIND_LABEL).map(([k, l]) => <option key={k} value={k}>{l}</option>)}</select>
-        <label>min confidence <input aria-label="Minimum confidence" type="number" min={0} max={100} className="input w-16" value={minConf} onChange={(e) => setMinConf(Math.max(0, Math.min(100, Number(e.target.value) || 0)))} /></label>
+        <label className="flex items-center gap-1.5 text-muted">Min confidence <input aria-label="Minimum confidence" type="number" min={0} max={100} className="input w-16" value={minConf} onChange={(e) => setMinConf(Math.max(0, Math.min(100, Number(e.target.value) || 0)))} /></label>
         <label className="flex items-center gap-1"><input type="checkbox" checked={seenOnly} onChange={(e) => setSeenOnly(e.target.checked)} /> already in my telemetry</label>
         <input aria-label="Search threats" className="input w-56" placeholder="Search name, alias, description…" value={q} onChange={(e) => setQ(e.target.value)} />
         <select aria-label="Sort threats" className="input" value={sort} onChange={(e) => setSort(e.target.value)}>{[["updated", "relevance"], ["confidence", "confidence"], ["iocs", "most IOCs"], ["seen", "seen in telemetry"], ["name", "name"]].map(([v, l]) => <option key={v} value={v}>sort: {l}</option>)}</select>
         <button className="btn ml-auto" disabled={!can("iochunt:manage") || regroup.isPending} title="Re-group indicators and refresh every bulletin" onClick={() => regroup.mutate()}>{regroup.isPending ? "Refreshing…" : "Refresh bulletins"}</button>
       </div>
       <ErrorLine error={page.error ?? regroup.error} fallback="Failed to load threats" />
-      {page.data && (rows.length === 0 ? <p className="panel p-3 text-muted">No threats here. Add feeds under <b>Feeds</b>; indicators are grouped under the threat they belong to automatically.</p> : (
-        <table className="w-full text-xs">
-          <thead className="text-left text-muted"><tr><th>Threat</th><th>Kind</th><th>Severity</th><th>Confidence</th><th>IOCs</th><th>IOAs</th><th>TTPs</th><th>In my telemetry</th><th>Sources</th><th>Last updated</th><th>Status</th></tr></thead>
+      {page.data && (rows.length === 0 ? <div className="panel"><EmptyState title="No threats match">Add feeds under <b>Feeds</b>; indicators are grouped under the threat they belong to automatically. Try widening the filters if you expected results.</EmptyState></div> : (
+        <div className="overflow-x-auto">
+        <table className="text-sm">
+          <thead><tr><th>Threat</th><th>Severity</th><th>Confidence</th><th>Indicators</th><th title="Behaviours (IOAs) · ATT&CK techniques (TTPs)">Behaviours</th><th>In my telemetry</th><th>Updated</th><th>Status</th></tr></thead>
           <tbody>{rows.map((t: ThreatRow) => (
-            <tr key={t.id} className="border-t border-line align-top cursor-pointer hover:bg-white/5" onClick={() => setOpen(t.id)}>
-              <td><button className="underline text-left font-medium" onClick={(e) => { e.stopPropagation(); setOpen(t.id); }}>{t.name}</button>
-                {t.new_ioc_count > 0 && t.status === "VALIDATED" && <Chip cls="ml-1 bg-blue-900/50 text-blue-200">+{t.new_ioc_count} new</Chip>}
-                {t.aliases.length > 0 && <div className="text-muted">aka {t.aliases.slice(0, 2).join(", ")}</div>}</td>
-              <td>{KIND_LABEL[t.kind] ?? t.kind}</td><td><Chip cls={SEVERITY_CLASS[t.severity]}>{t.severity}</Chip></td><td><ConfidenceBar value={t.confidence} /></td>
-              <td title={typeBreakdown(t.ioc_types)}>{t.ioc_count}<div className="text-muted">{typeBreakdown(t.ioc_types).slice(0, 36)}</div></td>
-              <td>{t.ioa_count}</td><td>{t.ttp_count}</td>
-              <td>{t.seen_count > 0 ? <span className="text-orange-300">{t.seen_count} event(s)</span> : <span className="text-muted">none</span>}</td>
-              <td className="text-muted">{t.sources.join(", ").slice(0, 40)}</td><td title={t.last_updated ? fmtTime(t.last_updated) : ""}>{t.last_updated ? age(t.last_updated) : "—"}</td>
-              <td>{t.status}{t.case_id && <> · <Link className="underline" href={`/cases/${t.case_id}`} onClick={(e) => e.stopPropagation()}>CASE-{String(t.case_number).padStart(4, "0")}</Link></>}</td>
+            <tr key={t.id} className="cursor-pointer" onClick={() => setOpen(t.id)}>
+              <td className="min-w-[16rem] max-w-[26rem]"><button className="text-left font-medium text-ink hover:text-accent hover:underline" onClick={(e) => { e.stopPropagation(); setOpen(t.id); }}>{t.name}</button>
+                {t.new_ioc_count > 0 && t.status === "VALIDATED" && <Chip cls="ml-1.5 border-sev-low/30 bg-sev-low-bg text-sev-low">+{t.new_ioc_count} new</Chip>}
+                <div className="text-xs text-muted">{KIND_LABEL[t.kind] ?? t.kind} · {t.sources.join(", ")}{t.aliases.length > 0 && <> · aka {t.aliases.slice(0, 2).join(", ")}</>}</div></td>
+              <td><SeverityBadge level={t.severity} label={t.severity} /></td><td><ConfidenceBar value={t.confidence} /></td>
+              <td title={typeBreakdown(t.ioc_types)}><span className="font-medium tabular-nums">{t.ioc_count}</span><div className="max-w-[12rem] truncate text-xs text-muted">{typeBreakdown(t.ioc_types)}</div></td>
+              <td className="whitespace-nowrap tabular-nums"><span title="Behaviours (IOAs)">{t.ioa_count} IOA</span> <span className="text-muted">·</span> <span title="ATT&CK techniques (TTPs)">{t.ttp_count} TTP</span></td>
+              <td>{t.seen_count > 0 ? <span className="badge border-sev-high/30 bg-sev-high-bg text-sev-high">{t.seen_count} event{t.seen_count === 1 ? "" : "s"}</span> : <span className="text-muted">none</span>}</td>
+              <td className="whitespace-nowrap text-muted" title={t.last_updated ? fmtTime(t.last_updated) : ""}>{t.last_updated ? age(t.last_updated) : "—"}</td>
+              <td className="whitespace-nowrap"><Chip>{t.status.toLowerCase()}</Chip>{t.case_id && <> <Link className="link text-xs" href={`/cases/${t.case_id}`} onClick={(e) => e.stopPropagation()}>CASE-{String(t.case_number).padStart(4, "0")}</Link></>}</td>
             </tr>))}
           </tbody>
         </table>
+        </div>
       ))}
       {page.data && <p className="text-xs text-muted">{page.data.total} threat(s). Select one to read its bulletin and validate it for hunting.</p>}
       {open && <BulletinDrawer id={open} onClose={() => setOpen(null)} onHunt={onHunt} />}
@@ -270,11 +275,11 @@ function QueueTab({ onHunt }: { onHunt: () => void }) {
   const toggle = (id: string) => setPicked((p) => { const n = new Set(p); if (n.has(id)) n.delete(id); else n.add(id); return n; });
   return (
     <div className="space-y-2">
-      <div className="flex flex-wrap gap-2 text-xs items-center">
+      <div className="panel flex flex-wrap items-center gap-2 p-3 text-sm">
         <select aria-label="Status" className="input" value={status} onChange={(e) => setStatus(e.target.value)}>{["NEW", "VALIDATED", "REJECTED", "EXPIRED", ""].map((s) => <option key={s} value={s}>{s || "all"}</option>)}</select>
         <select aria-label="Type" className="input" value={type} onChange={(e) => setType(e.target.value)}><option value="">all types</option>{IOC_TYPES.map((t) => <option key={t}>{t}</option>)}</select>
         <select aria-label="Source" className="input" value={source} onChange={(e) => setSource(e.target.value)}><option value="">all sources</option>{Object.keys(page.data?.facets.source ?? {}).map((s) => <option key={s}>{s}</option>)}</select>
-        <label>min confidence <input aria-label="Minimum confidence" type="number" min={0} max={100} className="input w-16" value={minConf} onChange={(e) => setMinConf(Math.max(0, Math.min(100, Number(e.target.value) || 0)))} /></label>
+        <label className="flex items-center gap-1.5 text-muted">Min confidence <input aria-label="Minimum confidence" type="number" min={0} max={100} className="input w-16" value={minConf} onChange={(e) => setMinConf(Math.max(0, Math.min(100, Number(e.target.value) || 0)))} /></label>
         <label className="flex items-center gap-1"><input type="checkbox" checked={seenOnly} onChange={(e) => setSeenOnly(e.target.checked)} /> seen in my telemetry</label>
         <input aria-label="Search indicators" className="input w-56" placeholder="Search value, malware, description…" value={q} onChange={(e) => setQ(e.target.value)} />
         <span className="ml-auto flex gap-2">
@@ -285,7 +290,7 @@ function QueueTab({ onHunt }: { onHunt: () => void }) {
       </div>
       <p className="text-xs text-muted">Sorted by relevance: indicators already present in your own telemetry first, then by confidence. Only recent indicators are kept; stale ones expire automatically.</p>
       <ErrorLine error={page.error ?? reject.error} fallback="Failed to load indicators" />
-      {page.data && (items.length === 0 ? <p className="panel p-3 text-muted">Nothing to review. Add a feed under <b>Feeds</b>, or add an indicator manually.</p> : (
+      {page.data && (items.length === 0 ? <div className="panel"><EmptyState title="Nothing to review">Add a feed under <b>Feeds</b>, or add an indicator manually.</EmptyState></div> : (
         <table className="w-full text-xs">
           <thead className="text-left text-muted"><tr><th /><th>Type</th><th>Indicator</th><th>Confidence</th><th>In my telemetry</th><th>Context</th><th>Source</th><th>Age</th><th>Status</th></tr></thead>
           <tbody>{items.map((i) => (
@@ -317,8 +322,8 @@ function HuntRow({ h }: { h: IocHunt }) {
   const retry = useMutation({ mutationFn: () => api.retryIocHunt(h.id), onSuccess: () => { void qc.invalidateQueries({ queryKey: ["ioc-hunts"] }); } });
   return (
     <>
-      <tr className="border-t border-line cursor-pointer hover:bg-white/5" onClick={() => setOpen((o) => !o)}>
-        <td><span className={`px-1.5 rounded ${HUNT_STATUS_CLASS[h.status] ?? ""}`}>{h.status}</span></td>
+      <tr className="border-t border-line cursor-pointer" onClick={() => setOpen((o) => !o)}>
+        <td><span className={HUNT_STATUS_CLASS[h.status] ?? "badge"}>{h.status}</span></td>
         <td>{h.name}<div className="text-muted">{h.mode === "rehunt" ? "scheduled re-hunt" : `last ${h.lookback_days} day(s)`}{h.threat_name ? ` · threat: ${h.threat_name}` : ""}</div></td>
         <td>{h.ioc_count}</td>
         <td className={h.match_count || h.signal_count ? "text-orange-300" : ""}>{h.match_count}{h.signal_count ? ` + ${h.signal_count} behaviour/technique` : ""}{h.new_match_count && h.mode === "rehunt" ? ` (+${h.new_match_count} new)` : ""}</td>
@@ -328,7 +333,7 @@ function HuntRow({ h }: { h: IocHunt }) {
       {open && (
         <tr><td colSpan={6} className="bg-bg p-2">
           <p className="text-xs mb-2">{h.hypothesis}</p>
-          {h.error && <p role="alert" className="text-red-400 text-xs">{h.error}</p>}
+          {h.error && <p role="alert" className="text-red-700 text-xs">{h.error}</p>}
           <table className="w-full text-xs mb-2"><thead className="text-left text-muted"><tr><th>Data source</th><th>Status</th><th>Searched</th><th>Matches</th><th>Notes</th></tr></thead>
             <tbody>{h.coverage.map((c, i) => <tr key={i}><td>{c.source}</td><td className={COVERAGE_CLASS[c.status]}>{c.status}</td><td>{c.iocs_searched}</td><td>{c.hits}</td><td className="text-muted">{c.detail}</td></tr>)}</tbody></table>
           {detail.data && detail.data.matches.length > 0 && (
@@ -353,7 +358,7 @@ function HuntsTab() {
     <div className="space-y-2">
       <p className="text-xs text-muted">Hunts start automatically within about a minute of validation. Click a row for the hypothesis, per-source coverage and matched events.</p>
       <ErrorLine error={hunts.error} fallback="Failed to load hunts" />
-      {hunts.data && (hunts.data.length === 0 ? <p className="panel p-3 text-muted">No hunts yet. Validate indicators in the queue to start one.</p> : (
+      {hunts.data && (hunts.data.length === 0 ? <div className="panel"><EmptyState title="No hunts yet">Validate a threat bulletin or indicators from the queue to start one.</EmptyState></div> : (
         <table className="w-full text-xs"><thead className="text-left text-muted"><tr><th>Status</th><th>Hunt</th><th>IOCs</th><th>Matches</th><th>Case</th><th>Started</th></tr></thead>
           <tbody>{hunts.data.map((h) => <HuntRow key={h.id} h={h} />)}</tbody></table>
       ))}
@@ -381,7 +386,7 @@ function FeedForm({ types, onDone }: { types: FeedType[]; onDone: () => void }) 
     onSuccess: onDone, onError: (e) => setErr(e instanceof Error ? e.message : "Failed"),
   });
   return (
-    <div className="panel p-3 space-y-2 text-xs">
+    <div className="panel p-4 space-y-2 text-xs">
       <div className="flex gap-2 flex-wrap">
         <select aria-label="Feed type" className="input" value={type} onChange={(e) => { setType(e.target.value); setSecrets({}); }}>{types.map((x) => <option key={x.type} value={x.type}>{x.name}</option>)}</select>
         <input aria-label="Feed name" className="input w-64" placeholder={t?.name} value={name} onChange={(e) => setName(e.target.value)} />
@@ -391,10 +396,10 @@ function FeedForm({ types, onDone }: { types: FeedType[]; onDone: () => void }) 
       <label className="block">Configuration (JSON) <textarea aria-label="Feed configuration" className="input w-full font-mono h-16" value={config} onChange={(e) => setConfig(e.target.value)} /></label>
       <div className="flex gap-3 flex-wrap">
         <label>Only indicators from the last <input aria-label="Max age days" type="number" min={1} max={90} className="input w-16" value={maxAge} onChange={(e) => setMaxAge(Math.max(1, Math.min(90, Number(e.target.value) || 14)))} /> days</label>
-        <label>min confidence <input aria-label="Feed min confidence" type="number" min={0} max={100} className="input w-16" value={minConf} onChange={(e) => setMinConf(Math.max(0, Math.min(100, Number(e.target.value) || 0)))} /></label>
+        <label className="flex items-center gap-1.5 text-muted">Min confidence <input aria-label="Feed min confidence" type="number" min={0} max={100} className="input w-16" value={minConf} onChange={(e) => setMinConf(Math.max(0, Math.min(100, Number(e.target.value) || 0)))} /></label>
         <label>keep at most <input aria-label="Max items" type="number" min={1} max={20000} className="input w-20" value={maxItems} onChange={(e) => setMaxItems(Math.max(1, Math.min(20000, Number(e.target.value) || 2000)))} /> per refresh</label>
       </div>
-      {err && <p role="alert" className="text-red-400">{err}</p>}
+      {err && <p role="alert" className="text-red-700">{err}</p>}
       <ErrorLine error={create.error} fallback="Could not add the feed" />
       <button className="btn btn-primary" disabled={create.isPending} onClick={() => { setErr(null); create.mutate(); }}>Add feed</button>
     </div>
@@ -412,9 +417,11 @@ function FeedsTab() {
   const feeds = useQuery({ queryKey: ["ioc-feeds"], queryFn: () => api.iocFeeds() });
   const types = useQuery({ queryKey: ["ioc-feed-types"], queryFn: () => api.iocFeedTypes() });
   const refresh = () => { void qc.invalidateQueries({ queryKey: ["ioc-feeds"] }); void qc.invalidateQueries({ queryKey: ["iocs"] }); void qc.invalidateQueries({ queryKey: ["ioc-overview"] }); };
-  const run = useMutation({ mutationFn: (f: IocFeed) => api.runIocFeed(f.id), onSuccess: refresh });
+  const run = useMutation({ mutationFn: (f: IocFeed) => api.runIocFeed(f.id), onSuccess: (r) => { refresh(); toast.success(`Feed refreshed: ${r.name}`, r.last_detail || undefined); } });
   const toggle = useMutation({ mutationFn: (f: IocFeed) => api.updateIocFeed(f.id, { enabled: !f.enabled }), onSuccess: refresh });
   const remove = useMutation({ mutationFn: (f: IocFeed) => api.deleteIocFeed(f.id), onSuccess: refresh });
+  const { confirm, node: confirmNode } = useConfirm();
+  const toast = useToast();
   const saveCred = useMutation({ mutationFn: () => api.setIocFeedSecret(credFor!.id, credName.trim(), credVal), onSuccess: () => { setCredFor(null); setCredVal(""); refresh(); } });
   return (
     <div className="space-y-2">
@@ -422,22 +429,23 @@ function FeedsTab() {
         <button className="btn btn-primary ml-auto" disabled={!manage || !types.data} title={manage ? "" : "Requires iochunt:manage"} onClick={() => setAdding((a) => !a)}>Add feed</button></div>
       {adding && types.data && <FeedForm types={types.data} onDone={() => { setAdding(false); refresh(); }} />}
       <ErrorLine error={feeds.error ?? run.error ?? toggle.error ?? remove.error} fallback="Feed action failed" />
-      {feeds.data && (feeds.data.length === 0 ? <p className="panel p-3 text-muted">No feeds yet. A good start with no accounts: <b>abuse.ch URLhaus (recent URLs)</b> and <b>Feodo Tracker</b>; add your <b>Trend Vision One Suspicious Object List</b> with the same API key as your Trend data source.</p> : (
+      {feeds.data && (feeds.data.length === 0 ? <div className="panel"><EmptyState title="No feeds yet">A good start with no accounts: <b>abuse.ch URLhaus (recent URLs)</b> and <b>Feodo Tracker</b>. Add your <b>Trend Vision One Suspicious Object List</b> with the same API key as your Trend data source.</EmptyState></div> : (
         <table className="w-full text-xs"><thead className="text-left text-muted"><tr><th>Feed</th><th>Health</th><th>Last run</th><th>Last result</th><th>Indicators</th><th>Enabled</th><th /></tr></thead>
           <tbody>{feeds.data.map((f) => (
             <tr key={f.id} className="border-t border-line">
-              <td>{f.name}{f.has_secrets && " 🔒"}<div className="text-muted">{f.feed_type} · ≤{f.max_age_days}d · every {f.interval_minutes}m</div></td>
-              <td className={f.last_status === "ok" ? "text-green-300" : f.last_status === "error" ? "text-red-400" : "text-muted"}>{f.last_status || "not run yet"}</td>
+              <td>{f.name}{f.has_secrets && <Lock aria-label="credential set" className="ml-1 inline h-3 w-3 text-muted" />}<div className="text-muted">{f.feed_type} · ≤{f.max_age_days}d · every {f.interval_minutes}m</div></td>
+              <td className={f.last_status === "ok" ? "font-medium text-sev-ok" : f.last_status === "error" ? "font-medium text-sev-critical" : "text-muted"}>{f.last_status || "not run yet"}</td>
               <td>{f.last_run_at ? fmtTime(f.last_run_at) : "—"}</td><td className="text-muted max-w-sm">{f.last_detail}</td><td>{f.ioc_count}</td>
               <td><input type="checkbox" aria-label={`Enable ${f.name}`} disabled={!manage} checked={f.enabled} onChange={() => toggle.mutate(f)} /></td>
               <td className="space-x-1 whitespace-nowrap">
-                <button className="btn py-0" disabled={!manage || run.isPending} onClick={() => run.mutate(f)}>Run now</button>
-                <button className="btn py-0" disabled={!manage} onClick={() => { setCredFor(f); setCredName(f.secret_keys[0] ?? types.data?.find((t) => t.type === f.feed_type)?.secret_names[0] ?? "api_key"); }}>Set credential</button>
-                <button className="btn py-0" disabled={!manage} onClick={() => { if (confirm(`Delete feed “${f.name}”? Imported indicators are kept.`)) remove.mutate(f); }}>Delete</button>
+                <button className="btn btn-sm" disabled={!manage || run.isPending} onClick={() => run.mutate(f)}>Run now</button>
+                <button className="btn btn-sm" disabled={!manage} onClick={() => { setCredFor(f); setCredName(f.secret_keys[0] ?? types.data?.find((t) => t.type === f.feed_type)?.secret_names[0] ?? "api_key"); }}>Set credential</button>
+                <button className="btn btn-sm" disabled={!manage} onClick={() => confirm({ title: `Delete feed “${f.name}”?`, message: "The feed stops refreshing. Indicators it already imported are kept.", confirmLabel: "Delete feed", run: () => remove.mutate(f) })}>Delete</button>
               </td>
             </tr>))}
           </tbody></table>
       ))}
+      {confirmNode}
       {credFor && (
         <Modal title={`Set credential — ${credFor.name}`} onClose={() => setCredFor(null)}>
           <form className="space-y-2 text-xs" onSubmit={(e) => { e.preventDefault(); if (credName.trim() && credVal) saveCred.mutate(); }}>
@@ -474,8 +482,8 @@ function AllowTab() {
         <button className="btn btn-primary" disabled={!manage || !value.trim() || add.isPending} onClick={() => add.mutate()}>Add</button>
       </div>
       <ErrorLine error={add.error ?? del.error ?? list.error} fallback="Allow-list action failed" />
-      {list.data && (list.data.length === 0 ? <p className="panel p-3 text-muted">Nothing allow-listed.</p> : (
-        <table className="w-full text-xs"><tbody>{list.data.map((a) => <tr key={a.id} className="border-t border-line"><td>{a.type}</td><td className="font-mono">{a.value}</td><td className="text-muted">{a.reason}</td><td className="text-right"><button className="btn py-0" disabled={!manage} onClick={() => del.mutate(a.id)}>Remove</button></td></tr>)}</tbody></table>
+      {list.data && (list.data.length === 0 ? <div className="panel"><EmptyState title="Nothing allow-listed">Add values that must never be imported or hunted.</EmptyState></div> : (
+        <table className="w-full text-xs"><tbody>{list.data.map((a) => <tr key={a.id} className="border-t border-line"><td>{a.type}</td><td className="font-mono">{a.value}</td><td className="text-muted">{a.reason}</td><td className="text-right"><button className="btn btn-sm" disabled={!manage} onClick={() => del.mutate(a.id)}>Remove</button></td></tr>)}</tbody></table>
       ))}
     </div>
   );
@@ -485,11 +493,10 @@ export function IocHuntingView() {
   const [tab, setTab] = useState<Tab>("threats");
   const tabs: [Tab, string][] = [["threats", "Threats"], ["queue", "All indicators"], ["hunts", "Hunts"], ["feeds", "Feeds"], ["allow", "Allow-list"]];
   return (
-    <section className="space-y-3">
-      <h1 className="text-base font-semibold">IOC Hunting</h1>
-      <p className="text-xs text-muted">Feeds bring in recent intelligence, grouped by threat → a tenant admin reads a threat&apos;s bulletin (IOCs, IOAs, TTPs) and validates it → the platform hunts every data source for all of it and opens a case with the result, whether or not anything is found.</p>
+    <section className="space-y-4">
+      <PageHeader title="IOC Hunting" description="Feeds bring in recent intelligence, grouped by threat. A tenant admin reads a threat’s bulletin (IOCs, behaviours, techniques) and validates it; the platform then hunts every data source for all of it and opens a case with the result, whether or not anything is found." />
       <Overview />
-      <div role="tablist" className="flex gap-2">{tabs.map(([k, label]) => <button key={k} role="tab" aria-selected={tab === k} className={`btn ${tab === k ? "btn-primary" : ""}`} onClick={() => setTab(k)}>{label}</button>)}</div>
+      <Tabs<Tab> label="IOC hunting sections" tabs={tabs.map(([key, label]) => ({ key, label }))} value={tab} onChange={setTab} />
       {tab === "threats" && <ThreatsTab onHunt={() => setTab("hunts")} />}
       {tab === "queue" && <QueueTab onHunt={() => setTab("hunts")} />}
       {tab === "hunts" && <HuntsTab />}

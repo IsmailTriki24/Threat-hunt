@@ -9,6 +9,7 @@ import { useAuth } from "@/lib/auth";
 import { caseListQuery, defaultCaseFilters, type CaseFilters } from "@/lib/cases";
 import { fmtTime } from "@/lib/query";
 import { ErrorLine, LevelBadge, StatusBadge } from "./badges";
+import { Loading } from "./ui/skeleton";
 
 export function NewCaseForm({ onCreated }: { onCreated: (id: string) => void }) {
   const { can, session } = useAuth();
@@ -27,7 +28,7 @@ export function NewCaseForm({ onCreated }: { onCreated: (id: string) => void }) 
   const submit = (e: FormEvent) => { e.preventDefault(); if (title.trim()) create.mutate(); };
 
   return (
-    <form onSubmit={submit} className="panel p-3 space-y-2 max-w-3xl" aria-label="New case">
+    <form onSubmit={submit} className="panel p-4 space-y-2 max-w-3xl" aria-label="New case">
       <div className="grid grid-cols-[8rem_1fr] gap-2 items-start">
         <label htmlFor="c-title">Title</label>
         <input id="c-title" className="input" value={title} maxLength={200} onChange={(e) => setTitle(e.target.value)} />
@@ -81,9 +82,9 @@ export function CasesList() {
       </div>
       {!canWrite && <p className="text-xs text-muted">Read-only: your role cannot create or modify cases.</p>}
       {showNew && canWrite && <NewCaseForm onCreated={(id) => router.push(`/cases/${id}`)} />}
-      {cases.isLoading && <p className="text-muted">Loading…</p>}
+      {cases.isLoading && <Loading />}
       <ErrorLine error={cases.error} fallback="Failed to load cases" />
-      {cases.data && (cases.data.length === 0 ? <p className="panel p-3 text-muted">No cases match.</p> : (
+      {cases.data && (cases.data.length === 0 ? <p className="panel p-4 text-muted">No cases match.</p> : (
         <table className="w-full">
           <thead><tr>{["Case", "Title", "Severity", "Pri", "Status", "Assignee", "Evid", "IOCs", "Assets", "Updated"].map((h) => <th key={h} className="th" scope="col">{h}</th>)}</tr></thead>
           <tbody>

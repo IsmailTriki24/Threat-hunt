@@ -28,7 +28,7 @@ function Translate() {
   const [q, setQ] = useState("");
   const tr = useMutation({ mutationFn: () => api.aiTranslate(q.trim()) });
   return (
-    <details className="panel p-3" aria-label="Question to query">
+    <details className="panel p-4" aria-label="Question to query">
       <summary className="cursor-pointer text-xs font-semibold">Question → hunt query</summary>
       <div className="mt-2 space-y-2">
         <div className="flex gap-2">
@@ -81,29 +81,29 @@ export function AiHuntingView() {
     <section className="space-y-4">
       <div className="flex flex-wrap items-end justify-between gap-2">
         <div>
-          <h1 className="bg-gradient-to-r from-violet-300 via-sky-300 to-teal-200 bg-clip-text text-xl font-semibold text-transparent">AI Hunting</h1>
-          {enabled && <p className="mt-0.5 text-xs text-muted">Read-only searches as you, inside your tenant. Every conclusion is checked against the events the agent actually retrieved.</p>}
+          <h1 className="flex items-center gap-2 text-2xl font-semibold tracking-tight">AI Hunting <span className="badge border-accent/30 bg-accent-soft text-accent">Agent-assisted</span></h1>
+          {enabled && <p className="mt-0.5 max-w-3xl text-sm text-muted">Read-only searches as you, inside your tenant. Every conclusion is checked against the events the agent actually retrieved.</p>}
         </div>
         {enabled && (
           <span className="flex flex-wrap items-center gap-1.5">
-            <span className="ai-chip border-emerald-400/30 bg-emerald-400/10 text-emerald-300"><span className="h-1.5 w-1.5 animate-pulse rounded-full bg-emerald-400" />{status.data?.provider}/{status.data?.model}</span>
+            <span className="ai-chip border-sev-ok/30 bg-sev-ok-bg text-sev-ok"><span className="h-1.5 w-1.5 animate-pulse rounded-full bg-sev-ok" />{status.data?.provider}/{status.data?.model}</span>
             {(status.data?.intel_providers?.length ?? 0) > 0
-              ? <span className="ai-chip border-rose-400/30 bg-rose-400/10 text-rose-300" title="Public indicators the agent meets are checked automatically with these providers."><Icon name="shield" className="h-3 w-3" />Intel: {status.data?.intel_providers?.join(", ")}</span>
-              : <span className="ai-chip border-amber-400/30 bg-amber-400/10 text-amber-300" title="No threat-intel provider (VirusTotal, OTX, ...) has an API key for this tenant. Add one under Threat Intel to get real verdicts for the IPs, domains, URLs and hashes the agent finds."><Icon name="alert" className="h-3 w-3" />No intel provider{status.data?.web_search ? " - web fallback" : ""}</span>}
-            {status.data?.web_search && <span className="ai-chip border-sky-400/30 bg-sky-400/10 text-sky-300" title="The agent may search the public web for context. Queries never contain hostnames, usernames or internal IPs from your data."><Icon name="globe" className="h-3 w-3" />Web search on</span>}
+              ? <span className="ai-chip border-accent/30 bg-accent-soft text-accent" title="Public indicators the agent meets are checked automatically with these providers."><Icon name="shield" className="h-3 w-3" />Intel: {status.data?.intel_providers?.join(", ")}</span>
+              : <span className="ai-chip border-sev-medium/30 bg-sev-medium-bg text-sev-medium" title="No threat-intel provider (VirusTotal, OTX, ...) has an API key for this tenant. Add one under Threat Intel to get real verdicts for the IPs, domains, URLs and hashes the agent finds."><Icon name="alert" className="h-3 w-3" />No intel provider{status.data?.web_search ? " - web fallback" : ""}</span>}
+            {status.data?.web_search && <span className="ai-chip border-accent/30 bg-accent-soft text-accent" title="The agent may search the public web for context. Queries never contain hostnames, usernames or internal IPs from your data."><Icon name="globe" className="h-3 w-3" />Web search on</span>}
           </span>
         )}
       </div>
-      {status.data && !enabled && <p role="status" className="panel p-3 text-xs text-orange-300">AI hunting is not configured. Set AI_PROVIDER and the provider key on the server; nothing else in the platform depends on it.</p>}
+      {status.data && !enabled && <p role="status" className="rounded-lg border border-sev-medium/30 bg-sev-medium-bg px-4 py-3 text-sm text-sev-medium">AI hunting is not configured. Set AI_PROVIDER and the provider key on the server; nothing else in the platform depends on it.</p>}
 
       <div className="ai-glow" data-active={busy}>
         <span className="ai-glow-spin" aria-hidden="true" />
         <div className="ai-glow-body space-y-3 p-3">
-          <textarea aria-label="Hunting goal" className="input h-20 w-full resize-none border-transparent bg-bg/70 text-sm" placeholder="Describe what to hunt for, e.g. Is any host running encoded PowerShell outside of admin accounts?"
+          <textarea aria-label="Hunting goal" className="input h-20 w-full resize-none border-transparent bg-subtle text-sm" placeholder="Describe what to hunt for, e.g. Is any host running encoded PowerShell outside of admin accounts?"
             value={goal} onChange={(e) => setGoal(e.target.value)} disabled={!enabled || busy}
             onKeyDown={(e) => { if ((e.metaKey || e.ctrlKey) && e.key === "Enter" && enabled && !busy && goal.trim().length >= 5) go(); }} />
           {!busy && state.phase === "idle" && (
-            <div className="flex flex-wrap gap-1.5">{EXAMPLES.map((x) => <button key={x} type="button" className="ai-chip border-line bg-bg/60 text-muted transition hover:border-ai/60 hover:text-violet-200" disabled={!enabled} onClick={() => setGoal(x)}>{x}</button>)}</div>
+            <div className="flex flex-wrap gap-1.5">{EXAMPLES.map((x) => <button key={x} type="button" className="ai-chip border-line-strong bg-panel text-ink-2 transition hover:border-accent/60 hover:text-accent" disabled={!enabled} onClick={() => setGoal(x)}>{x}</button>)}</div>
           )}
           <div className="flex flex-wrap items-center gap-3 text-xs">
             <div role="radiogroup" aria-label="Depth" className="inline-flex overflow-hidden rounded-md border border-line">
@@ -147,8 +147,8 @@ export function AiHuntingView() {
           <div className="grid gap-1.5 sm:grid-cols-2">
             {runs.data.map((r) => (
               <button key={r.id} onClick={() => { setOpenId(r.id); setWinOpen(true); }} className={`panel flex items-center gap-2 px-3 py-2 text-left text-xs transition hover:border-ai/60 ${r.id === openId ? "border-ai/60" : ""}`}>
-                <span className={`h-2 w-2 shrink-0 rounded-full ${r.status === "COMPLETED" ? "bg-emerald-400" : r.status === "FAILED" ? "bg-red-400" : "bg-amber-400"}`} />
-                <span className="min-w-0 flex-1 truncate">{r.goal}</span>{r.case_id && <span className="ai-chip shrink-0 border-emerald-400/30 bg-emerald-400/10 text-emerald-300">case</span>}<span className="shrink-0 text-muted">{fmtTime(r.created_at)}</span>
+                <span className={`h-2 w-2 shrink-0 rounded-full ${r.status === "COMPLETED" ? "bg-sev-ok" : r.status === "FAILED" ? "bg-red-400" : "bg-amber-400"}`} />
+                <span className="min-w-0 flex-1 truncate">{r.goal}</span>{r.case_id && <span className="ai-chip shrink-0 border-sev-ok/30 bg-sev-ok-bg text-sev-ok">case</span>}<span className="shrink-0 text-muted">{fmtTime(r.created_at)}</span>
               </button>
             ))}
           </div>

@@ -14,7 +14,7 @@ export function IntelOpenButton({ type, value, label = "Intel" }: { type: Entity
   });
   return (
     <span className="inline-flex items-center gap-1">
-      <button className="btn py-0 text-xs" disabled={look.isPending} onClick={() => look.mutate()} aria-label={`Look up ${value} in threat intelligence`} title="Threat-intelligence lookup">{look.isPending ? "…" : label}</button>
+      <button className="btn btn-sm" disabled={look.isPending} onClick={() => look.mutate()} aria-label={`Look up ${value} in threat intelligence`} title="Threat-intelligence lookup">{look.isPending ? "…" : label}</button>
       <ErrorLine error={look.error} fallback="Lookup failed" />
     </span>
   );

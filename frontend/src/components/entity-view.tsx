@@ -11,6 +11,7 @@ import { fmtTime } from "@/lib/query";
 import { CopyButton, ErrorLine } from "./badges";
 import { EventDrawer } from "./event-drawer";
 import { ScoreBar, Section, StatusPill, VerdictBadge } from "./intel-bits";
+import { useConfirm } from "./ui/confirm";
 
 function Breakdown({ d }: { d: IntelDetail }) {
   return (
@@ -46,7 +47,7 @@ function Observations({ obs }: { obs: IntelObservation[] }) {
         {obs.map((o) => (
           <article key={o.provider} className="border border-line p-2 space-y-0.5" aria-label={`Observation ${o.provider}`}>
             <div className="flex items-center gap-2"><strong>{o.provider}</strong><StatusPill status={o.status} /><span className="ml-auto text-xs text-muted">{fmtTime(o.fetched_at)}</span></div>
-            {o.status === "error" ? <p className="text-red-400 text-xs">Provider failed: {o.summary}. This does not mean the indicator is clean.</p> : (
+            {o.status === "error" ? <p className="text-red-700 text-xs">Provider failed: {o.summary}. This does not mean the indicator is clean.</p> : (
               <p className="text-xs"><VerdictBadge verdict={o.verdict} /> confidence {o.confidence} — {o.summary}</p>
             )}
             {dataLine(o) && <p className="text-xs text-muted break-words">{dataLine(o)}</p>}
@@ -134,7 +135,7 @@ function Relations({ d, canWrite }: { d: IntelDetail; canWrite: boolean }) {
             <span className="text-xs border border-line px-1 rounded-sm">{ENTITY_LABEL[r.other.type] ?? r.other.type}</span>
             <Link className="text-accent hover:underline font-mono" href={`/threat-intel/${r.other.id}`}>{r.other.value}</Link>
             <span className="text-xs text-muted">via {r.source}</span>
-            {canWrite && <button className="btn py-0 text-xs ml-auto" aria-label={`Remove relation to ${r.other.value}`} onClick={() => del.mutate(r.id)}>Remove</button>}
+            {canWrite && <button className="btn btn-sm ml-auto" aria-label={`Remove relation to ${r.other.value}`} onClick={() => del.mutate(r.id)}>Remove</button>}
           </li>
         ))}
       </ul>
@@ -147,7 +148,7 @@ function Relations({ d, canWrite }: { d: IntelDetail; canWrite: boolean }) {
           {found.data && (
             <ul className="panel w-96">
               {found.data.filter((e) => e.id !== d.entity.id).map((e) => (
-                <li key={e.id} className="px-2 py-0.5 flex items-center gap-2"><span className="flex-1 truncate font-mono">{e.type}: {e.value}</span><button className="btn py-0 text-xs" onClick={() => add.mutate(e.id)}>Relate</button></li>
+                <li key={e.id} className="px-2 py-0.5 flex items-center gap-2"><span className="flex-1 truncate font-mono">{e.type}: {e.value}</span><button className="btn btn-sm" onClick={() => add.mutate(e.id)}>Relate</button></li>
               ))}
             </ul>
           )}
@@ -170,9 +171,10 @@ export function EntityView({ id }: { id: string }) {
     onSuccess: (r) => { setCoverage(r.coverage); qc.setQueryData(["intel-entity", id], r); void qc.invalidateQueries({ queryKey: ["intel-sightings", id] }); },
   });
   const del = useMutation({ mutationFn: () => api.deleteEntity(id), onSuccess: () => router.push("/threat-intel") });
+  const { confirm, node: confirmNode } = useConfirm();
 
   if (q.isLoading) return <p className="text-muted">Loading entity…</p>;
-  if (q.error || !q.data) return <p role="alert" className="panel p-3 text-red-400">{q.error instanceof ApiError && q.error.status === 404 ? "Entity not found." : q.error instanceof ApiError ? q.error.friendly : "Failed to load entity"}</p>;
+  if (q.error || !q.data) return <p role="alert" className="panel p-4 text-red-700">{q.error instanceof ApiError && q.error.status === 404 ? "Entity not found." : q.error instanceof ApiError ? q.error.friendly : "Failed to load entity"}</p>;
   const d = q.data, e = d.entity;
   const canWrite = can("intel:write");
   const shown = defanged ? defangEntity(e.type, e.value) : e.value;
@@ -180,7 +182,7 @@ export function EntityView({ id }: { id: string }) {
 
   return (
     <div className="space-y-2">
-      <div className="panel p-3 flex items-center gap-3 flex-wrap">
+      <div className="panel p-4 flex items-center gap-3 flex-wrap">
         <span className="text-xs border border-line px-1 rounded-sm">{ENTITY_LABEL[e.type] ?? e.type}</span>
         <h1 className="font-mono text-base break-all">{shown}</h1>
         <CopyButton text={shown} />
@@ -191,7 +193,7 @@ export function EntityView({ id }: { id: string }) {
         <button className="btn" disabled={!canWrite || enrich.isPending} onClick={() => enrich.mutate(false)}>{enrich.isPending ? "Enriching…" : "Enrich"}</button>
         <button className="btn" disabled={!canWrite || enrich.isPending} onClick={() => enrich.mutate(true)} title="Ignore cached provider results">Force refresh</button>
         <span className="text-muted">Last enriched {e.last_enriched_at ? fmtTime(e.last_enriched_at) : "never"} · source {e.source}</span>
-        <button className="btn ml-auto" disabled={!canWrite} onClick={() => { if (confirm(`Delete entity “${e.value}”?`)) del.mutate(); }}>Delete</button>
+        <button className="btn ml-auto" disabled={!canWrite} onClick={() => confirm({ title: `Delete entity “${e.value}”?`, message: "The entity, its watch-list verdict and cached provider observations are removed from this tenant.", confirmLabel: "Delete entity", run: () => del.mutate() })}>Delete</button>
       </div>
       <ErrorLine error={enrich.error ?? del.error} fallback="Request failed" />
       {cov && <p className="text-xs text-muted" aria-label="Provider coverage">Coverage: {coverageLine(cov)}</p>}
@@ -202,6 +204,7 @@ export function EntityView({ id }: { id: string }) {
       <Observations obs={d.observations} />
       {can("events:read") && <SightingsPanel id={id} value={e.value} />}
       <Relations d={d} canWrite={canWrite} />
+      {confirmNode}
     </div>
   );
 }

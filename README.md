@@ -61,6 +61,9 @@ make check                                   # ruff, mypy --strict, bandit, pip-
 Backend tests run against real PostgreSQL (database `hunt_test`, recreated per run), Redis (db 15) and OpenSearch
 (`test-*` indices removed afterwards) — start `make infra` first. New migration: `alembic revision --autogenerate -m "…"` from `backend/`.
 
+## Design system
+The UI is a light, enterprise-grade theme (purple identity `#7568E9`) built on tokens and a small shared kit; see **docs/design-system.md** for tokens, components, conventions and the accessibility rules, and ADR 0017 for the decision.
+
 ## Layout
 `backend/` FastAPI app, Alembic migrations, tests · `frontend/` Next.js + Tailwind + TanStack Query · `docs/adr/` decisions ·
 `SECURITY.md` controls & known gaps · `CONTRIBUTING.md`.

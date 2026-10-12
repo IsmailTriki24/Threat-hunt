@@ -39,12 +39,14 @@ export function age(iso: string, now: number = Date.now()): string {
   return `${Math.round(m / 1440)}d`;
 }
 
+/** Hunt status chips: always shown with their text label, so colour is reinforcement and not the signal. */
 export const HUNT_STATUS_CLASS: Record<string, string> = {
-  PENDING: "text-muted border border-line", RUNNING: "bg-blue-900/50 text-blue-200", COMPLETED: "bg-green-900/40 text-green-300",
-  PARTIAL: "bg-orange-900/50 text-orange-300", FAILED: "bg-red-900/60 text-red-200",
+  PENDING: "badge border-line-strong bg-subtle text-muted", RUNNING: "badge border-sev-low/30 bg-sev-low-bg text-sev-low",
+  COMPLETED: "badge border-sev-ok/30 bg-sev-ok-bg text-sev-ok", PARTIAL: "badge border-sev-high/30 bg-sev-high-bg text-sev-high",
+  FAILED: "badge border-sev-critical/30 bg-sev-critical-bg text-sev-critical",
 };
 
-export const COVERAGE_CLASS: Record<string, string> = { ok: "text-green-300", truncated: "text-orange-300", skipped: "text-orange-300", "n/a": "text-muted", error: "text-red-400" };
+export const COVERAGE_CLASS: Record<string, string> = { ok: "text-sev-ok font-medium", truncated: "text-sev-high font-medium", skipped: "text-sev-high font-medium", "n/a": "text-muted", error: "text-sev-critical font-medium" };
 
 /** What the admin is about to commit to: shown in the confirmation so a validation is never a blind click. */
 export function validationSummary(items: IocItem[]): string {
@@ -72,7 +74,8 @@ export interface Bulletin extends ThreatRow { description: string; references: s
 export interface SignalMatch { id: string; kind: string; ref: string; label: string; event_id: string; event_timestamp: string; source: string; host: string; user: string; summary: string }
 
 export const SEVERITY_CLASS: Record<string, string> = {
-  CRITICAL: "bg-red-900/70 text-red-100", HIGH: "bg-red-900/40 text-red-200", MEDIUM: "bg-orange-900/50 text-orange-300", LOW: "bg-slate-700/60 text-slate-200", INFO: "text-muted border border-line",
+  CRITICAL: "badge border-sev-critical/30 bg-sev-critical-bg text-sev-critical", HIGH: "badge border-sev-high/30 bg-sev-high-bg text-sev-high", MEDIUM: "badge border-sev-medium/30 bg-sev-medium-bg text-sev-medium",
+  LOW: "badge border-sev-low/30 bg-sev-low-bg text-sev-low", INFO: "badge border-sev-info/25 bg-sev-info-bg text-sev-info",
 };
 export const KIND_LABEL: Record<string, string> = { malware: "Malware", actor: "Threat actor", campaign: "Campaign", report: "Report", other: "Other" };
 export const TTP_SOURCE_NOTE: Record<string, string> = {

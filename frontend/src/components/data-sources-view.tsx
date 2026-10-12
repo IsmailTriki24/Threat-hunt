@@ -7,6 +7,11 @@ import { useAuth } from "@/lib/auth";
 import { buildConfig, fieldsFromSchema, ingestCurl } from "@/lib/cases";
 import { fmtTime } from "@/lib/query";
 import { CopyButton, ErrorLine, HealthBadge, Modal } from "./badges";
+import { Database, Info, Lock, Plus } from "lucide-react";
+import { useConfirm } from "./ui/confirm";
+import { EmptyState } from "./ui/empty-state";
+import { ActionMenu } from "./ui/menu";
+import { Loading } from "./ui/skeleton";
 
 const DEFAULT_SECRET: Record<string, string> = { logrhythm: "token", trend_vision_one: "api_key", generic_rest: "authorization" };
 
@@ -65,7 +70,7 @@ function CreateWizard({ connectors, onCreated, onCancel }: {
   }
 
   return (
-    <form onSubmit={submit} className="panel p-3 space-y-2 max-w-3xl" aria-label="New data source">
+    <form onSubmit={submit} className="panel p-4 space-y-2 max-w-3xl" aria-label="New data source">
       <div className="grid grid-cols-[9rem_1fr] gap-2 items-start">
         <label htmlFor="ds-type">Connector</label>
         <select id="ds-type" className="input" value={type} onChange={(e) => { setType(e.target.value); setValues({}); }}>
@@ -100,13 +105,13 @@ function CreateWizard({ connectors, onCreated, onCancel }: {
                   <input aria-label={`Secret value ${i + 1}`} className="input flex-1" type="password" autoComplete="new-password" placeholder="write-only" value={s.v} onChange={(e) => setSecrets(secrets.map((x, j) => (j === i ? { ...x, v: e.target.value } : x)))} />
                 </div>
               ))}
-              <button type="button" className="btn text-xs py-0" onClick={() => setSecrets([...secrets, { k: "authorization", v: "" }])}>Add secret</button>
+              <button type="button" className="btn btn-sm py-0" onClick={() => setSecrets([...secrets, { k: "authorization", v: "" }])}>Add secret</button>
               <p className="text-xs text-muted">Secrets are encrypted at rest and never returned by the API.</p>
             </div>
           </>
         )}
       </div>
-      {errors.length > 0 && <ul role="alert" className="text-red-400 text-xs">{errors.map((e) => <li key={e}>{e}</li>)}</ul>}
+      {errors.length > 0 && <ul role="alert" className="text-red-700 text-xs">{errors.map((e) => <li key={e}>{e}</li>)}</ul>}
       <ErrorLine error={create.error} fallback="Failed to create data source" />
       <div className="flex gap-1">
         <button className="btn btn-primary" type="submit" disabled={create.isPending}>Create data source</button>
@@ -135,14 +140,15 @@ export function DataSourcesView() {
   const remove = useMutation({ mutationFn: (d: DataSource) => api.deleteDataSource(d.id), onSuccess: refresh });
 
   const hint = manage ? "" : "Requires datasources:manage";
+  const { confirm, node: confirmNode } = useConfirm();
   return (
-    <div className="space-y-2">
-      <div className="flex items-center">
-        <p className="text-xs text-muted">Push sources send events to their ingest endpoint with a per-source key; pull sources are collected by the worker every 5 minutes.</p>
-        <button className="btn btn-primary ml-auto" disabled={!manage || !connectors.data} title={hint} onClick={() => setShowNew((s) => !s)}>New data source</button>
+    <div className="space-y-3">
+      <div className="flex flex-wrap items-center gap-3">
+        <p className="text-sm text-muted">Push sources send events to their ingest endpoint with a per-source key; pull sources are collected by the worker every 5 minutes.</p>
+        <button className="btn btn-primary ml-auto" disabled={!manage || !connectors.data} title={hint} onClick={() => setShowNew((s) => !s)}><Plus aria-hidden className="h-4 w-4" />New data source</button>
       </div>
-      {!manage && <p className="text-xs text-muted">Read-only: managing data sources requires the tenant admin role.</p>}
-      {notice && <p role="status" className="panel p-2 text-xs">{notice}</p>}
+      {!manage && <p className="text-sm text-muted">Read-only: managing data sources requires the tenant admin role.</p>}
+      {notice && <p role="status" className="flex items-start gap-2 rounded-lg border border-line bg-panel px-4 py-2.5 text-sm shadow-xs"><Info aria-hidden className="mt-0.5 h-4 w-4 shrink-0 text-accent" />{notice}</p>}
       <ErrorLine error={test.error ?? collect.error ?? rotate.error ?? remove.error ?? toggle.error} fallback="Action failed" />
       {showNew && manage && connectors.data && (
         <CreateWizard connectors={connectors.data} onCancel={() => setShowNew(false)}
@@ -151,31 +157,37 @@ export function DataSourcesView() {
       {secretFor && <SecretDialog source={secretFor} onClose={() => setSecretFor(null)} onSaved={() => { setNotice(`Credential saved for ${secretFor.name}. Enable the source (or Test it) to use it.`); void refresh(); }} />}
       {reveal && <OneTimeKeyDialog sourceId={reveal.id} ingestKey={reveal.key} onClose={() => setReveal(null)} />}
       <ErrorLine error={sources.error} fallback="Failed to load data sources" />
-      {sources.data && (sources.data.length === 0 ? <p className="panel p-3 text-muted">No data sources configured.</p> : (
+      {sources.isLoading && <Loading />}
+      {sources.data && (sources.data.length === 0 ? <div className="panel"><EmptyState icon={Database} title="No data sources configured">Create a connector to start ingesting telemetry. Pull sources (LogRhythm, Trend Vision One) are collected automatically; push sources receive events at their ingest endpoint.</EmptyState></div> : (
         <table className="w-full">
-          <thead><tr>{["Name", "Connector", "Mode", "Health", "Last ingest", "Events", "Enabled", "Actions"].map((h) => <th key={h} className="th" scope="col">{h}</th>)}</tr></thead>
+          <thead><tr>{["Name", "Connector", "Mode", "Health", "Last ingest", "Events", "Enabled", ""].map((h, i) => <th key={i} className="th" scope="col">{h || <span className="sr-only">Actions</span>}</th>)}</tr></thead>
           <tbody>
             {sources.data.map((d) => (
-              <tr key={d.id} className="hover:bg-bg">
-                <td className="td">{d.name}{d.has_secrets && <span className="text-xs text-muted"> 🔒</span>}</td>
+              <tr key={d.id}>
+                <td className="td"><span className="font-medium">{d.name}</span>{d.has_secrets && <Lock aria-label="credential set" className="ml-1 inline h-3 w-3 text-muted" />}</td>
                 <td className="td font-mono">{d.connector_type}</td>
                 <td className="td">{d.supports_collect ? "pull" : "push"}</td>
                 <td className="td" title={d.health_detail}><HealthBadge status={d.health_status} /></td>
                 <td className="td font-mono whitespace-nowrap">{d.last_ingest_at ? fmtTime(d.last_ingest_at) : "never"}</td>
                 <td className="td tabular-nums">{d.events_total.toLocaleString()}</td>
                 <td className="td"><input type="checkbox" aria-label={`Enable ${d.name}`} checked={d.enabled} disabled={!manage || toggle.isPending} onChange={() => toggle.mutate(d)} /></td>
-                <td className="td whitespace-nowrap">
-                  <button className="btn py-0 text-xs" disabled={!manage} title={hint} onClick={() => test.mutate(d)}>Test</button>{" "}
-                  {d.supports_collect && <button className="btn py-0 text-xs" disabled={!manage} onClick={() => collect.mutate(d)}>Collect now</button>}{" "}
-                  {d.supports_collect && <button className="btn py-0 text-xs" disabled={!manage} title={hint} onClick={() => setSecretFor(d)}>Set credential</button>}{" "}
-                  <button className="btn py-0 text-xs" disabled={!manage} onClick={() => { if (confirm(`Rotate the ingest key for “${d.name}”? The old key stops working immediately.`)) rotate.mutate(d); }}>Rotate key</button>{" "}
-                  <button className="btn py-0 text-xs" disabled={!manage} onClick={() => { if (confirm(`Delete data source “${d.name}”? Ingested events are kept.`)) remove.mutate(d); }}>Delete</button>
+                <td className="td whitespace-nowrap text-right">
+                  <span className="inline-flex items-center gap-1">
+                    <button className="btn btn-sm" disabled={!manage || test.isPending} title={hint} onClick={() => test.mutate(d)}>Test</button>
+                    {d.supports_collect && <button className="btn btn-sm" disabled={!manage || collect.isPending} onClick={() => collect.mutate(d)}>Collect now</button>}
+                    <ActionMenu label={`More actions for ${d.name}`} items={[
+                      ...(d.supports_collect ? [{ label: "Set credential", disabled: !manage, onSelect: () => setSecretFor(d) }] : []),
+                      { label: "Rotate ingest key", disabled: !manage, onSelect: () => confirm({ title: `Rotate the ingest key for “${d.name}”?`, message: "The old key stops working immediately. You will be shown the new key once.", confirmLabel: "Rotate key", run: () => rotate.mutate(d) }) },
+                      { label: "Delete data source", danger: true, disabled: !manage, onSelect: () => confirm({ title: `Delete data source “${d.name}”?`, message: "The connector stops collecting. Events already ingested are kept.", confirmLabel: "Delete", run: () => remove.mutate(d) }) },
+                    ]} />
+                  </span>
                 </td>
               </tr>
             ))}
           </tbody>
         </table>
       ))}
+      {confirmNode}
     </div>
   );
 }

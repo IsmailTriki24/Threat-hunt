@@ -87,13 +87,16 @@ it("shows the ingest key exactly once and never again after the dialog is closed
 });
 
 it("rotating a key requires confirmation and reveals the new key once", async () => {
-  vi.stubGlobal("confirm", vi.fn(() => true));
   mockFetch({
     "GET /api/v1/data-sources": () => [ds()], "GET /api/v1/data-sources/connectors": () => connectors,
     "POST /api/v1/data-sources/d1/rotate-key": () => ds({ ingest_key: "hk_rotated" }),
   });
   renderWithQuery(<DataSourcesView />);
-  await userEvent.click(await screen.findByRole("button", { name: "Rotate key" }));
+  await userEvent.click(await screen.findByRole("button", { name: /More actions for Sysmon push/ }));
+  await userEvent.click(screen.getByRole("menuitem", { name: "Rotate ingest key" }));
+  const confirmDialog = await screen.findByRole("dialog", { name: /Rotate the ingest key/ });
+  expect(confirmDialog).toHaveTextContent(/old key stops working immediately/);
+  await userEvent.click(within(confirmDialog).getByRole("button", { name: "Rotate key" }));
   expect(await screen.findByTestId("ingest-key")).toHaveTextContent("hk_rotated");
   await userEvent.click(screen.getByRole("button", { name: "Close dialog" }));
   expect(document.body.textContent).not.toContain("hk_rotated");

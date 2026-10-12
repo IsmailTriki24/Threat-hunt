@@ -1,7 +1,7 @@
 "use client";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import Link from "next/link";
-import { useRouter } from "next/navigation";
+import { useRouter, useSearchParams } from "next/navigation";
 import { useState, type FormEvent } from "react";
 import { api } from "@/lib/api";
 import { ENTITY_TYPES, type EntityType, type IntelProvider, type StixImportResult } from "@/lib/api-types";
@@ -10,13 +10,17 @@ import { buildProviderPayload, degradationMessage, parseStixText, providerFields
 import { fmtTime } from "@/lib/query";
 import { ErrorLine, HealthBadge, Modal } from "./badges";
 import { ScoreBar, StatusPill, VerdictBadge } from "./intel-bits";
+import { PageHeader } from "./ui/page-header";
+import { Tabs } from "./ui/tabs";
+import { EmptyState } from "./ui/empty-state";
 
 type Tab = "entities" | "providers" | "import";
 
 export function LookupBar() {
   const { can } = useAuth();
   const router = useRouter();
-  const [value, setValue] = useState("");
+  const prefill = useSearchParams().get("lookup")?.slice(0, 2048) ?? ""; // from the global search: "Look up … in threat intelligence"
+  const [value, setValue] = useState(prefill);
   const [type, setType] = useState<EntityType | "">("");
   const [refresh, setRefresh] = useState(false);
   const look = useMutation({
@@ -26,13 +30,13 @@ export function LookupBar() {
   const submit = (e: FormEvent) => { e.preventDefault(); if (value.trim()) look.mutate(); };
   const allowed = can("intel:write");
   return (
-    <form onSubmit={submit} aria-label="Indicator lookup" className="panel p-2 flex items-center gap-2 flex-wrap">
-      <input aria-label="Indicator" className="input flex-1 min-w-64 font-mono" placeholder="Paste an IP, domain, URL, hash or e-mail — type is auto-detected"
+    <form onSubmit={submit} aria-label="Indicator lookup" className="panel flex flex-wrap items-center gap-2 p-3">
+      <input aria-label="Indicator" className="input min-w-64 flex-1 font-mono" placeholder="Paste an IP, domain, URL, hash or e-mail — type is auto-detected"
         value={value} onChange={(e) => setValue(e.target.value)} disabled={!allowed} />
       <select aria-label="Indicator type" className="input" value={type} onChange={(e) => setType(e.target.value as EntityType | "")} disabled={!allowed}>
         <option value="">auto-detect</option>{ENTITY_TYPES.map((t) => <option key={t}>{t}</option>)}
       </select>
-      <label className="flex items-center gap-1 text-xs"><input type="checkbox" checked={refresh} onChange={(e) => setRefresh(e.target.checked)} disabled={!allowed} /> force refresh</label>
+      <label className="flex items-center gap-1.5 text-sm text-ink-2"><input type="checkbox" checked={refresh} onChange={(e) => setRefresh(e.target.checked)} disabled={!allowed} /> force refresh</label>
       <button className="btn btn-primary" type="submit" disabled={!allowed || !value.trim() || look.isPending} title={allowed ? "" : "Your role cannot run lookups"}>
         {look.isPending ? "Looking up…" : "Look up"}
       </button>
@@ -49,7 +53,7 @@ function EntitiesTab() {
   const list = useQuery({ queryKey: ["intel-entities", qs], queryFn: () => api.listEntities(qs) });
   return (
     <div className="space-y-2">
-      <div className="flex gap-2 text-xs">
+      <div className="flex flex-wrap gap-2">
         <select aria-label="Filter type" className="input" value={type} onChange={(e) => setType(e.target.value)}><option value="">all types</option>{ENTITY_TYPES.map((t) => <option key={t}>{t}</option>)}</select>
         <select aria-label="Filter verdict" className="input" value={verdict} onChange={(e) => setVerdict(e.target.value)}>
           <option value="">all verdicts</option>{["malicious", "suspicious", "benign", "unknown"].map((v) => <option key={v}>{v}</option>)}
@@ -57,7 +61,7 @@ function EntitiesTab() {
         <input aria-label="Search entities" className="input w-64" placeholder="Search value…" value={q} onChange={(e) => setQ(e.target.value)} />
       </div>
       <ErrorLine error={list.error} fallback="Failed to load entities" />
-      {list.data && (list.data.length === 0 ? <p className="panel p-3 text-muted">No entities yet. Look up an indicator above, or import a STIX bundle.</p> : (
+      {list.data && (list.data.length === 0 ? <div className="panel"><EmptyState title="No entities yet">Look up an indicator above, or import a STIX bundle.</EmptyState></div> : (
         <table className="w-full">
           <thead><tr>{["Type", "Value", "Verdict", "Score", "Watch-list", "Tags", "Last enriched"].map((h) => <th key={h} className="th" scope="col">{h}</th>)}</tr></thead>
           <tbody>
@@ -115,7 +119,7 @@ export function ProviderForm({ p, onClose }: { p: IntelProvider; onClose: () => 
               value={secrets[k] ?? ""} onChange={(e) => setSecrets({ ...secrets, [k]: e.target.value })} />
           </div>
         ))}
-        {errors.map((e) => <p key={e} role="alert" className="text-red-400 text-xs">{e}</p>)}
+        {errors.map((e) => <p key={e} role="alert" className="text-red-700 text-xs">{e}</p>)}
         <ErrorLine error={save.error instanceof Error && save.error.message === "invalid" ? null : save.error} fallback="Save failed" />
         {testMsg && <p role="status" className="text-xs">{testMsg}</p>}
         <ErrorLine error={test.error} fallback="Test failed" />
@@ -145,7 +149,7 @@ function ProvidersTab() {
       <ErrorLine error={pull.error} fallback="TAXII pull failed" />
       <div className="grid md:grid-cols-2 xl:grid-cols-3 gap-2">
         {providers.data?.map((p) => (
-          <section key={p.key} className="panel p-3 space-y-1" aria-label={p.display_name}>
+          <section key={p.key} className="panel p-4 space-y-1" aria-label={p.display_name}>
             <div className="flex items-center gap-2">
               <h2 className="font-semibold">{p.display_name}</h2>
               <span className="text-xs border border-line px-1 rounded-sm">{p.offline ? "offline" : "online"}</span>
@@ -190,7 +194,7 @@ function ImportTab() {
       <input aria-label="STIX bundle file" type="file" accept=".json,application/json" onChange={(e) => void onFile(e.target.files?.[0])} className="text-xs" />
       <textarea aria-label="STIX bundle JSON" className="input w-full font-mono h-48" placeholder='{"type":"bundle","objects":[…]}' value={text} onChange={(e) => setText(e.target.value)} />
       <button className="btn btn-primary" disabled={!can("intel:write") || !text.trim() || imp.isPending} onClick={() => imp.mutate()}>Import</button>
-      {parseError && <p role="alert" className="text-red-400 text-xs">{parseError}</p>}
+      {parseError && <p role="alert" className="text-red-700 text-xs">{parseError}</p>}
       <ErrorLine error={imp.error instanceof Error && imp.error.message === "invalid" ? null : imp.error} fallback="Import failed" />
       {result && <p role="status" className="panel p-2 text-xs">Import complete: {stixSummary(result)}</p>}
     </div>
@@ -200,15 +204,10 @@ function ImportTab() {
 export function ThreatIntelView() {
   const [tab, setTab] = useState<Tab>("entities");
   return (
-    <div className="space-y-2">
-      <h1 className="text-base font-semibold">Threat Intelligence</h1>
+    <div className="space-y-4">
+      <PageHeader flush title="Threat Intelligence" description="Look up an indicator, review what providers and your watch-list say about it, and import STIX or TAXII intelligence." />
       <LookupBar />
-      <div role="tablist" className="flex gap-0.5 border-b border-line">
-        {(["entities", "providers", "import"] as Tab[]).map((t) => (
-          <button key={t} role="tab" aria-selected={tab === t} onClick={() => setTab(t)}
-            className={`px-3 py-1 capitalize border-b-2 ${tab === t ? "border-accent text-accent" : "border-transparent text-muted hover:text-[#c9d1d9]"}`}>{t}</button>
-        ))}
-      </div>
+      <Tabs<Tab> label="Threat intelligence sections" value={tab} onChange={setTab} tabs={[{ key: "entities", label: "Entities" }, { key: "providers", label: "Providers" }, { key: "import", label: "Import" }]} />
       <div role="tabpanel">{tab === "entities" ? <EntitiesTab /> : tab === "providers" ? <ProvidersTab /> : <ImportTab />}</div>
     </div>
   );

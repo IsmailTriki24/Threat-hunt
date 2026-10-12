@@ -7,7 +7,7 @@ const toLocalInput = (iso: string) => iso.slice(0, 16);
 export function RangeControl({ value, onChange }: { value: RangeSpec; onChange: (r: RangeSpec) => void }) {
   const key = value.kind === "rel" ? value.value : "custom";
   return (
-    <span className="inline-flex items-center gap-1">
+    <span className="inline-flex flex-wrap items-center gap-1.5">
       <select aria-label="Time range" className="input" value={key}
         onChange={(e) => {
           if (e.target.value !== "custom") onChange({ kind: "rel", value: e.target.value });
@@ -20,7 +20,7 @@ export function RangeControl({ value, onChange }: { value: RangeSpec; onChange: 
         <option value="custom">Custom</option>
       </select>
       {value.kind === "abs" && (
-        <span className="inline-flex items-center gap-1 text-xs">
+        <span className="inline-flex flex-wrap items-center gap-1.5 text-sm">
           <label>From <input aria-label="Range start" type="datetime-local" className="input" value={toLocalInput(value.start)}
             onChange={(e) => e.target.value && onChange({ ...value, start: new Date(e.target.value + "Z").toISOString() })} /></label>
           <label>To <input aria-label="Range end" type="datetime-local" className="input" value={toLocalInput(value.end)}

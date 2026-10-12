@@ -83,9 +83,9 @@ const col = (): MatrixColumn[] => [{ tactic: { id: "TA0002", shortname: "executi
 describe("MITRE matrix", () => {
   it("colours cells by top confidence and keeps unmapped neutral", () => {
     expect(cellClass({ mapping_count: 0, top_confidence: null })).toContain("text-muted");
-    expect(cellClass({ mapping_count: 1, top_confidence: "HIGH" })).toContain("red");
-    expect(cellClass({ mapping_count: 1, top_confidence: "MEDIUM" })).toContain("orange");
-    expect(cellClass({ mapping_count: 1, top_confidence: "LOW" })).toContain("yellow");
+    expect(cellClass({ mapping_count: 1, top_confidence: "HIGH" })).toContain("sev-critical");
+    expect(cellClass({ mapping_count: 1, top_confidence: "MEDIUM" })).toContain("sev-high");
+    expect(cellClass({ mapping_count: 1, top_confidence: "LOW" })).toContain("sev-medium");
   });
   it("filters by text and mapped-only, surfacing parents of matching sub-techniques", () => {
     const names = (c: MatrixColumn[]) => c[0].techniques.map((t) => `${t.id}[${t.subtechniques.map((s) => s.id).join(",")}]`);

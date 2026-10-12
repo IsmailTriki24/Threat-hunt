@@ -15,7 +15,7 @@ vi.mock("@/lib/auth", () => ({
   useOptionalAuth: () => ({ can: (p: string) => perms.includes(p) }),
 }));
 vi.mock("next/link", () => ({ default: ({ href, children, ...r }: { href: string; children: React.ReactNode }) => <a href={href} {...r}>{children}</a> }));
-vi.mock("next/navigation", () => ({ useRouter: () => ({ push }) }));
+vi.mock("next/navigation", () => ({ useSearchParams: () => new URLSearchParams(), useRouter: () => ({ push }) }));
 beforeEach(() => { perms = ["intel:read", "intel:write", "intel:manage", "events:read", "mitre:read", "mitre:write", "cases:write", "cases:read"]; push.mockClear(); });
 
 const EID = "e".repeat(32);
@@ -76,7 +76,7 @@ describe("lookup & providers", () => {
       "POST /api/v1/intel/providers/otx/test": () => ({ ok: true, detail: "HTTP 200" }),
     });
     renderWithQuery(<ThreatIntelView />);
-    await userEvent.click(screen.getByRole("tab", { name: "providers" }));
+    await userEvent.click(screen.getByRole("tab", { name: "Providers" }));
     expect(await screen.findByRole("status")).toHaveTextContent(/not configured \(AlienVault OTX\).*local heuristics and your tenant watch-list/s);
     expect(screen.getByRole("region", { name: "Local heuristics" })).toHaveTextContent("offline");
     await userEvent.click(screen.getByRole("button", { name: "Configure AlienVault OTX" }));
@@ -95,14 +95,14 @@ describe("lookup & providers", () => {
     perms = ["intel:read", "intel:write"];
     mockFetch({ "GET /api/v1/intel/entities": () => [], "GET /api/v1/intel/providers": () => providers });
     renderWithQuery(<ThreatIntelView />);
-    await userEvent.click(screen.getByRole("tab", { name: "providers" }));
+    await userEvent.click(screen.getByRole("tab", { name: "Providers" }));
     expect(await screen.findByRole("button", { name: "Configure AlienVault OTX" })).toBeDisabled();
   });
 
   it("imports a STIX bundle and shows counts; rejects non-bundles locally", async () => {
     const m = mockFetch({ "GET /api/v1/intel/entities": () => [], "POST /api/v1/intel/import/stix": () => ({ created: 2, updated: 1, named_objects: 1, relations: 1, skipped: 4 }) });
     renderWithQuery(<ThreatIntelView />);
-    await userEvent.click(screen.getByRole("tab", { name: "import" }));
+    await userEvent.click(screen.getByRole("tab", { name: "Import" }));
     const box = screen.getByLabelText("STIX bundle JSON");
     await userEvent.click(box);
     await userEvent.paste('{"type":"nope"}');
@@ -225,7 +225,7 @@ describe("MITRE views", () => {
     renderWithQuery(<MatrixView />);
     const col = await screen.findByRole("region", { name: "Execution" });
     const mapped = within(col).getByRole("link", { name: /T1059 Command/ });
-    expect(mapped.parentElement?.className).toContain("red");
+    expect(mapped.parentElement?.className).toContain("sev-critical");
     expect(within(col).getByRole("link", { name: /T1204/ }).parentElement?.className).toContain("text-muted");
     expect(screen.queryByRole("link", { name: /T1059.001/ })).toBeNull();
     await userEvent.click(screen.getByRole("button", { name: "Expand sub-techniques of T1059" }));

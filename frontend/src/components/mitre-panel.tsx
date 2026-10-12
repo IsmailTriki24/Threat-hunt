@@ -63,7 +63,7 @@ function AcceptDialog({ s, targets, onClose, onDone }: { s: MitreSuggestion; tar
           <textarea aria-label="Reasoning" className="input w-full mt-0.5" rows={5} maxLength={5000} value={draft.reasoning} onChange={(e) => setDraft({ ...draft, reasoning: e.target.value })} />
         </label>
         <p className="text-xs text-muted">Evidence: {draft.evidence.length} event{draft.evidence.length === 1 ? "" : "s"} will be cited. MEDIUM and HIGH require at least one.</p>
-        {error && <p role="alert" className="text-red-400 text-xs">{error}</p>}
+        {error && <p role="alert" className="text-red-700 text-xs">{error}</p>}
         <ErrorLine error={create.error instanceof Error && create.error.message === "invalid" ? null : create.error} fallback="Mapping failed" />
         <div className="flex gap-1"><button className="btn btn-primary" type="submit" disabled={create.isPending}>Accept mapping</button><button className="btn" type="button" onClick={onClose}>Cancel</button></div>
       </form>
@@ -106,7 +106,7 @@ export function MitrePanel({ source, targets, mutable }: { source: { case_id: st
                   <strong>{m.technique_name}</strong><span className="text-xs text-muted">{m.tactics.join(", ")}</span>
                   <ConfidenceBadge level={m.confidence} /><span className="text-xs border border-line px-1 rounded-sm">{m.source}</span>
                   {m.object_type === "finding" && <span className="text-xs text-muted">(finding)</span>}
-                  <button className="btn py-0 text-xs ml-auto" aria-label={`Remove mapping ${m.technique_id}`} disabled={!canMap} onClick={() => del.mutate(m.id)}>Remove</button>
+                  <button className="btn btn-sm ml-auto" aria-label={`Remove mapping ${m.technique_id}`} disabled={!canMap} onClick={() => del.mutate(m.id)}>Remove</button>
                 </div>
                 <p className="text-xs whitespace-pre-wrap">{m.reasoning}</p>
                 <p className="text-xs text-muted">Evidence: {m.evidence_count} event{m.evidence_count === 1 ? "" : "s"}
@@ -127,10 +127,10 @@ export function MitrePanel({ source, targets, mutable }: { source: { case_id: st
                 <Link className="font-mono text-accent hover:underline" href={`/mitre/techniques/${s.technique_id}`}>{s.technique_id}</Link><strong>{s.name}</strong>
                 <ConfidenceBadge level={s.confidence} /><span className="text-xs text-muted">{s.event_count} event{s.event_count === 1 ? "" : "s"}</span>
                 <span className="ml-auto flex gap-1">
-                  {s.mapped || accepted(s.technique_id) ? <span className="text-xs text-green-400">mapped ✓</span> : (
-                    <button className="btn py-0 text-xs" disabled={!canMap} aria-label={`Accept ${s.technique_id}`} onClick={() => setAccepting(s)} title={canMap ? "" : "Requires mitre:write and write access to this object"}>Accept…</button>
+                  {s.mapped || accepted(s.technique_id) ? <span className="text-xs text-green-700">mapped ✓</span> : (
+                    <button className="btn btn-sm" disabled={!canMap} aria-label={`Accept ${s.technique_id}`} onClick={() => setAccepting(s)} title={canMap ? "" : "Requires mitre:write and write access to this object"}>Accept…</button>
                   )}
-                  <button className="btn py-0 text-xs" aria-label={`Dismiss ${s.technique_id}`} onClick={() => setDismissed(new Set([...dismissed, s.technique_id]))}>Dismiss</button>
+                  <button className="btn btn-sm" aria-label={`Dismiss ${s.technique_id}`} onClick={() => setDismissed(new Set([...dismissed, s.technique_id]))}>Dismiss</button>
                 </span>
               </div>
               <ul className="text-xs list-disc ml-5">{s.reasoning.map((r, i) => <li key={i}>{r}</li>)}</ul>
