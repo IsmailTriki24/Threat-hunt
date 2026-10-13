@@ -29,9 +29,13 @@ VERDICT_LINES: dict[str, str] = {
     "inconclusive": "Inconclusive - the hunt did not finish or left questions open; this is not a clean result",
 }
 
-TELEMETRY_TOOLS = {"search_events", "aggregate_events", "pivot_entity", "events_around", "process_lineage", "get_event"}
+TELEMETRY_TOOLS = {
+    "search_events", "aggregate_events", "pivot_entity", "events_around", "process_lineage", "get_event", "siem_search", "siem_findings",
+}  # fmt: skip
 TOOL_LABEL = {
-    "search_events": "Event search",
+    "search_events": "Event search (stored copy)",
+    "siem_search": "Live SIEM search",
+    "siem_findings": "Sweep findings",
     "aggregate_events": "Event aggregation",
     "pivot_entity": "Entity pivot",
     "events_around": "Surrounding activity",

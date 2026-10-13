@@ -27,12 +27,15 @@ from app.ai import state as st
 from app.auth.deps import Principal
 from app.auth.rbac import Permission
 from app.core.config import get_settings
+from app.detections.models import Alert, DetectionRule
+from app.events import siem_query as sq
 from app.events.fields import FIELDS
 from app.events.search.base import SearchBackend
 from app.events.search.query import Aggregation, Condition, EventQuery, Filter, Sort, TimeRange
 from app.events.summary import summarize
 from app.intel import types as intel_types
 from app.intel.models import IntelEntity
+from app.iochunt.models import Ioc, IocHunt, IocMatch
 from app.mitre.models import MitreTechnique
 
 MAX_RESULT_CHARS = 12_000
@@ -74,6 +77,7 @@ class ToolContext:
     default_hours: int = 24
     web_calls: int = 0  # web searches made in this run (they leave the platform, so they are budgeted separately)
     enrich_calls: int = 0  # indicator look-ups made in this run (automatic + requested)
+    siem_calls: int = 0  # live SIEM searches made in this run (each loads a production SIEM and takes 10-60 s)
 
 
 @dataclass
@@ -277,6 +281,10 @@ class Tool:
     permission: ClassVar[Permission]
     uses_session: ClassVar[bool] = False
     cacheable: ClassVar[bool] = True
+    timeout_s: ClassVar[float | None] = (
+        None  # overrides ToolContext.call_timeout_s (live SIEM searches are slow by nature)
+    )
+    retry: ClassVar[bool] = True  # transient failures are retried; a 60-second SIEM search must not be
 
     def enabled(self) -> bool:
         """Tools that depend on operator configuration are not offered (and cannot be called) when it is missing."""
@@ -294,8 +302,11 @@ class Tool:
 class SearchEvents(Tool):
     name = "search_events"
     description = (
-        "Search this tenant's telemetry. Returns the total match count and a page of events (newest first by default). Page with "
-        "`offset`/`next_offset`. A zero-result search returns per-clause counts so you can see which condition eliminated everything."
+        "Search the platform's STORED copy of telemetry: events collected earlier, plus evidence from the continuous sweep and alerts. "
+        "It is NOT live: the SIEMs are no longer copied into it, so recent activity in LogRhythm / Trend Vision One is only reachable with "
+        "siem_search, and an empty stored result says nothing about it. Returns the total match count and a page of events (newest first "
+        "by default). Page with `offset`/`next_offset`. A zero-result search returns per-clause counts so you can see which condition "
+        "eliminated everything."
     )
     input_model = SearchIn
     permission = Permission.EVENTS_READ
@@ -636,11 +647,13 @@ class ProcessLineage(Tool):
 class DataCoverage(Tool):
     name = "data_coverage"
     description = (
-        "What telemetry exists in the window: event counts per source, per event type and for the busiest hosts. Use it to tell "
-        "'nothing happened' apart from 'nothing is collected'."
+        "What telemetry exists: the live SIEM sources that siem_search can ask (LogRhythm, Trend Vision One datasets) with the kinds of "
+        "event each can hold, and the STORED copy (event counts per source, per event type, busiest hosts, newest stored event). Use it to "
+        "tell 'nothing happened' apart from 'nothing is collected'. The stored copy is frozen; live sources have no counts."
     )
     input_model = CoverageIn
     permission = Permission.EVENTS_READ
+    uses_session = True
 
     async def run(self, ctx: ToolContext, args: CoverageIn, scope: Scope) -> dict[str, Any]:
         q = _mkquery(
@@ -653,16 +666,31 @@ class DataCoverage(Tool):
             ],
         )
         res = await ctx.backend.search(ctx.principal.tid, q)
+        newest = await ctx.backend.search(
+            ctx.principal.tid,
+            _mkquery(
+                time_range=TimeRange.last(timedelta(days=365)), limit=1, sort=[Sort(field="timestamp", order="desc")]
+            ),
+        )
 
         def agg(n: str) -> dict[str, int]:
             return {str(b.key): b.count for b in (res.aggregations[n].buckets if n in res.aggregations else [])}
 
+        live = await sq.live_sources(ctx.session, ctx.principal.tid)
         return {
             "total": res.total,
             "returned": res.total and 1,
             "sources": agg("sources"),
             "event_types": agg("types"),
             "hosts": agg("hosts"),
+            "stored_newest": newest.hits[0].get("timestamp") if newest.hits else None,
+            "live_sources": live,
+            "note": (
+                "Live sources are searched on demand with siem_search (no counts are available up front). The stored copy is frozen and "
+                "does not reflect recent activity, so a small or empty stored total is NOT a sign that nothing is collected."
+                if live
+                else "No live SIEM source is configured: only the stored copy can be searched."
+            ),
         }
 
 
@@ -1041,6 +1069,220 @@ class Notebook(Tool):
         return "ok note recorded"
 
 
+class SiemSearchIn(_Traced):
+    query: str = Field(
+        min_length=1,
+        max_length=500,
+        description=(
+            "What to look for in the SIEMs: an IP, domain, hash, e-mail, user, host, process, command-line word, or the hunt query "
+            "language (e.g. process.name:powershell.exe user.name:bob, network.dst_ip:203.0.113.5). An empty or unfocused query is refused: "
+            "the SIEMs are never browsed whole."
+        ),
+    )
+    hours_back: int = Field(default=0, ge=0, le=336, description="0 = the run window (max 14 days)")
+    start: str | None = Field(default=None, max_length=40, description="Optional ISO-8601 window start")
+    end: str | None = Field(default=None, max_length=40, description="Optional ISO-8601 window end")
+    where: Literal["all", "logrhythm", "trend"] = Field(
+        default="all",
+        description="logrhythm: network, web, firewall and domain-controller sign-in logs. trend: endpoint, cloud/Entra identity, product detections.",
+    )
+    limit: int = Field(default=10, ge=1, le=MAX_HITS)
+    offset: int = Field(default=0, ge=0, le=450)
+    order: Literal["newest", "oldest"] = "newest"
+
+
+class SiemSearch(Tool):
+    name = "siem_search"
+    description = (
+        "Search the LIVE SIEMs (LogRhythm, Trend Vision One) directly - the authoritative source for recent activity. Each source is asked "
+        "what it can answer and every returned record is re-checked against your whole query, so results are real hits. SLOW (10-90 s) and "
+        "budgeted per run: ask focused questions (an indicator, a host/user, a process) over the window you need, not broad words. "
+        "LogRhythm holds network, web-server, firewall and domain-controller sign-in logs (no endpoint process data); Trend holds endpoint "
+        "activity, Microsoft 365 / Entra sign-ins and product detections. Each event says which source it came from (`from`). Events "
+        "you are shown are stored so they can be cited. Read `sources`: a source that FAILED left that part UNANSWERED (not empty); one that "
+        "`skipped` a condition could not be asked about it. An empty result means no log matched in those sources and window, nothing more."
+    )
+    input_model = SiemSearchIn
+    permission = Permission.EVENTS_READ
+    uses_session = True
+    timeout_s = 120.0
+    retry = False
+
+    async def run(self, ctx: ToolContext, args: SiemSearchIn, scope: Scope) -> dict[str, Any]:
+        settings = get_settings()
+        if ctx.siem_calls >= settings.ai_siem_max_calls:
+            raise ToolError(
+                "the live SIEM search budget for this run is used up; use what you have (search_events, pivot on stored evidence) or conclude",
+                "budget",
+            )
+        tr = _window(args)
+        avail = await sq.searchable_sources(ctx.session, ctx.principal.tid)
+        if args.where != "all":
+            avail = [d for d in avail if (d.connector_type == "logrhythm") == (args.where == "logrhythm")]
+        if not avail:
+            raise ToolError(
+                "no live SIEM source of that kind is configured; only the stored copy can be searched", "unavailable"
+            )
+        try:
+            query = sq.SiemQuery(text=args.query, time_range=tr, sources=[d.id for d in avail], limit=1)
+        except ValidationError as exc:
+            raise ToolError(f"invalid query: {_validation_message(exc)}", "invalid_query") from None
+        ctx.siem_calls += 1
+        out = await sq.search(ctx.session, None, settings, ctx.principal.tid, query, budget_s=90)
+        if out["empty_query"]:
+            raise ToolError(
+                "nothing searchable in that query: give an indicator, user, host, process or a specific word",
+                "invalid_query",
+            )
+        sources = out["sources"]
+        failed = [s for s in sources if s["status"] == "error"]
+        total = out["total"]
+        if failed and total == 0:
+            answered = [s["name"] for s in sources if s["status"] in ("ok", "partial")]
+            raise ToolError(
+                "; ".join(f"{s['name']}: {s['detail']}" for s in failed)
+                + " - those sources are UNANSWERED, not empty"
+                + (f" (answered with no match: {', '.join(answered)})" if answered else ""),
+                "backend_unavailable",
+            )
+        hits = out["hits"]
+        if args.order == "oldest":
+            hits = list(reversed(hits))
+        page = hits[args.offset : args.offset + args.limit]
+        origin = out["origins"]
+        names = {s["id"]: s["name"] for s in sources}
+        scope.see(ctx, page)
+        await sq.store_docs(
+            ctx.backend, ctx.principal.tid, page
+        )  # what the model is shown can be cited, so it must exist in the store
+        events = _fit([{**_compact(h), "from": names.get(origin.get(h["id"], ""), "?")} for h in page])
+        result: dict[str, Any] = {
+            "total": total,
+            "total_is_lower_bound": bool(out["truncated"]),
+            "returned": len(events),
+            "offset": args.offset,
+            "next_offset": args.offset + len(events) if args.offset + len(events) < total else None,
+            "events": events,
+            "sources": [
+                {
+                    "name": s["name"],
+                    "status": s["status"],
+                    "matched": s["matched"],
+                    "read": s["scanned"],
+                    **({"error": s["detail"]} if s["status"] == "error" else {}),
+                    **({"not_asked": s["skipped"]} if s["skipped"] else {}),
+                    **({"cut_off": True} if s["capped"] or s["status"] == "partial" else {}),
+                }
+                for s in sources
+            ],
+            "window": out["time_range"],
+        }
+        if out["note"]:
+            result["note"] = out["note"]
+        if failed:
+            result["unanswered_sources"] = [s["name"] for s in failed]
+            result["partial"] = True
+        if len(events) < len(page):
+            result["note"] = "page shortened to fit the size cap; continue from next_offset or narrow the query"
+        if total == 0:
+            result["note"] = (
+                "No log matched in the searched sources and window. This is not proof of absence outside them: check `sources` for what "
+                "could not be asked, and widen the window or try the host/user instead of the indicator."
+            )
+        elif total > args.offset + len(events):
+            result["partial"] = True
+        return result
+
+
+class FindingsIn(_In):
+    hours_back: int = Field(default=0, ge=0, le=720, description="0 = the run window")
+    limit: int = Field(default=15, ge=1, le=30)
+
+
+class SiemFindings(Tool):
+    name = "siem_findings"
+    description = (
+        "What the platform's continuous SIEM sweep has ALREADY found, without querying a SIEM: alerts from the built-in behaviours "
+        "(password spraying, brute force, lockouts, account/audit changes, web-attack patterns) and logs that matched a validated "
+        "indicator. Start here for an overview of recent attacker activity, then confirm and scope with siem_search. Events returned "
+        "are citable."
+    )
+    input_model = FindingsIn
+    permission = Permission.DETECTIONS_READ
+    uses_session = True
+
+    async def run(self, ctx: ToolContext, args: FindingsIn, scope: Scope) -> dict[str, Any]:
+        since = datetime.now(UTC) - timedelta(hours=args.hours_back)
+        tid = ctx.principal.tid
+        alerts = (
+            await ctx.session.execute(
+                select(Alert, DetectionRule.techniques)
+                .join(DetectionRule, DetectionRule.id == Alert.rule_id)
+                .where(Alert.tenant_id == tid, DetectionRule.format == "siem", Alert.event_timestamp >= since)
+                .order_by(Alert.event_timestamp.desc())
+                .limit(args.limit)
+            )
+        ).all()
+        out_alerts = []
+        docs: list[dict[str, Any]] = []
+        for a, techniques in alerts:
+            snap = a.snapshot or {}
+            docs.append(snap)
+            out_alerts.append(
+                {
+                    "alert": a.rule_title,
+                    "severity": a.severity,
+                    "status": a.status,
+                    "time": a.event_timestamp.isoformat(),
+                    "event_id": a.event_id,
+                    "summary": str(snap.get("message") or "")[:300],
+                    "host": (snap.get("host") or {}).get("hostname"),
+                    "attack": techniques,
+                }
+            )
+        matches: list[dict[str, Any]] = []
+        if ctx.principal.has(Permission.IOCHUNT_READ):
+            rows = (
+                await ctx.session.execute(
+                    select(IocMatch, Ioc.type, Ioc.value, Ioc.malware)
+                    .join(Ioc, Ioc.id == IocMatch.ioc_id)
+                    .join(IocHunt, IocHunt.id == IocMatch.hunt_id)
+                    .where(
+                        IocMatch.tenant_id == tid,
+                        IocMatch.event_timestamp >= since,
+                        IocHunt.signals["sweep"].as_boolean().is_(True),
+                    )
+                    .order_by(IocMatch.event_timestamp.desc())
+                    .limit(args.limit)
+                )
+            ).all()
+            for m, itype, ivalue, malware in rows:
+                matches.append(
+                    {
+                        "indicator": f"{itype}:{ivalue}",
+                        "malware": malware or None,
+                        "event_id": m.event_id,
+                        "time": m.event_timestamp.isoformat(),
+                        "host": m.host,
+                        "user": m.user,
+                        "source": m.source,
+                        "summary": m.summary[:200],
+                    }
+                )
+            ids = [m["event_id"] for m in matches]
+            if ids:
+                docs += await ctx.backend.get_events(tid, ids)
+        scope.see(ctx, [d for d in docs if isinstance(d.get("id"), str)])
+        n = len(out_alerts) + len(matches)
+        return {
+            "total": n,
+            "returned": n,
+            "alerts": out_alerts,
+            "indicator_matches": matches,
+            "note": "Findings of the automatic sweep only: no finding means the sweep matched nothing (and may be behind, see the Data Sources page), not that nothing happened.",
+        }
+
+
 TOOLS: dict[str, Tool] = {
     t.name: t
     for t in (
@@ -1050,6 +1292,8 @@ TOOLS: dict[str, Tool] = {
         EventsAround(),
         ProcessLineage(),
         GetEvent(),
+        SiemSearch(),
+        SiemFindings(),
         DataCoverage(),
         LookupIoc(),
         MitreLookup(),
@@ -1154,9 +1398,9 @@ async def execute_ex(ctx: ToolContext, name: str, raw: dict[str, Any]) -> ToolRe
         try:
             if tool.uses_session:
                 async with ctx.session_lock:
-                    result = await asyncio.wait_for(tool.run(ctx, args, scope), ctx.call_timeout_s)
+                    result = await asyncio.wait_for(tool.run(ctx, args, scope), tool.timeout_s or ctx.call_timeout_s)
             else:
-                result = await asyncio.wait_for(tool.run(ctx, args, scope), ctx.call_timeout_s)
+                result = await asyncio.wait_for(tool.run(ctx, args, scope), tool.timeout_s or ctx.call_timeout_s)
             break
         except ToolError as exc:
             return done(ToolResult(error=str(exc), kind=exc.kind, status="error", attempts=attempts))
@@ -1164,7 +1408,7 @@ async def execute_ex(ctx: ToolContext, name: str, raw: dict[str, Any]) -> ToolRe
             raise
         except Exception as exc:  # noqa: BLE001 - classified below; details are never shown to the model or user
             kind, transient = _classify(exc)
-            if transient and attempts <= len(ctx.retry_delays):
+            if transient and tool.retry and attempts <= len(ctx.retry_delays):
                 await asyncio.sleep(ctx.retry_delays[attempts - 1])
                 continue
             return done(ToolResult(error=_MESSAGES[kind], kind=kind, status="error", attempts=attempts))

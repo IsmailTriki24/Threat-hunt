@@ -210,7 +210,7 @@ export function HuntReportView({ data: d, markdown, caseNumber }: { data: HuntRe
   const measured = useMemo(() => withData.filter((x) => (x.results ?? 0) < 10000).sort((a, b) => (b.results ?? 0) - (a.results ?? 0)).slice(0, 8), [withData]); // a capped count is not a measurement
   const capped = withData.length - withData.filter((x) => (x.results ?? 0) < 10000).length;
   const byTool = useMemo(() => {
-    const label: Record<string, string> = { search_events: "Event searches", aggregate_events: "Aggregations", pivot_entity: "Entity pivots", events_around: "Surrounding activity", process_lineage: "Process trees", get_event: "Event lookups" };
+    const label: Record<string, string> = { search_events: "Event searches", siem_search: "Live SIEM searches", siem_findings: "Sweep findings", aggregate_events: "Aggregations", pivot_entity: "Entity pivots", events_around: "Surrounding activity", process_lineage: "Process trees", get_event: "Event lookups" };
     const n = new Map<string, number>();
     for (const x of d.sections) n.set(x.tool, (n.get(x.tool) ?? 0) + 1);
     return [...n.entries()].sort((a, b) => b[1] - a[1]).map(([t, v]) => ({ label: label[t] ?? t, value: v }));

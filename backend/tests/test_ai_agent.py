@@ -117,8 +117,8 @@ async def test_identical_queries_are_served_from_cache_without_spending_budget(c
     steps = real_steps(run)
     assert steps[1]["cached"] is True and "identical to q" in steps[1]["result_preview"]
     assert run["conclusion"]["coverage"]["redundant_calls"] == 1
-    # data_coverage + one real search (+ the diagnostics-free path): the repeat never reached the backend
-    assert calls["n"] == 2
+    # data_coverage (its totals + the newest stored event) + one real search: the repeat never reached the backend
+    assert calls["n"] == 3
 
 
 async def test_independent_calls_in_one_turn_run_in_parallel(client, make, llm, app, monkeypatch):

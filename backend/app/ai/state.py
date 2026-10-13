@@ -575,7 +575,9 @@ class Investigation:
             "redundant_calls": self.redundant_calls,
             "events_reviewed": len(self.evidence),
             "telemetry": {
-                k: self.coverage.get(k) for k in ("sources", "event_types", "hosts", "total") if k in self.coverage
+                k: self.coverage.get(k)
+                for k in ("sources", "event_types", "hosts", "total", "live_sources", "stored_newest")
+                if k in self.coverage
             },
             "gaps": self.gaps(),
         }
@@ -605,6 +607,13 @@ class Investigation:
             lines.append(
                 f"Telemetry in window: {cov.get('total', '?')} events; sources={cov.get('sources')}; types={cov.get('event_types')}; "
                 f"hosts={cov.get('hosts')}"
+            )
+        live = cov.get("live_sources") if cov else None
+        if live:
+            lines.append(
+                "Live SIEMs (siem_search; slow, budgeted; no counts): "
+                + "; ".join(f"{x['name']} [{', '.join(x.get('event_types') or [])}]" for x in live)
+                + f". The stored copy above is frozen (newest stored event: {cov.get('stored_newest') or 'none'}): it is NOT current."
             )
         lines.append(
             "Hypotheses:"

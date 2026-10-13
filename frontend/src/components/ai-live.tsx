@@ -153,7 +153,9 @@ export function Icon({ name, className = "h-4 w-4" }: { name: string; className?
 }
 
 const TOOLS: Record<string, { label: string; tone: Tone; icon: string; what: string }> = {
-  search_events: { label: "Search events", tone: "sky", icon: "search", what: "Looking through telemetry" },
+  search_events: { label: "Search events", tone: "sky", icon: "search", what: "Looking through the stored copy of telemetry" },
+  siem_search: { label: "Search the SIEMs", tone: "sky", icon: "search", what: "Asking LogRhythm and Trend live" },
+  siem_findings: { label: "Sweep findings", tone: "amber", icon: "shield", what: "Reading what the continuous sweep found" },
   aggregate_events: { label: "Aggregate", tone: "cyan", icon: "chart", what: "Counting and grouping" },
   get_event: { label: "Inspect event", tone: "cyan", icon: "eye", what: "Reading a single event" },
   pivot_entity: { label: "Pivot", tone: "violet", icon: "share", what: "Following an entity across hosts" },
