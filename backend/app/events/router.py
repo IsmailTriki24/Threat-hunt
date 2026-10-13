@@ -15,7 +15,7 @@ from app.core.db import get_session
 from app.core.errors import AppError, NotFound
 from app.core.metrics import SEARCHES
 from app.core.ratelimit import enforce
-from app.events import service, siem_search
+from app.events import service, siem_query, siem_search
 from app.events.fields import FIELDS
 from app.events.pivots import Pivot, pivots_for
 from app.events.search.base import SearchBackend
@@ -123,6 +123,74 @@ async def siem_lookup(
     rng = body.time_range or TimeRange.last(timedelta(hours=24))
     return await _siem(
         request, principal, session, siem_search.plan_for_indicator(body.kind, body.value), rng, "event.siem_lookup"
+    )
+
+
+class SiemSources(BaseModel):
+    id: str
+    name: str
+    kind: str
+
+
+class SiemImport(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    search_id: str = Field(pattern=r"^[a-f0-9]{32}$")
+    ids: list[str] = Field(min_length=1, max_length=100)
+
+
+@router.get("/siem-sources", response_model=list[SiemSources])
+async def siem_sources(
+    principal: Principal = Depends(require(Permission.EVENTS_READ)),
+    session: AsyncSession = Depends(get_session),
+) -> list[SiemSources]:
+    """The SIEM sources a live search can ask (LogRhythm, and the Trend Vision One datasets with a query surface)."""
+    return [
+        SiemSources(
+            id=str(d.id),
+            name=d.name,
+            kind="logrhythm" if d.connector_type == "logrhythm" else f"trend:{(d.config or {}).get('dataset', '')}",
+        )
+        for d in await siem_query.searchable_sources(session, principal.tid)
+    ]
+
+
+@router.post("/siem-query")
+async def siem_query_events(
+    query: siem_query.SiemQuery,
+    request: Request,
+    principal: Principal = Depends(require(Permission.EVENTS_READ)),
+    session: AsyncSession = Depends(get_session),
+) -> dict[str, Any]:
+    """Search the SIEMs themselves, live. Nothing is stored: results are held for 30 minutes under a `search_id`;
+    only the events an analyst opens or adds to a case are imported (`/siem-import`)."""
+    await enforce(request, f"siem-search:{principal.user_id}", 12, 60)
+    result = await siem_query.search(session, request.app.state.redis, get_settings(), principal.tid, query)
+    SEARCHES.inc()
+    await audit.record(
+        request,
+        "event.siem_query",
+        "failure" if any(s["status"] == "error" for s in result["sources"]) and not result["total"] else "success",
+        principal=principal,
+        details={
+            "q": (query.q or query.text or "")[:200],
+            "filters": [f.model_dump(mode="json") for f in query.filters][:10],
+            "sources": [{"name": s["name"], "status": s["status"], "matched": s["matched"]} for s in result["sources"]],
+            "total": result["total"],
+        },
+    )
+    return result
+
+
+@router.post("/siem-import")
+async def siem_import(
+    body: SiemImport,
+    request: Request,
+    principal: Principal = Depends(require(Permission.EVENTS_READ)),
+) -> dict[str, int]:
+    """Store events of a held SIEM result so they can be opened in full and added to cases."""
+    await enforce(request, f"siem-import:{principal.user_id}", 120, 60)
+    return await siem_query.import_events(
+        request.app.state.redis, backend_of(request), principal.tid, body.search_id, body.ids
     )
 
 

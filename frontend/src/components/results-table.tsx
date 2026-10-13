@@ -26,9 +26,11 @@ function Outcome({ value }: { value?: string }) {
 
 export interface RowSelection { ids: Set<string>; onToggle: (id: string) => void; onToggleAll: (ids: string[], on: boolean) => void }
 
-export function ResultsTable({ hits, dense, selected, onOpen, sort, onSort, selection }: {
+export function ResultsTable({ hits, dense, selected, onOpen, sort, onSort, selection, sourceOf }: {
   hits: EventDoc[]; dense: boolean; selected: string | null; onOpen: (id: string) => void;
   sort: { field: string; order: "asc" | "desc" } | null; onSort: (field: string) => void; selection?: RowSelection;
+  /** When given, a Source column names the system each row came from. */
+  sourceOf?: (e: EventDoc) => string | undefined;
 }) {
   const allOn = !!selection && hits.length > 0 && hits.every((h) => selection.ids.has(h.id));
   const head = (label: string, field?: string) => (
@@ -45,7 +47,7 @@ export function ResultsTable({ hits, dense, selected, onOpen, sort, onSort, sele
       <table className={`raw ${dense ? "text-xs" : "text-sm"}`}>
         <thead><tr>
           {selection && <th className="th" scope="col"><input type="checkbox" aria-label="Select all rows" checked={allOn} onChange={(e) => selection.onToggleAll(hits.map((h) => h.id), e.target.checked)} /></th>}
-          {head("Time (UTC)", "timestamp")}{head("Type", "event_type")}{head("Host", "host.hostname")}{head("User", "user.name")}
+          {head("Time (UTC)", "timestamp")}{sourceOf && head("Source")}{head("Type", "event_type")}{head("Host", "host.hostname")}{head("User", "user.name")}
           {head("Process", "process.name")}{head("Details")}{head("Outcome")}{head("Sev", "severity")}
         </tr></thead>
         <tbody>
@@ -58,6 +60,7 @@ export function ResultsTable({ hits, dense, selected, onOpen, sort, onSort, sele
                 </td>
               )}
               <td className={`td whitespace-nowrap font-mono ${dense ? "py-1" : "py-2"}`}>{fmtTime(e.timestamp)}</td>
+              {sourceOf && <td className="td whitespace-nowrap text-xs text-ink-2">{sourceOf(e) ?? ""}</td>}
               <td className="td whitespace-nowrap">{e.event_type}</td>
               <td className="td whitespace-nowrap">{e.host?.hostname ?? ""}</td>
               <td className="td whitespace-nowrap">{e.user?.name ?? ""}</td>

@@ -1,11 +1,11 @@
 import { Suspense } from "react";
-import { EventsView } from "@/components/events-view";
+import { SiemSearchView } from "@/components/siem-search-view";
 import { Loading } from "@/components/ui/skeleton";
 
 export default function EventsPage() {
   return (
     <section>
-      <Suspense fallback={<Loading />}><EventsView /></Suspense>
+      <Suspense fallback={<Loading />}><SiemSearchView /></Suspense>
     </section>
   );
 }

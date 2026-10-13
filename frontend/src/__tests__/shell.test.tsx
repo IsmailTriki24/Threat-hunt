@@ -29,7 +29,7 @@ it("groups navigation by task, marks the current page, and shows breadcrumbs", (
   const n = within(nav());
   expect(["Investigate", "Intelligence", "Detect & respond", "Manage"].every((g) => n.getByText(g))).toBe(true);
   expect(n.getByRole("link", { name: "Cases" })).toHaveAttribute("aria-current", "page");
-  expect(n.getByRole("link", { name: "Events" })).not.toHaveAttribute("aria-current");
+  expect(n.getByRole("link", { name: "SIEM Search" })).not.toHaveAttribute("aria-current");
   const crumbs = screen.getByRole("navigation", { name: "Breadcrumb" });
   expect(crumbs).toHaveTextContent("Investigate");
   expect(within(crumbs).getByText("Cases")).toHaveAttribute("aria-current", "page");

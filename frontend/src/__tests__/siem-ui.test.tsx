@@ -1,12 +1,11 @@
-import { render, screen, waitFor, within } from "@testing-library/react";
+import { render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { EventsView } from "@/components/events-view";
 import { SiemSearchCard } from "@/components/siem-search-card";
 import { searchedSummary, siemHeadline, windowLabel, type SiemResult } from "@/lib/siem";
 import { windowFor } from "@/lib/threat-map";
-import { mockFetch, renderWithQuery, status } from "./helpers";
+import { mockFetch, renderWithQuery } from "./helpers";
 
-let params = "";
+const params = "";
 vi.mock("next/navigation", () => ({ useSearchParams: () => new URLSearchParams(params), useRouter: () => ({ push: vi.fn(), replace: vi.fn() }), usePathname: () => "/events" }));
 vi.mock("@/lib/auth", () => ({ useAuth: () => ({ can: () => true }), useOptionalAuth: () => null }));
 
@@ -82,54 +81,6 @@ describe("SiemSearchCard states", () => {
     expect(container).toHaveTextContent("Nothing in this search can be looked up in LogRhythm.");
     rerender(<SiemSearchCard compact query={q({ data: res({ status: "not_applicable" }) })} />);
     expect(container).toBeEmptyDOMElement();
-  });
-});
-
-describe("Events page runs the whole-SIEM search alongside the normal one", () => {
-  const search = { total: 0, total_relation: "eq", took_ms: 1, hits: [], aggregations: {}, time_range: { start: "2026-10-11T00:00:00Z", end: "2026-10-12T00:00:00Z" } };
-  const routes = (siem: () => unknown) => ({
-    "GET /api/v1/events/fields": () => [{ name: "network.dst_ip", kind: "ip", sortable: false, aggregatable: true }],
-    "POST /api/v1/events/search": () => search, "POST /api/v1/events/siem-search": siem, "GET /api/v1/query-history": () => [],
-  });
-
-  it("sends the query (without aggregations), shows the result, and re-runs the local search once when logs were imported", async () => {
-    params = "lang=1&q=network.dst_ip%3A51.89.20.151";
-    const m = mockFetch(routes(() => res()));
-    renderWithQuery(<EventsView />);
-    expect(await screen.findByText(/2 logs for 51.89.20.151 found across the whole LogRhythm SIEM/)).toBeInTheDocument();
-    const body = m.bodiesFor("POST /api/v1/events/siem-search")[0] as { text: string; aggregations: unknown[]; filters: unknown[] };
-    expect(body.text).toBe("network.dst_ip:51.89.20.151");
-    expect(body.aggregations).toEqual([]);
-    await waitFor(() => expect(m.bodiesFor("POST /api/v1/events/search").length).toBeGreaterThanOrEqual(2)); // initial + the re-run after the import
-    const calls = m.bodiesFor("POST /api/v1/events/search").length;
-    await new Promise((r) => setTimeout(r, 300));
-    expect(m.bodiesFor("POST /api/v1/events/search").length).toBe(calls); // exactly once: no refetch loop
-    expect(m.bodiesFor("POST /api/v1/events/siem-search")).toHaveLength(1);
-  });
-
-  it("does not re-run when nothing new was imported", async () => {
-    params = "lang=1&q=network.dst_ip%3A51.89.20.151";
-    const m = mockFetch(routes(() => res({ imported: 0, duplicates: 2 })));
-    renderWithQuery(<EventsView />);
-    expect(await screen.findByText(/all already in your platform/)).toBeInTheDocument();
-    await new Promise((r) => setTimeout(r, 300));
-    expect(m.bodiesFor("POST /api/v1/events/search")).toHaveLength(1);
-  });
-
-  it("is not called for an empty search (the default dashboard view)", async () => {
-    params = "";
-    const m = mockFetch(routes(() => res()));
-    renderWithQuery(<EventsView />);
-    await screen.findByText(/0 events/);
-    expect(m.bodiesFor("POST /api/v1/events/siem-search")).toHaveLength(0);
-  });
-
-  it("a SIEM failure shows an error but leaves the normal results working", async () => {
-    params = "q=evil.example";
-    mockFetch(routes(() => status(500, { error: { code: "x", message: "boom" } })));
-    renderWithQuery(<EventsView />);
-    expect(await screen.findByText(/The whole-SIEM search failed/)).toBeInTheDocument();
-    expect(screen.getByText(/0 events/)).toBeInTheDocument();
   });
 });
 

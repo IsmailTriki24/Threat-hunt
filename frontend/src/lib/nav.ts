@@ -11,7 +11,7 @@ export const NAV_GROUPS: NavGroup[] = [
   { label: "Investigate", items: [
     { href: "/", label: "Overview", icon: LayoutDashboard, hint: "Platform health and what needs attention" },
     { href: "/threat-map", label: "Threat Map", icon: Globe, hint: "Reported intelligence vs. observed activity by location" },
-    { href: "/events", label: "Events", icon: Search, hint: "Search all telemetry" },
+    { href: "/events", label: "SIEM Search", icon: Search, hint: "Search LogRhythm and Trend live" },
     { href: "/hunts", label: "Hunts", icon: Crosshair, hint: "Hypotheses, queries and findings" },
     { href: "/investigations", label: "Investigations", icon: Telescope, hint: "Timeline of related activity" },
     { href: "/cases", label: "Cases", icon: Briefcase, hint: "Incidents, evidence and reports" },
