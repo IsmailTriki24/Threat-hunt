@@ -319,7 +319,13 @@ async def counts(session: AsyncSession, model: Any, *where: Any) -> int:
 async def run_scheduled(sessionmaker: Any, backend: SearchBackend) -> dict[str, int]:
     """Evaluate every ACTIVE rule (all tenants). One rule's failure never blocks the others."""
     async with sessionmaker() as session:
-        ids = list((await session.execute(select(DetectionRule.id).where(DetectionRule.status == "ACTIVE"))).scalars())
+        ids = list(
+            (
+                await session.execute(
+                    select(DetectionRule.id).where(DetectionRule.status == "ACTIVE", DetectionRule.format != "siem")
+                )
+            ).scalars()
+        )
     summary = {"rules": 0, "alerts": 0, "errors": 0}
     for rid in ids:
         async with sessionmaker() as session:

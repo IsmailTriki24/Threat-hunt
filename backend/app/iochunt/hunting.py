@@ -51,7 +51,7 @@ MAX_UPSTREAM_EVENTS = 3000
 _EXACT: dict[str, list[str]] = {
     "ip": ["network.dst_ip", "network.src_ip", "auth.source_ip", "dns.answers"],
     "domain": ["dns.question", "network.dst_domain"],
-    "md5": ["process.hash.md5", "file.hash.md5", "process.parent.hash.md5"],
+    "md5": ["process.hash.md5", "file.hash.md5"],
     "sha1": ["process.hash.sha1", "file.hash.sha1"],
     "sha256": ["process.hash.sha256", "file.hash.sha256"],
 }
@@ -139,6 +139,10 @@ class Coverage:
 class AdapterResult:
     hits: list[Hit] = field(default_factory=list)
     coverage: list[Coverage] = field(default_factory=list)
+    covered: set[uuid.UUID] = field(
+        default_factory=set
+    )  # indicators this adapter really searched (the sweeper's progress)
+    url_searches: int = 0  # exact-URL pattern searches spent (a sweep shares a budget of these across its chunks)
 
 
 def _host_of(value: str) -> str:
@@ -333,10 +337,15 @@ async def search_trend(
     iocs: list[Ioc],
     start: datetime,
     end: datetime,
+    *,
+    only: list[DataSource] | None = None,
+    budget_s: int = ADAPTER_BUDGET_S,
 ) -> AdapterResult:
     result = AdapterResult()
     sources = (
-        (
+        only
+        if only is not None
+        else (
             await session.execute(
                 select(DataSource).where(
                     DataSource.tenant_id == tenant_id, DataSource.connector_type == "trend_vision_one"
@@ -372,9 +381,11 @@ async def search_trend(
                 and "url" in TREND_FIELDS[dataset]
                 and _url_clause(i, TREND_FIELDS[dataset]["url"]) is None
             ]
-            deadline = time.monotonic() + ADAPTER_BUDGET_S
+            deadline = time.monotonic() + budget_s
             hits: dict[tuple[str, str], Hit] = {}
             truncated = False
+            capped = False
+            unfinished = {i.id for _q_, c in queries for i in c}
             for query, chunk in queries:
                 try:
                     raws, cut = await conn.search_query(
@@ -394,7 +405,12 @@ async def search_trend(
                         except SourceError as inner:
                             if "Unsupported query field" not in str(inner):
                                 raise
+                timed_out = cut and time.monotonic() > deadline
+                capped = capped or (cut and not timed_out)
                 truncated = truncated or cut
+                if timed_out:
+                    continue  # out of time: this chunk was not (fully) searched, so it does not count as covered
+                unfinished -= {i.id for i in chunk}
                 events: list[Event] = []
                 for raw in raws:
                     try:
@@ -415,11 +431,12 @@ async def search_trend(
             if hits:
                 await backend.refresh()  # imported events must be readable before a case cites them
             result.hits += list(hits.values())
+            result.covered |= {i.id for i in iocs} - unfinished
             cov.hits = len(hits)
             cov.status = "truncated" if truncated else "ok"
             cov.detail = (
                 f"{len(queries)} vendor queries over the last {(end - start).days or 1} day(s)"
-                + ("; result cap reached" if truncated else "")
+                + ("; result cap reached" if capped else "; out of time before every query ran" if truncated else "")
                 + (
                     f"; {len(skipped_urls)} URL(s) on shared hosting (e.g. GitHub) without a distinctive path were not searched upstream"
                     if skipped_urls
@@ -510,6 +527,10 @@ async def search_logrhythm(
     iocs: list[Ioc],
     start: datetime,
     end: datetime,
+    *,
+    only: list[DataSource] | None = None,
+    budget_s: int = LR_BUDGET_S,
+    url_patterns: int | None = None,
 ) -> AdapterResult:
     """Search the whole LogRhythm SIEM for the indicators with the built-in, verified filters (batched per type), then attribute every returned
     log to the exact indicator it contains. Matched logs are imported so cases can cite them."""
@@ -517,7 +538,9 @@ async def search_logrhythm(
 
     result = AdapterResult()
     sources = (
-        (
+        only
+        if only is not None
+        else (
             await session.execute(
                 select(DataSource).where(DataSource.tenant_id == tenant_id, DataSource.connector_type == "logrhythm")
             )
@@ -548,7 +571,7 @@ async def search_logrhythm(
             ordered = sorted(supported, key=lambda i: (-i.seen_count, -i.confidence))
             chosen = ordered[: conn.cfg.ioc_search_max]
             hits: dict[tuple[str, str], Hit] = {}
-            deadline = time.monotonic() + LR_BUDGET_S
+            deadline = time.monotonic() + budget_s
             # kind -> value searched -> indicators that value stands for. A URL is searched through its host, then verified against the full URL.
             plan: dict[str, dict[str, list[Ioc]]] = {}
             patterns: list[Ioc] = []
@@ -587,7 +610,8 @@ async def search_logrhythm(
                     await absorb_logs(conn, backend, tenant_id, hits, logs, candidates)
                 if cut:
                     break
-            for ioc in patterns[: conn.cfg.url_pattern_max]:
+            url_cap = conn.cfg.url_pattern_max if url_patterns is None else min(url_patterns, conn.cfg.url_pattern_max)
+            for ioc in patterns[:url_cap]:
                 if cut or time.monotonic() > deadline:
                     cut = True
                     break
@@ -597,9 +621,11 @@ async def search_logrhythm(
                 finally:
                     conn._filter_override = None
                 searches += 1
+                result.url_searches += 1
                 covered.add(ioc.id)
                 await absorb_logs(conn, backend, tenant_id, hits, logs, [ioc])
             cov.iocs_searched = len(covered)
+            result.covered |= covered
             if hits:
                 await backend.refresh()
             result.hits += list(hits.values())
@@ -609,10 +635,8 @@ async def search_logrhythm(
             if len(supported) > len(chosen) or cut:
                 cov.status = "truncated"
                 cov.detail += f"; {len(covered)} of {len(supported)} indicators searched (highest priority first)"
-            if len([i for i in chosen if i.type == "url"]) > conn.cfg.url_pattern_max:
-                cov.detail += (
-                    f"; URLs were searched via their host, only the top {conn.cfg.url_pattern_max} also by exact URL"
-                )
+            if len([i for i in chosen if i.type == "url"]) > url_cap:
+                cov.detail += f"; URLs were searched via their host, only the top {url_cap} also by exact URL"
             if skipped_types:
                 cov.detail += f"; no LogRhythm filter for: {', '.join(skipped_types)}"
         except (SourceError, ValueError) as exc:
@@ -791,6 +815,198 @@ async def search_signals(
                 tcov.status, tcov.detail = "error", str(exc)[:240]
             tcov.ms = int((time.monotonic() - t0) * 1000)
             result.coverage.append(tcov)
+
+        # ... and in LogRhythm, for every behaviour its search API can express (verified filters; the rest is checked locally)
+        lr = await search_ioas_logrhythm(session, backend, settings, tenant, ioas, start, end)
+        result.hits += lr.hits
+        result.coverage += lr.coverage
+    return result
+
+
+# ---- behaviours searched inside the SIEMs (sweep and hunts) ---------------------------------------------------------
+@dataclass
+class IoaSearch:
+    hits: list[SignalHit] = field(default_factory=list)
+    coverage: list[Coverage] = field(default_factory=list)
+    covered: set[uuid.UUID] = field(
+        default_factory=set
+    )  # behaviours really searched (or with nothing to search in this SIEM)
+
+
+async def ioa_cond(session: AsyncSession, ioa: ThreatIoa) -> Condition | None:
+    """The executable condition of a behaviour: its detection rule's compiled form, else its own condition / query text."""
+    if ioa.rule_id:
+        rule = await session.get(DetectionRule, ioa.rule_id)
+        return Condition.model_validate(rule.compiled) if rule is not None and rule.compiled else None
+    return ioa_condition(ioa)
+
+
+def lr_searchable(cond: Condition | None) -> bool:
+    from app.connectors.logrhythm import ioa_searches
+
+    return cond is not None and bool(ioa_searches(cond)[0])
+
+
+async def search_ioas_logrhythm(
+    session: AsyncSession,
+    backend: SearchBackend,
+    settings: Settings,
+    tenant_id: uuid.UUID,
+    ioas: list[ThreatIoa],
+    start: datetime,
+    end: datetime,
+    *,
+    only: list[DataSource] | None = None,
+    budget_s: int = LR_BUDGET_S,
+) -> IoaSearch:
+    """Search the whole LogRhythm SIEM for behaviours. Each behaviour becomes one or more verified LogRhythm searches (a superset of the
+    behaviour); every returned log is normalised and must satisfy the behaviour's full condition locally, so a loose search never over-reports."""
+    from app.connectors.logrhythm import ioa_searches
+
+    result = IoaSearch()
+    sources = (
+        only
+        if only is not None
+        else (
+            await session.execute(
+                select(DataSource).where(DataSource.tenant_id == tenant_id, DataSource.connector_type == "logrhythm")
+            )
+        )
+        .scalars()
+        .all()
+    )
+    for ds in sources:
+        cov = Coverage("LogRhythm SIEM (behaviours)", "ioa:logrhythm")
+        if (ds.config or {}).get("ioc_search") is False:
+            cov.status, cov.detail = "skipped", "search is switched off for this source"
+            result.coverage.append(cov)
+            continue
+        t0 = time.monotonic()
+        try:
+            secrets = {k: str(v) for k, v in decrypt_json(settings, ds.secrets_enc).items()} if ds.secrets_enc else {}
+            conn: Any = connectors.build("logrhythm", ds.config, secrets)
+            deadline = time.monotonic() + budget_s
+            indexed: dict[str, Event] = {}
+            fresh: list[SignalHit] = []
+            searches, partial = 0, 0
+            for ioa in ioas:
+                if time.monotonic() > deadline:
+                    cov.status = "truncated"
+                    break
+                cond = await ioa_cond(session, ioa)
+                flts, unsearchable = ioa_searches(cond) if cond is not None else ([], 1)
+                if not flts:
+                    result.covered.add(
+                        ioa.id
+                    )  # nothing LogRhythm can search for this behaviour: not a gap of this source
+                    continue
+                partial += bool(unsearchable)
+                for flt in flts:
+                    conn._filter_override = flt
+                    try:
+                        logs = await conn._search_window(start, end)
+                    finally:
+                        conn._filter_override = None
+                    searches += 1
+                    for raw in logs[:5000]:
+                        try:
+                            evs = [Event.from_input(e, tenant_id) for e in conn.normalize(raw)]
+                        except NormalizationError:
+                            continue
+                        for ev in evs:
+                            doc = ev.to_document()
+                            if cond is not None and ioa_matches(doc, cond):
+                                indexed[ev.id] = ev
+                                fresh.append(SignalHit("ioa", str(ioa.id), ioa.name, doc, "logrhythm", ioa.severity))
+                result.covered.add(ioa.id)
+                cov.iocs_searched += 1
+            if indexed:
+                await backend.index_events(list(indexed.values()))
+                await backend.refresh()
+            result.hits += fresh
+            cov.hits = len(fresh)
+            cov.detail = f"{searches} search(es) over the whole SIEM for {cov.iocs_searched} behaviour(s)" + (
+                f"; {partial} behaviour(s) only partly searchable by LogRhythm (the rest is checked on the returned logs)"
+                if partial
+                else ""
+            )
+        except (SourceError, ValueError) as exc:
+            cov.status, cov.detail = "error", str(exc)[:240]
+        cov.ms = int((time.monotonic() - t0) * 1000)
+        result.coverage.append(cov)
+    return result
+
+
+async def search_ioas_trend(
+    session: AsyncSession,
+    backend: SearchBackend,
+    settings: Settings,
+    tenant_id: uuid.UUID,
+    ioas: list[ThreatIoa],
+    start: datetime,
+    end: datetime,
+    *,
+    only: list[DataSource] | None = None,
+    budget_s: int = ADAPTER_BUDGET_S,
+) -> IoaSearch:
+    """Search Trend Vision One endpoint telemetry upstream for behaviours that have a vendor query, verifying each event against the behaviour."""
+    result = IoaSearch()
+    sources = (
+        only
+        if only is not None
+        else (
+            await session.execute(
+                select(DataSource).where(
+                    DataSource.tenant_id == tenant_id, DataSource.connector_type == "trend_vision_one"
+                )
+            )
+        )
+        .scalars()
+        .all()
+    )
+    upstream = [i for i in ioas if i.trend_query]
+    for ds in sources:
+        if (ds.config or {}).get("dataset") != "endpoint_activity" or not upstream:
+            continue
+        cov = Coverage("Trend Vision One / endpoint_activity (behaviours)", "ioa:trend", iocs_searched=0)
+        t0 = time.monotonic()
+        try:
+            secrets = {k: str(v) for k, v in decrypt_json(settings, ds.secrets_enc).items()} if ds.secrets_enc else {}
+            conn: Any = connectors.build("trend_vision_one", ds.config, secrets)
+            deadline = time.monotonic() + budget_s
+            indexed: dict[str, Event] = {}
+            fresh: list[SignalHit] = []
+            for ioa in upstream:
+                if time.monotonic() > deadline:
+                    cov.status = "truncated"
+                    break
+                icond = await ioa_cond(session, ioa)
+                raws, cut = await conn.search_query(ioa.trend_query, start, end, max_events=1000, deadline=deadline)
+                if cut and time.monotonic() > deadline:
+                    cov.status = "truncated"
+                    break  # out of time inside this behaviour: not covered
+                for raw in raws:
+                    try:
+                        evs = [Event.from_input(e, tenant_id) for e in conn.normalize(raw)]
+                    except NormalizationError:
+                        continue
+                    for ev in evs:
+                        doc = ev.to_document()
+                        if icond is not None and ioa_matches(doc, icond):
+                            indexed[ev.id] = ev
+                            fresh.append(SignalHit("ioa", str(ioa.id), ioa.name, doc, "trend_vision_one", ioa.severity))
+                result.covered.add(ioa.id)
+                cov.iocs_searched += 1
+            if indexed:
+                await backend.index_events(list(indexed.values()))
+                await backend.refresh()
+            result.hits += fresh
+            cov.hits = len(fresh)
+            cov.detail = f"{cov.iocs_searched} vendor behaviour queries"
+        except (SourceError, ValueError) as exc:
+            cov.status, cov.detail = "error", str(exc)[:240]
+        cov.ms = int((time.monotonic() - t0) * 1000)
+        result.coverage.append(cov)
     return result
 
 

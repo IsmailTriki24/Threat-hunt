@@ -16,7 +16,7 @@ narrows; hostname exact and suffix patterns work and accept lists; hash (138), s
 **a group with more than one URL-pattern item fails**, while a single one works. A 7-day search carrying 25 indicators takes about a minute.
 
 **Design (`connectors/logrhythm.py`, `iochunt/hunting.py`).** Built-in filters per kind (ip, domain, md5/sha1/sha256, email, url_pattern) — no template
-needed; console-captured templates remain as a per-type override. Indicators are batched per kind (default 25 per search). A URL is searched through its
+needed; console-captured templates remain as a per-type override. Indicators are batched per kind (default 25 per search; 100 since ADR 0020, verified as fast on production). A URL is searched through its
 host (IP or hostname) in batches and accepted only if the full URL appears in the log; a small prioritised number (default 10) are also searched by exact
 URL pattern, one search each, to catch logs that record only the URL. Each returned log is attributed by scanning the log itself (LogRhythm field names
 vary by log source), with whole-token rules, so a loose filter can never create a false match; matched logs are imported as events so cases can cite

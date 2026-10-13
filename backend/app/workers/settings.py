@@ -24,7 +24,10 @@ async def startup(ctx: dict[str, Any]) -> None:
     ctx["sessionmaker"] = create_sessionmaker(ctx["engine"])
     ctx["os"] = make_opensearch(settings)
     ctx["search"] = OpenSearchBackend(ctx["os"], settings)
-    log.info("worker started")
+    from app.iochunt import sweep
+
+    released = await sweep.release_locks(ctx["sessionmaker"])
+    log.info("worker started", extra={"released_sweep_locks": released})
 
 
 async def shutdown(ctx: dict[str, Any]) -> None:
@@ -116,6 +119,15 @@ async def ioc_maintenance(ctx: dict[str, Any]) -> None:
         log.info("ioc maintenance", extra={"requeued": stuck, "rehunts": scheduled})
 
 
+async def sweep_iocs(ctx: dict[str, Any]) -> None:
+    """Every 5 minutes: search LogRhythm and Trend for validated indicators; keep only logs that contain one."""
+    from app.iochunt import sweep
+
+    summary = await sweep.run_sweeps(ctx["sessionmaker"], ctx["search"], get_settings())
+    if summary["sources"]:
+        log.info("ioc sweep", extra=summary)
+
+
 def _redis_settings() -> RedisSettings:
     return RedisSettings.from_dsn(get_settings().redis_url)
 
@@ -130,6 +142,7 @@ class WorkerSettings:
         refresh_ioc_feeds,
         process_ioc_hunts,
         ioc_maintenance,
+        sweep_iocs,
     ]
     cron_jobs = [
         cron(heartbeat, second={0, 30}, run_at_startup=True),
@@ -138,6 +151,7 @@ class WorkerSettings:
         cron(refresh_ioc_feeds, minute={1, 11, 21, 31, 41, 51}, timeout=280),
         cron(process_ioc_hunts, minute=set(range(60)), timeout=900),
         cron(ioc_maintenance, minute={0, 10, 20, 30, 40, 50}, timeout=120),
+        cron(sweep_iocs, minute={3, 8, 13, 18, 23, 28, 33, 38, 43, 48, 53, 58}, timeout=600),
         cron(collect_datasources, minute={0, 5, 10, 15, 20, 25, 30, 35, 40, 45, 50, 55}, timeout=280),
     ]
     redis_settings = _redis_settings()

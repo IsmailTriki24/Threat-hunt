@@ -24,6 +24,35 @@ class DataSourceUpdate(_In):
     enabled: bool | None = None
 
 
+class FastLaneOut(BaseModel):
+    """The fast lane of a sweep: the hottest indicators only, kept close to real time."""
+
+    status: str
+    detail: str = ""
+    cursor: datetime | None = None
+    last_run_at: datetime | None = None
+    iocs_total: int = 0
+    ioas_total: int = 0
+    pending: int = 0
+    hits_total: int = 0
+
+
+class SweepOut(BaseModel):
+    """Progress of the continuous indicator sweep of a SIEM source."""
+
+    status: str  # pending (not run yet) | idle | ok | partial | error | off
+    detail: str = ""
+    cursor: datetime | None = None  # everything before this instant has been searched for every swept indicator
+    last_run_at: datetime | None = None
+    last_ok_at: datetime | None = None
+    iocs_total: int = 0
+    ioas_total: int = 0  # behaviours swept alongside the indicators
+    pending: int = 0  # indicators of the window in flight still to search
+    hits_total: int = 0
+    windows_done: int = 0
+    fast: FastLaneOut | None = None  # None: no fast lane on this source
+
+
 class DataSourceOut(BaseModel):
     id: uuid.UUID
     name: str
@@ -40,6 +69,7 @@ class DataSourceOut(BaseModel):
     events_total: int
     created_at: datetime
     ingest_key: str | None = None  # returned exactly once, at creation / rotation
+    sweep: SweepOut | None = None  # None: this source is not swept (push sources, datasets with no query surface)
 
 
 class ConnectorInfo(BaseModel):

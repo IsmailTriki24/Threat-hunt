@@ -270,3 +270,37 @@ class IocMatch(Base):
     user: Mapped[str] = mapped_column(String(256), default="")
     summary: Mapped[str] = mapped_column(String(500), default="")
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+class IocSweep(Base):
+    """Progress of the continuous indicator sweep over one SIEM data source. Everything before `cursor` has been searched for every
+    indicator that was swept; `window_end`/`queue` describe the window in flight (an indicator list too long for one tick is worked
+    through over several). One row per data source and lane."""
+
+    __tablename__ = "ioc_sweeps"
+    __table_args__ = (UniqueConstraint("data_source_id", "lane", name="uq_ioc_sweep_source_lane"),)
+
+    id: Mapped[uuid.UUID] = _pk()
+    tenant_id: Mapped[uuid.UUID] = _tenant()
+    data_source_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("data_sources.id", ondelete="CASCADE"), index=True)
+    # full = every item, the coverage guarantee; fast = only the hottest items, kept close to real time (they are searched again by the full lane)
+    lane: Mapped[str] = mapped_column(String(4), default="full", server_default="full")
+    cursor: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    window_end: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    queue: Mapped[list[str]] = mapped_column(
+        JSONB, default=list
+    )  # indicator ids still to search in the window in flight
+    members: Mapped[list[str]] = mapped_column(
+        JSONB, default=list
+    )  # every indicator the window in flight has been given to
+    status: Mapped[str] = mapped_column(String(10), default="idle")  # idle | ok | partial | error | off
+    detail: Mapped[str] = mapped_column(String(300), default="")
+    lock_until: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    last_run_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    last_ok_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    windows_done: Mapped[int] = mapped_column(Integer, default=0)
+    searches_total: Mapped[int] = mapped_column(Integer, default=0)
+    hits_total: Mapped[int] = mapped_column(Integer, default=0)
+    iocs_total: Mapped[int] = mapped_column(Integer, default=0)
+    ioas_total: Mapped[int] = mapped_column(Integer, default=0)  # behaviours swept alongside the indicators
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())

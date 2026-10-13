@@ -627,3 +627,12 @@ async def test_a_dataset_with_nothing_applicable_is_not_a_coverage_gap(client, m
         if "Coverage gaps" in case["description"]
         else True
     )
+
+
+def test_every_field_the_local_ioc_search_uses_exists_in_the_schema():
+    from app.events.fields import FIELDS
+
+    used = {f for fields in hunting._EXACT.values() for f in fields} | set(hunting._TEXT)
+    assert used <= set(FIELDS), sorted(
+        used - set(FIELDS)
+    )  # an unknown field makes the whole local adapter fail for the hunt

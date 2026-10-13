@@ -60,6 +60,9 @@ class Settings(BaseSettings):
     tavily_api_key: str = Field(default="", repr=False)
     tavily_base_url: str = "https://api.tavily.com"  # operator-controlled; never user input
     ai_web_max_calls: int = Field(default=6, ge=0, le=30)
+    ai_siem_max_calls: int = Field(
+        default=6, ge=0, le=30
+    )  # live SIEM searches per run (each takes 10-60 s and loads a production SIEM)
     # Indicator enrichment (tenant's intel providers + public threat-intel sites). Only public indicators ever leave.
     ai_auto_enrich: bool = True  # the platform looks up new public indicators itself after each turn
     ai_auto_enrich_max: int = Field(default=10, ge=0, le=50)  # automatic look-ups per run

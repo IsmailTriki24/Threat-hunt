@@ -71,12 +71,66 @@ class LogRhythmConfig(BaseModel):
         le=2000,
         description="Most indicators one hunt sends to LogRhythm (each batch of 25 costs about a minute over 7 days)",
     )
-    ioc_batch: int = Field(default=25, ge=1, le=100, description="Indicators of one type combined into a single search")
+    ioc_batch: int = Field(
+        default=100,
+        ge=1,
+        le=100,
+        description="Indicators of one type combined into a single search (100 verified as fast as 25)",
+    )
     url_pattern_max: int = Field(
         default=10,
         ge=0,
         le=100,
         description="Most exact URL-pattern searches per hunt (LogRhythm allows one URL pattern per search)",
+    )
+    ioc_sweep: bool = Field(
+        default=True,
+        description="Sweep the whole SIEM every few minutes for the validated indicators and keep only the logs that contain one (replaces bulk collection)",
+    )
+    sweep_lag_minutes: int = Field(
+        default=3, ge=0, le=60, description="Only search logs older than this, so the newest ones have landed"
+    )
+    sweep_overlap_minutes: int = Field(
+        default=2, ge=0, le=30, description="Each sweep window starts this much earlier, to catch logs that arrive late"
+    )
+    sweep_max_window_minutes: int = Field(
+        default=60, ge=5, le=240, description="Longest time span one sweep window covers when catching up"
+    )
+    siem_behaviours: bool = Field(
+        default=True,
+        description="Also sweep this SIEM for the built-in behaviours (password spraying, brute force, account and audit changes, web attack patterns) and raise alerts",
+    )
+    siem_behaviours_disabled: list[str] = Field(
+        default_factory=list, max_length=50, description="Keys of built-in behaviours not to run on this source"
+    )
+    sweep_budget_s: int = Field(
+        default=240, ge=20, le=600, description="Most seconds one sweep tick spends on this source"
+    )
+    sweep_url_patterns: int = Field(
+        default=5,
+        ge=0,
+        le=100,
+        description="Exact-URL pattern searches one sweep tick may spend (each costs a search; every URL is already searched through its host)",
+    )
+    sweep_hot_size: int = Field(
+        default=150,
+        ge=0,
+        le=1000,
+        description="Indicators in the fast lane: the most urgent ones are swept on their own, close to real time (0 switches the fast lane off). The full lane still covers every indicator",
+    )
+    sweep_hot_ioas: int = Field(
+        default=5, ge=0, le=50, description="Most severe behaviours of validated threats that also join the fast lane"
+    )
+    sweep_parallel: int = Field(
+        default=2,
+        ge=1,
+        le=6,
+        description="Indicator batches searched at the same time in this SIEM (be gentle with a production SIEM)",
+    )
+    collect_vendor_message_ids: list[str] | None = Field(
+        default=None,
+        max_length=200,
+        description="Keep only collected logs whose vendor message id (e.g. the Windows event id) is in this list. Cuts what is stored; the SIEM is still read. None keeps everything",
     )
     allow_unfiltered: bool = Field(
         default=False,
@@ -116,6 +170,7 @@ class LogRhythmConnector(Connector):
     collect_limit = 20_000
 
     _filter_override: dict[str, Any] | None = None
+    capped: bool = False  # the last interactive search stopped at its log cap
 
     @property
     def cfg(self) -> LogRhythmConfig:
@@ -184,8 +239,9 @@ class LogRhythmConnector(Connector):
         }
 
     async def _search_window(
-        self, start: datetime, end: datetime, budget: list[int] | None = None
+        self, start: datetime, end: datetime, budget: list[int] | None = None, max_logs: int | None = None
     ) -> list[dict[str, Any]]:
+        """All logs of a window. With `max_logs` (interactive search) paging stops once that many are read and `self.capped` is set."""
         budget = budget if budget is not None else [MAX_SEARCHES_PER_WINDOW]
         if budget[0] <= 0:
             raise SourceError(
@@ -214,6 +270,9 @@ class LogRhythmConnector(Connector):
             if items:
                 logs.extend(i for i in items if isinstance(i, dict))
                 origin += len(items)
+                if max_logs is not None and len(logs) >= max_logs:
+                    self.capped = True
+                    return logs[:max_logs]
                 continue
             if "Completed" in status or "Failed" in status or "Cancel" in status:
                 break
@@ -259,11 +318,14 @@ class LogRhythmConnector(Connector):
         )
         step = timedelta(minutes=cfg.window_minutes)
         deadline = time.monotonic() + cfg.time_budget_s
+        keep = {str(i).strip() for i in cfg.collect_vendor_message_ids or [] if str(i).strip()}
         emitted = 0
         t = start
         while t < end_cap:
             e = min(t + step, end_cap)
             logs = await self._search_window(t, e)
+            if keep:
+                logs = [r for r in logs if text(r.get("vendorMessageId")) in keep]
             logs.sort(key=lambda r: integer(r.get("logDate")) or 0)
             for r in logs:
                 yield r
@@ -339,7 +401,14 @@ def _normalize(raw: dict[str, Any], shift_hours: int) -> list[EventIn]:
         "outcome": outcome or "unknown",
         "severity": max(0, min(100, priority)) if priority is not None else 0,
         "original_id": msg_id,
-        "message": clip(f"{name}: {text(raw.get('vendorInfo'))}" if text(raw.get("vendorInfo")) else name, 1024),
+        "message": clip(
+            f"{name}: {text(raw.get('vendorInfo'))}"
+            if text(raw.get("vendorInfo"))
+            else f"{text(raw.get('command')) or ''} {text(raw.get('url'))}".strip()
+            if text(raw.get("url"))
+            else name,
+            1024,
+        ),
         "host": {"hostname": host, "ip": ip_list(dst_ip)} if host or dst_ip else None,
         "user": {"name": user_name, "domain": domain} if user_name else None,
         "network": {
@@ -370,6 +439,8 @@ def _normalize(raw: dict[str, Any], shift_hours: int) -> list[EventIn]:
             common_event_id=raw.get("commonEventId"),
             mpe_rule=raw.get("mpeRuleName"),
             origin_country=raw.get("originCountry"),
+            url=raw.get("url"),
+            http_status=raw.get("responseCode") if text(raw.get("url")) else None,
             origin_network=raw.get("originNetwork"),
             response_code=raw.get("responseCode"),
             reason=raw.get("reason"),
@@ -383,8 +454,15 @@ def _normalize(raw: dict[str, Any], shift_hours: int) -> list[EventIn]:
             "method": clip(raw.get("objectName")) or clip(raw.get("vendorInfo"), 64),
             "source_ip": src_ip,
         }
-    elif text(raw.get("process")):
-        doc["process"] = {"name": clip(raw.get("process"))}
+    if text(
+        raw.get("process")
+    ):  # also on authentication logs, where LogRhythm keeps e.g. the Kerberos service (krbtgt) here
+        proc: dict[str, Any] = {"name": clip(re.split(r"[\\/]", text(raw.get("process")) or "")[-1])}
+        if text(raw.get("command")):
+            proc["command_line"] = clip(raw.get("command"), 8192)
+        if text(raw.get("parentProcessName")):
+            proc["parent"] = {"name": clip(raw.get("parentProcessName"))}
+        doc["process"] = proc
     return finish(doc)
 
 
@@ -476,6 +554,11 @@ def ioc_query_filter(kind: str, values: list[str]) -> dict[str, Any]:
         ]
     else:
         raise ValueError(f"no LogRhythm filter for '{kind}'")
+    return _wrap(items, 2)
+
+
+def _wrap(items: list[dict[str, Any]], operator: int) -> dict[str, Any]:
+    """queryFilter with one inner group whose items are combined with `operator` (1 = And, 2 = Or)."""
     return {
         "msgFilterType": 2,
         "isSavedFilter": False,
@@ -484,7 +567,7 @@ def ioc_query_filter(kind: str, values: list[str]) -> dict[str, Any]:
             "fieldOperator": 1,
             "filterMode": 1,
             "filterGroupOperator": 0,
-            "filterItems": [{"filterItemType": 1, "fieldOperator": 2, "filterMode": 1, "filterItems": items}],
+            "filterItems": [{"filterItemType": 1, "fieldOperator": operator, "filterMode": 1, "filterItems": items}],
         },
     }
 
@@ -505,3 +588,126 @@ async def search_ioc_batch(
         return await connector._search_window(start, end)
     finally:
         connector._filter_override = None
+
+
+# ---- behaviours (IOAs): a canonical Condition -> LogRhythm searches --------------------------------------------------------
+# Only filters that passed positive and negative controls on a production LogRhythm 7.9 (docs/adr/0020) are used: Process 41, Command 112,
+# Login 29, VendorMsgID 37, HostName 23, SIP 18 / DIP 19 (IP value type), Hash 138, with exact (0) and SQL-pattern (1) matching. Items of one
+# search are AND-ed, which narrows (verified). The search is a SUPERSET of the behaviour: conditions LogRhythm cannot express are dropped from
+# it and enforced locally on the returned logs, so a loose search can only cost time, never create a false match.
+FT_PROCESS, FT_COMMAND, FT_LOGIN, FT_SIP, FT_DIP, FT_VENDOR_MSG_ID = 41, 112, 29, 18, 19, 37
+FT_OBJECT, FT_REASON = 34, 149  # verified on production with positive and negative controls (docs/adr/0020)
+MAX_BRANCHES = 16
+_STRING_FIELDS: dict[str, int] = {
+    "process.name": FT_PROCESS,
+    "process.command_line": FT_COMMAND,
+    "user.name": FT_LOGIN,
+    "host.hostname": FT_HOSTNAME,
+    "process.hash.md5": FT_HASH,
+    "process.hash.sha1": FT_HASH,
+    "process.hash.sha256": FT_HASH,
+    "file.hash.md5": FT_HASH,
+    "file.hash.sha1": FT_HASH,
+    "file.hash.sha256": FT_HASH,
+}
+_IP_FIELDS: dict[str, int] = {"network.src_ip": FT_SIP, "auth.source_ip": FT_SIP, "network.dst_ip": FT_DIP}
+
+
+def _like(v: str) -> str:
+    return v.replace("*", "%").replace("?", "_")
+
+
+def _filter_item(f: Any) -> dict[str, Any] | None:
+    """The LogRhythm item for one canonical filter, or None when LogRhythm cannot express it (it is then checked locally)."""
+    vals = f.value if isinstance(f.value, list) else [f.value]
+    vals = [str(v) for v in vals if v is not None and str(v) != ""]
+    if not vals:
+        return None
+    if f.field in _IP_FIELDS and f.op in ("eq", "in"):
+        plain = [v for v in vals if "/" not in v]
+        return _item(_IP_FIELDS[f.field], VT_IP, plain) if plain and len(plain) == len(vals) else None
+    ft = _STRING_FIELDS.get(f.field)
+    if ft is None:
+        return None
+    suffix = f.field == "process.name"  # LogRhythm may hold a full path where the canonical name is the file name
+    if f.op in ("eq", "in"):
+        values = [_str(f"%{v}", PATTERN) if suffix else _str(v, EXACT) for v in vals]
+    elif f.op == "contains":
+        values = [_str(f"%{v}%", PATTERN) for v in vals]
+    elif f.op == "prefix":
+        values = [_str(f"{v}%", PATTERN) for v in vals]
+    elif f.op == "wildcard":
+        values = [_str(_like(v), PATTERN) for v in vals]
+    else:
+        return None  # neq / exists / ranges: not a positive search term
+    return _item(ft, VT_STRING, values)
+
+
+def _dnf(cond: Any) -> list[list[Any]] | None:
+    """Disjunctive normal form of the positive part of a condition: a list of ANDed filters per branch. `not` adds nothing (it is a
+    superset), so it is enforced locally. None when the expansion is too large to search sensibly."""
+    if cond.filter is not None:
+        return [[cond.filter]]
+    if cond.not_ is not None:
+        return [[]]
+    if cond.any is not None:
+        out: list[list[Any]] = []
+        for c in cond.any:
+            sub = _dnf(c)
+            if sub is None:
+                return None
+            out += sub
+        return out if len(out) <= MAX_BRANCHES else None
+    out = [[]]
+    for c in cond.all or []:
+        sub = _dnf(c)
+        if sub is None:
+            return None
+        out = [a + b for a in out for b in sub]
+        if len(out) > MAX_BRANCHES:
+            return None
+    return out
+
+
+def ioa_searches(cond: Any) -> tuple[list[dict[str, Any]], int]:
+    """(queryFilters to run, branches LogRhythm cannot search). A behaviour with no searchable branch returns ([], n)."""
+    branches = _dnf(cond)
+    if branches is None:
+        return [], 1
+    searches: dict[str, dict[str, Any]] = {}
+    unsearchable = 0
+    for branch in branches:
+        items = [it for it in (_filter_item(f) for f in branch) if it is not None]
+        if not items:
+            unsearchable += 1
+            continue
+        flt = _wrap(items, 1)
+        searches[json.dumps(flt, sort_keys=True)] = flt
+    return list(searches.values()), unsearchable
+
+
+# ---- built-in SIEM behaviours: filters (verified on production, docs/adr/0021) ------------------------------------------
+def vendor_id_filter(ids: list[str]) -> dict[str, Any]:
+    """Logs whose vendor message id (the Windows event id) is any of `ids`."""
+    return _wrap([_item(FT_VENDOR_MSG_ID, VT_STRING, [_str(i, EXACT) for i in ids])], 1)
+
+
+def url_like_filter(pattern: str) -> dict[str, Any]:
+    """Logs whose URL matches one SQL pattern (`%` any run, `_` any single character). Exactly one pattern per search: several in one
+    filter make LogRhythm fail the search (verified)."""
+    return _wrap([_item(FT_URL, VT_STRING, [_str(pattern, PATTERN)])], 1)
+
+
+def text_searches(word: str) -> list[dict[str, Any]]:
+    """Searches for a bare word: it may be a process, a command line, a user, a URL, a host, a reason or an object. One search each (a URL filter must stand
+    alone), all verified filters; the caller keeps only the logs that really contain the word."""
+    like = _str(f"%{word}%", PATTERN)
+    return [
+        _wrap([_item(FT_PROCESS, VT_STRING, [like])], 1),
+        _wrap([_item(FT_COMMAND, VT_STRING, [like])], 1),
+        _wrap([_item(FT_LOGIN, VT_STRING, [like])], 1),
+        _wrap([_item(FT_HOSTNAME, VT_STRING, [like])], 1),
+        _wrap([_item(FT_REASON, VT_STRING, [like])], 1),
+        _wrap([_item(FT_OBJECT, VT_STRING, [like])], 1),
+        url_like_filter(f"%{word}%"),
+    ]

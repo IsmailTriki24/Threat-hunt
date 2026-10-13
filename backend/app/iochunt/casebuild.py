@@ -625,10 +625,14 @@ async def _append_rehunt(
     principal: Principal,
 ) -> Case | None:
     now = datetime.now(UTC)
-    for i in iocs:
-        i.last_hunted_at = now
-    if hunt.threat_id:
-        await session.execute(update(Threat).where(Threat.id == hunt.threat_id).values(last_hunted_at=now))
+    sweep = bool(
+        (hunt.signals or {}).get("sweep")
+    )  # a sweep covers SIEM logs only, so it must not postpone the full re-hunt
+    if not sweep:
+        for i in iocs:
+            i.last_hunted_at = now
+        if hunt.threat_id:
+            await session.execute(update(Threat).where(Threat.id == hunt.threat_id).values(last_hunted_at=now))
     case = await session.get(Case, hunt.case_id) if hunt.case_id else None
     new_triggers = [h for h in new_signal_hits if h.kind == "ioa"]  # technique-tagged events alone never reopen a case
     if case is None or not (new_hits or new_triggers):
@@ -653,7 +657,12 @@ async def _append_rehunt(
         )
     )[:MAX_EVIDENCE]
     await case_service.add_evidence(
-        session, backend, principal, case, event_ids, f"New matches from re-hunt {now:%Y-%m-%d %H:%M} UTC"
+        session,
+        backend,
+        principal,
+        case,
+        event_ids,
+        f"New matches from {'indicator sweep' if sweep else 're-hunt'} {now:%Y-%m-%d %H:%M} UTC",
     )
     lines = [f"{len(hs)} new event(s) for {hs[0].ioc.type} `{defang(hs[0].ioc.value)}`" for hs in groups.values()]
     by_label: dict[str, int] = defaultdict(int)
@@ -665,7 +674,7 @@ async def _append_rehunt(
         principal,
         case,
         "note",
-        "Scheduled re-hunt found new activity:\n- " + "\n- ".join(lines),
+        ("Indicator sweep" if sweep else "Scheduled re-hunt") + " found new activity:\n- " + "\n- ".join(lines),
         {"ioc_hunt": str(hunt.id)},
     )
     ioc_hosts, sig_hosts = hosts_of(new_hits), hosts_of(new_triggers)

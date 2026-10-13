@@ -40,6 +40,7 @@ class DetectionFormat(ABC):
     format_id: ClassVar[str]
     display_name: ClassVar[str]
     description: ClassVar[str] = ""
+    hidden: ClassVar[bool] = False  # platform-managed formats are not offered when writing a rule
 
     @abstractmethod
     def parse(self, content: str) -> ParsedRule:

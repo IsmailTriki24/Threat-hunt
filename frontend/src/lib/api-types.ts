@@ -218,6 +218,17 @@ export interface DataSource {
   id: string; name: string; connector_type: string; config: Record<string, unknown>; has_secrets: boolean; secret_keys: string[];
   enabled: boolean; supports_collect: boolean; health_status: string; health_detail: string; health_checked_at: string | null;
   last_ingest_at: string | null; events_total: number; created_at: string; ingest_key?: string | null;
+  sweep?: SweepStatus | null;
+}
+/** The fast lane of a sweep: only the hottest indicators, kept close to real time. */
+export interface FastLaneStatus {
+  status: "pending" | "idle" | "ok" | "partial" | "error" | "off"; detail: string; cursor: string | null; last_run_at: string | null;
+  iocs_total: number; ioas_total: number; pending: number; hits_total: number;
+}
+/** Continuous indicator sweep of a SIEM source (null: the source is not swept). */
+export interface SweepStatus {
+  status: "pending" | "idle" | "ok" | "partial" | "error" | "off"; detail: string; cursor: string | null; last_run_at: string | null;
+  last_ok_at: string | null; iocs_total: number; ioas_total?: number; pending: number; hits_total: number; windows_done: number; fast?: FastLaneStatus | null;
 }
 export interface DataSourceCreate {
   name: string; connector_type: string; config: Record<string, unknown>; secrets: Record<string, string>; enabled: boolean;
@@ -291,4 +302,16 @@ export interface TechniqueSummary {
   technique: MitreTechnique; mappings: number; objects: Array<{ object_type: string; object_id: string; title: string; confidence: Confidence }>;
   evidence_events: number; hosts: { count: number; names: string[] }; users: { count: number; names: string[] };
   risk: "HIGH" | "MEDIUM" | "LOW"; risk_reasons: string[];
+}
+
+// ---- live SIEM search (nothing stored until an event is opened) ----------------------------------------
+export type SiemSourceStatus = "ok" | "partial" | "error" | "not_applicable";
+export interface SiemSourceInfo { id: string; name: string; kind: string }
+export interface SiemSourceResult {
+  id: string; name: string; kind: string; status: SiemSourceStatus; detail: string; searched: string[]; skipped: string[];
+  scanned: number; matched: number; capped: boolean; ms: number;
+}
+export interface SiemQueryResult {
+  search_id: string; hits: EventDoc[]; origins: Record<string, string>; total: number; truncated: boolean; sources: SiemSourceResult[]; empty_query: boolean;
+  no_sources: boolean; note: string; time_range: TimeRangeBody; took_ms: number;
 }

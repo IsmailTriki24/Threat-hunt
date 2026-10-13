@@ -74,7 +74,9 @@ async def list_sources(
     rows = await session.execute(
         select(DataSource).where(DataSource.tenant_id == principal.tid).order_by(DataSource.name)
     )
-    return [service.to_out(d, settings) for d in rows.scalars()]
+    sources = list(rows.scalars())
+    sweeps = await service.sweep_states(session, sources)
+    return [service.to_out(d, settings, sweep=sweeps.get(d.id)) for d in sources]
 
 
 @router.post("", response_model=DataSourceOut, status_code=201)
@@ -120,7 +122,8 @@ async def get_source(
     session: AsyncSession = Depends(get_session),
     settings: Settings = Depends(get_settings),
 ) -> DataSourceOut:
-    return service.to_out(await _get(session, principal, ds_id), settings)
+    ds = await _get(session, principal, ds_id)
+    return service.to_out(ds, settings, sweep=(await service.sweep_states(session, [ds])).get(ds.id))
 
 
 @router.patch("/{ds_id}", response_model=DataSourceOut)
@@ -154,7 +157,7 @@ async def update_source(
         resource_id=str(ds.id),
         details={"fields": sorted(body.model_dump(exclude_none=True)), "secrets_changed": body.secrets is not None},
     )
-    return service.to_out(ds, settings)
+    return service.to_out(ds, settings, sweep=(await service.sweep_states(session, [ds])).get(ds.id))
 
 
 @router.put("/{ds_id}/secrets/{name}", status_code=204)

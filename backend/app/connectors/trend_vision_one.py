@@ -109,6 +109,40 @@ class TrendConfig(BaseModel):
         le=500,
         description="Default: the largest the dataset allows (500 for search feeds, 200 otherwise)",
     )
+    ioc_sweep: bool = Field(
+        default=True,
+        description="Search this dataset upstream every few minutes for the validated indicators and keep only the events that contain one (search datasets only)",
+    )
+    sweep_lag_minutes: int = Field(
+        default=5, ge=0, le=60, description="Only search events older than this, so the newest ones have been indexed"
+    )
+    sweep_overlap_minutes: int = Field(
+        default=2,
+        ge=0,
+        le=30,
+        description="Each sweep window starts this much earlier, to catch events that arrive late",
+    )
+    sweep_max_window_minutes: int = Field(
+        default=60, ge=5, le=240, description="Longest time span one sweep window covers when catching up"
+    )
+    sweep_budget_s: int = Field(
+        default=240, ge=20, le=600, description="Most seconds one sweep tick spends on this source"
+    )
+    sweep_hot_size: int = Field(
+        default=150,
+        ge=0,
+        le=1000,
+        description="Indicators in the fast lane: the most urgent ones are swept on their own, close to real time (0 switches the fast lane off). The full lane still covers every indicator",
+    )
+    sweep_hot_ioas: int = Field(
+        default=5, ge=0, le=50, description="Most severe behaviours of validated threats that also join the fast lane"
+    )
+    sweep_parallel: int = Field(
+        default=2,
+        ge=1,
+        le=6,
+        description="Indicator batches searched at the same time in this SIEM (be gentle with a production SIEM)",
+    )
     time_budget_s: int = Field(default=100, ge=10, le=200)
     timeout_s: float = Field(default=60.0, gt=0, le=120)
 

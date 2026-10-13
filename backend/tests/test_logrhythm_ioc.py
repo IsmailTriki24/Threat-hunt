@@ -324,7 +324,7 @@ def test_config_options_validate():
     assert (
         c.cfg.ioc_search is True
         and c.cfg.ioc_search_max == 200
-        and c.cfg.ioc_batch == 25
+        and c.cfg.ioc_batch == 100
         and c.cfg.url_pattern_max == 10
     )
     for bad in ({"ioc_batch": 0}, {"ioc_search_max": 99999}, {"url_pattern_max": -1}):

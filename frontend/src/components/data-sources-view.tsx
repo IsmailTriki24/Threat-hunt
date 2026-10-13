@@ -2,7 +2,7 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useState, type FormEvent } from "react";
 import { api } from "@/lib/api";
-import type { ConnectorInfo, DataSource } from "@/lib/api-types";
+import type { ConnectorInfo, DataSource, FastLaneStatus, SweepStatus } from "@/lib/api-types";
 import { useAuth } from "@/lib/auth";
 import { buildConfig, fieldsFromSchema, ingestCurl } from "@/lib/cases";
 import { fmtTime } from "@/lib/query";
@@ -11,7 +11,48 @@ import { Database, Info, Lock, Plus } from "lucide-react";
 import { useConfirm } from "./ui/confirm";
 import { EmptyState } from "./ui/empty-state";
 import { ActionMenu } from "./ui/menu";
+import { SeverityBadge } from "./ui/severity";
 import { Loading } from "./ui/skeleton";
+
+const SWEEP_LEVEL: Record<SweepStatus["status"], string> = { ok: "ok", partial: "medium", error: "critical", pending: "info", idle: "info", off: "info" };
+
+/** How far the sweep trails real time, e.g. "4 min behind". The 3-5 minute lag the sweep keeps on purpose is part of normal. */
+export function sweepBehind(s: Pick<SweepStatus, "cursor">, now: number = Date.now()): string | null {
+  if (!s.cursor) return null;
+  const min = Math.max(0, Math.round((now - Date.parse(s.cursor)) / 60000));
+  return min >= 120 ? `${Math.round(min / 60)} h behind` : `${min} min behind`;
+}
+
+/** The fast lane: the hottest indicators, searched on their own close to real time. */
+function FastLine({ fast }: { fast: FastLaneStatus }) {
+  if (fast.status === "pending") return <div className="mt-1 text-xs text-muted">fast lane starting</div>;
+  const behind = sweepBehind(fast);
+  const bad = fast.status === "error";
+  return (
+    <div className={`mt-1 text-xs tabular-nums ${bad ? "text-sev-critical" : "text-muted"}`} title={fast.detail}>
+      {`fast lane: ${fast.iocs_total.toLocaleString()} hot${fast.ioas_total > 0 ? ` + ${fast.ioas_total} behaviours` : ""}${behind ? ` · ${behind}` : ""}${bad ? " · error" : ""}`}
+    </div>
+  );
+}
+
+/** Status of the indicator sweep of one SIEM source: what it has searched up to, how many indicators, and what it found. */
+export function SweepCell({ sweep }: { sweep?: SweepStatus | null }) {
+  if (!sweep) return <span className="text-muted" title="This source is not searched for indicators">—</span>;
+  const behind = sweepBehind(sweep);
+  const label = sweep.status === "pending" ? "starting" : sweep.status === "off" ? "off" : sweep.status;
+  return (
+    <div title={sweep.detail}>
+      <SeverityBadge level={SWEEP_LEVEL[sweep.status]} label={label} />
+      {sweep.status !== "off" && sweep.status !== "pending" && (
+        <div className="mt-1 text-xs text-muted tabular-nums">
+          {[behind, `${sweep.iocs_total.toLocaleString()} IOCs`, (sweep.ioas_total ?? 0) > 0 ? `${(sweep.ioas_total ?? 0).toLocaleString()} behaviours` : null, sweep.pending > 0 ? `${sweep.pending.toLocaleString()} left` : null, `${sweep.hits_total.toLocaleString()} hits`].filter(Boolean).join(" · ")}
+        </div>
+      )}
+      {sweep.status === "error" && <div className="mt-1 max-w-xs truncate text-xs text-sev-critical">{sweep.detail}</div>}
+      {sweep.fast && <FastLine fast={sweep.fast} />}
+    </div>
+  );
+}
 
 const DEFAULT_SECRET: Record<string, string> = { logrhythm: "token", trend_vision_one: "api_key", generic_rest: "authorization" };
 
@@ -144,7 +185,7 @@ export function DataSourcesView() {
   return (
     <div className="space-y-3">
       <div className="flex flex-wrap items-center gap-3">
-        <p className="text-sm text-muted">Push sources send events to their ingest endpoint with a per-source key; pull sources are collected by the worker every 5 minutes.</p>
+        <p className="text-sm text-muted">Push sources send events to their ingest endpoint with a per-source key; pull sources are collected by the worker every 5 minutes. LogRhythm and Trend sources are also swept every 5 minutes for the validated indicators; only logs that contain one are kept.</p>
         <button className="btn btn-primary ml-auto" disabled={!manage || !connectors.data} title={hint} onClick={() => setShowNew((s) => !s)}><Plus aria-hidden className="h-4 w-4" />New data source</button>
       </div>
       {!manage && <p className="text-sm text-muted">Read-only: managing data sources requires the tenant admin role.</p>}
@@ -160,7 +201,7 @@ export function DataSourcesView() {
       {sources.isLoading && <Loading />}
       {sources.data && (sources.data.length === 0 ? <div className="panel"><EmptyState icon={Database} title="No data sources configured">Create a connector to start ingesting telemetry. Pull sources (LogRhythm, Trend Vision One) are collected automatically; push sources receive events at their ingest endpoint.</EmptyState></div> : (
         <table className="w-full">
-          <thead><tr>{["Name", "Connector", "Mode", "Health", "Last ingest", "Events", "Enabled", ""].map((h, i) => <th key={i} className="th" scope="col">{h || <span className="sr-only">Actions</span>}</th>)}</tr></thead>
+          <thead><tr>{["Name", "Connector", "Mode", "Health", "IOC sweep", "Last ingest", "Events", "Enabled", ""].map((h, i) => <th key={i} className="th" scope="col">{h || <span className="sr-only">Actions</span>}</th>)}</tr></thead>
           <tbody>
             {sources.data.map((d) => (
               <tr key={d.id}>
@@ -168,6 +209,7 @@ export function DataSourcesView() {
                 <td className="td font-mono">{d.connector_type}</td>
                 <td className="td">{d.supports_collect ? "pull" : "push"}</td>
                 <td className="td" title={d.health_detail}><HealthBadge status={d.health_status} /></td>
+                <td className="td"><SweepCell sweep={d.sweep} /></td>
                 <td className="td font-mono whitespace-nowrap">{d.last_ingest_at ? fmtTime(d.last_ingest_at) : "never"}</td>
                 <td className="td tabular-nums">{d.events_total.toLocaleString()}</td>
                 <td className="td"><input type="checkbox" aria-label={`Enable ${d.name}`} checked={d.enabled} disabled={!manage || toggle.isPending} onChange={() => toggle.mutate(d)} /></td>

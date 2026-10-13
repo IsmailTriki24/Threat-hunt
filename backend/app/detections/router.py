@@ -86,7 +86,9 @@ async def _check_hunt(session: AsyncSession, principal: Principal, hunt_id: uuid
 @router.get("/formats", response_model=list[FormatOut])
 async def formats(_: Principal = READ) -> list[FormatOut]:
     return [
-        FormatOut(id=f.format_id, name=f.display_name, description=f.description) for f in registry.FORMATS.values()
+        FormatOut(id=f.format_id, name=f.display_name, description=f.description)
+        for f in registry.FORMATS.values()
+        if not f.hidden
     ]
 
 

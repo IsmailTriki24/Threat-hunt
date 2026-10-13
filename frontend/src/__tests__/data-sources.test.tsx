@@ -108,3 +108,26 @@ it("collect-now only exists for pull-capable sources", async () => {
   await screen.findByText("REST");
   expect(screen.getAllByRole("button", { name: "Collect now" })).toHaveLength(1);
 });
+
+it("shows the indicator sweep status of SIEM sources, and a dash for sources that are not swept", async () => {
+  const cursor = new Date(Date.now() - 9 * 60000).toISOString();
+  mockFetch({
+    "GET /api/v1/data-sources": () => [
+      ds({ id: "l1", name: "LR DC", connector_type: "logrhythm", supports_collect: true, sweep: { status: "partial", detail: "40 indicator(s) of the current window still to search", cursor, last_run_at: cursor, last_ok_at: cursor, iocs_total: 1200, ioas_total: 30, pending: 40, hits_total: 3, windows_done: 5, fast: { status: "ok", detail: "", cursor: new Date(Date.now() - 2 * 60000).toISOString(), last_run_at: cursor, iocs_total: 150, ioas_total: 5, pending: 0, hits_total: 1 } } }),
+      ds({ id: "t1", name: "TM EP", connector_type: "trend_vision_one", supports_collect: true, sweep: { status: "error", detail: "Trend returned 500", cursor, last_run_at: cursor, last_ok_at: null, iocs_total: 10, pending: 10, hits_total: 0, windows_done: 0 } }),
+      ds({ id: "n1", name: "TM new", connector_type: "trend_vision_one", supports_collect: true, sweep: { status: "pending", detail: "", cursor: null, last_run_at: null, last_ok_at: null, iocs_total: 0, pending: 0, hits_total: 0, windows_done: 0 } }),
+      ds({ id: "p1", name: "Push", sweep: null }),
+    ],
+    "GET /api/v1/data-sources/connectors": () => connectors,
+  });
+  renderWithQuery(<DataSourcesView />);
+  const lr = (await screen.findByText("LR DC")).closest("tr") as HTMLElement;
+  expect(within(lr).getByText("partial")).toBeInTheDocument();
+  expect(within(lr).getByText(/9 min behind · 1,200 IOCs · 30 behaviours · 40 left · 3 hits/)).toBeInTheDocument();
+  expect(within(lr).getByText(/fast lane: 150 hot \+ 5 behaviours · 2 min behind/)).toBeInTheDocument();
+  const tm = screen.getByText("TM EP").closest("tr") as HTMLElement;
+  expect(within(tm).getByText("error")).toBeInTheDocument();
+  expect(within(tm).getByText("Trend returned 500")).toBeInTheDocument();
+  expect(within(screen.getByText("TM new").closest("tr") as HTMLElement).getByText("starting")).toBeInTheDocument();
+  expect(within(screen.getByText("Push").closest("tr") as HTMLElement).getByText("—")).toBeInTheDocument();
+});

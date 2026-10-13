@@ -14,7 +14,7 @@ from app.connectors.base import Connector
 from app.core.config import Settings
 from app.core.crypto import decrypt_json, encrypt_json
 from app.datasources.models import DataSource
-from app.datasources.schemas import DataSourceOut
+from app.datasources.schemas import DataSourceOut, FastLaneOut, SweepOut
 from app.events import service as ingest_service
 from app.events.search.base import SearchBackend
 
@@ -35,7 +35,64 @@ def key_matches(raw: str, stored_hash: str) -> bool:
     return hmac.compare_digest(hash_key(raw), stored_hash)
 
 
-def to_out(ds: DataSource, settings: Settings, ingest_key: str | None = None) -> DataSourceOut:
+async def sweep_states(session: AsyncSession, sources: list[DataSource]) -> dict[uuid.UUID, SweepOut]:
+    """Sweep status of the SIEM sources among `sources` (one query). Sources that are not swept are absent."""
+    from app.iochunt.models import IocSweep
+    from app.iochunt.sweep import plan_for
+
+    siem = [d for d in sources if d.connector_type in ("logrhythm", "trend_vision_one")]
+    if not siem:
+        return {}
+    rows: dict[tuple[uuid.UUID, str], IocSweep] = {
+        (r.data_source_id, r.lane): r
+        for r in (
+            await session.execute(select(IocSweep).where(IocSweep.data_source_id.in_([d.id for d in siem])))
+        ).scalars()
+    }
+    out: dict[uuid.UUID, SweepOut] = {}
+    for d in siem:
+        full = rows.get((d.id, "full"))
+        fast_row = rows.get((d.id, "fast"))
+        try:
+            plan = plan_for(d)
+        except Exception:  # invalid configuration: reported by the source's own health
+            plan = None
+        fast = None
+        if fast_row is not None and fast_row.status != "off":
+            fast = FastLaneOut(
+                status=fast_row.status,
+                detail=fast_row.detail,
+                cursor=fast_row.cursor,
+                last_run_at=fast_row.last_run_at,
+                iocs_total=fast_row.iocs_total,
+                ioas_total=fast_row.ioas_total,
+                pending=len(fast_row.queue or []),
+                hits_total=fast_row.hits_total,
+            )
+        elif plan is not None and (plan.cfg.sweep_hot_size > 0 or plan.cfg.sweep_hot_ioas > 0):
+            fast = FastLaneOut(status="pending")
+        if full is not None:
+            out[d.id] = SweepOut(
+                status=full.status,
+                detail=full.detail,
+                cursor=full.cursor,
+                last_run_at=full.last_run_at,
+                last_ok_at=full.last_ok_at,
+                iocs_total=full.iocs_total,
+                ioas_total=full.ioas_total,
+                pending=len(full.queue or []),
+                hits_total=full.hits_total,
+                windows_done=full.windows_done,
+                fast=fast if plan is not None else None,
+            )
+        elif plan is not None:
+            out[d.id] = SweepOut(status="pending", detail="The first sweep runs within 5 minutes.", fast=fast)
+    return out
+
+
+def to_out(
+    ds: DataSource, settings: Settings, ingest_key: str | None = None, sweep: SweepOut | None = None
+) -> DataSourceOut:
     secret_keys = sorted(decrypt_json(settings, ds.secrets_enc)) if ds.secrets_enc else []
     cls = registry._REGISTRY.get(ds.connector_type)  # noqa: SLF001
     return DataSourceOut(
@@ -54,6 +111,7 @@ def to_out(ds: DataSource, settings: Settings, ingest_key: str | None = None) ->
         events_total=ds.events_total,
         created_at=ds.created_at,
         ingest_key=ingest_key,
+        sweep=sweep,
     )
 
 
