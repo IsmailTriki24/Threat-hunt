@@ -178,6 +178,27 @@ async def test_siem_searches_are_budgeted_and_a_query_with_nothing_to_search_is_
     assert steps[2]["kind"] in ("budget", "invalid_query", "invalid_arguments")
 
 
+async def test_a_query_no_siem_could_answer_does_not_use_up_the_search_budget(
+    client, make, llm, app, wire, monkeypatch
+):
+    s = get_settings().model_copy(update={"ai_siem_max_calls": 1})
+    monkeypatch.setattr(tools, "get_settings", lambda: s)
+    monkeypatch.setattr("app.ai.agent.get_settings", lambda: s)
+    wire(make_siem(logs())[0])
+    t, h = await _hunter(make, app, None)
+    llm(
+        Scripted(
+            nb(H1),
+            tool("siem_search", query="event_type:authentication outcome:failure", hypothesis="H1"),
+            tool("siem_search", query="203.0.113.5", hypothesis="H1"),
+            conclude([]),
+        )
+    )
+    run = await _run(client, h, mode="quick")
+    steps = [s for s in real_steps(run) if s["name"] == "siem_search"]
+    assert [x["status"] for x in steps] == ["empty", "ok"]
+
+
 async def test_siem_search_can_be_limited_to_one_family_and_reports_when_none_is_configured(
     client, make, llm, app, wire
 ):

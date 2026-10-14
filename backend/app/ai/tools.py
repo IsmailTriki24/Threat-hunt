@@ -1097,6 +1097,9 @@ class SiemSearch(Tool):
         "Search the LIVE SIEMs (LogRhythm, Trend Vision One) directly - the authoritative source for recent activity. Each source is asked "
         "what it can answer and every returned record is re-checked against your whole query, so results are real hits. SLOW (10-90 s) and "
         "budgeted per run: ask focused questions (an indicator, a host/user, a process) over the window you need, not broad words. "
+        "Query syntax: space = AND; for alternatives use field:(a|b), never `field:a OR field:b`; `limit` is at most 25. LogRhythm cannot filter "
+        "on event_type or outcome (they are applied afterwards to the logs it returns), so search it by host, user or IP, then read the "
+        "outcome/action of the returned events. "
         "LogRhythm holds network, web-server, firewall and domain-controller sign-in logs (no endpoint process data); Trend holds endpoint "
         "activity, Microsoft 365 / Entra sign-ins and product detections. Each event says which source it came from (`from`). Events "
         "you are shown are stored so they can be cited. Read `sources`: a source that FAILED left that part UNANSWERED (not empty); one that "
@@ -1135,6 +1138,8 @@ class SiemSearch(Tool):
                 "invalid_query",
             )
         sources = out["sources"]
+        if sources and all(s["status"] == "not_applicable" for s in sources):
+            ctx.siem_calls -= 1  # no SIEM was loaded, so a query nothing could answer costs no budget
         failed = [s for s in sources if s["status"] == "error"]
         total = out["total"]
         if failed and total == 0:
