@@ -86,7 +86,13 @@ class AnthropicProvider:
         except httpx.HTTPError:
             raise ProviderUnavailable("The AI provider could not be reached") from None
         if resp.status_code in (401, 403):
-            raise ProviderUnavailable("The AI provider rejected the configured credentials")
+            raise ProviderUnavailable(
+                "The AI provider rejected the request: the credentials are invalid or the configured model is not allowed for them"
+            )
+        if resp.status_code == 404:
+            raise ProviderUnavailable(
+                f"The AI provider does not know the configured model '{self.model}'; it may have been removed - check AI_MODEL"
+            )
         if resp.status_code == 429:
             raise ProviderUnavailable("The AI provider is rate limiting requests; try again shortly")
         if resp.status_code >= 400:
@@ -204,7 +210,13 @@ class OpenRouterProvider:
             await asyncio.sleep(delay)  # shared upstream pools throttle in bursts
         assert resp is not None
         if resp.status_code in (401, 403):
-            raise ProviderUnavailable("The AI provider rejected the configured credentials")
+            raise ProviderUnavailable(
+                "The AI provider rejected the request: the credentials are invalid or the configured model is not allowed for them"
+            )
+        if resp.status_code == 404:
+            raise ProviderUnavailable(
+                f"The AI provider does not know the configured model '{self.model}'; it may have been removed - check AI_MODEL"
+            )
         if resp.status_code == 429:
             raise ProviderUnavailable("The AI provider is rate limiting requests; try again shortly")
         if resp.status_code >= 400:
