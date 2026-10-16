@@ -179,6 +179,24 @@ CONCLUDE_SCHEMA: dict[str, Any] = {
 }
 
 
+def _as_list(v: Any) -> Any:
+    """Weaker models send a list field as a JSON string or a bare string; accept both rather than fail the conclusion."""
+    if isinstance(v, str):
+        t = v.strip()
+        if not t:
+            return []
+        if t[0] in "[{":
+            try:
+                v = json.loads(t)
+            except ValueError:
+                return [t]
+            return v if isinstance(v, list) else [v]
+        return [t]
+    if isinstance(v, dict):
+        return [v]
+    return v
+
+
 class RawFinding(BaseModel):
     model_config = ConfigDict(extra="ignore")
     title: str = Field(max_length=200)
@@ -191,6 +209,18 @@ class RawFinding(BaseModel):
     inferred_links: list[str] = Field(default_factory=list, max_length=8)
     hypothesis_id: str | None = Field(default=None, max_length=8)
     techniques: list[str] = Field(default_factory=list, max_length=10)
+
+    @field_validator(
+        "event_ids",
+        "contradicting_event_ids",
+        "alternative_explanations",
+        "inferred_links",
+        "techniques",
+        mode="before",
+    )
+    @classmethod
+    def _lists(cls, v: Any) -> Any:
+        return _as_list(v)
 
     @field_validator("severity", "classification", mode="before")
     @classmethod
@@ -210,6 +240,11 @@ class RawConclusion(BaseModel):
     report_title: str = Field(default="", max_length=160)
     threat_background: str = Field(default="", max_length=2500)
     recommendations: list[str] = Field(default_factory=list, max_length=10)
+
+    @field_validator("findings", "unresolved_questions", "next_steps", "recommendations", mode="before")
+    @classmethod
+    def _lists(cls, v: Any) -> Any:
+        return _as_list(v)
 
     @field_validator("confidence", mode="before")
     @classmethod
@@ -981,7 +1016,9 @@ async def run_agent(
                 try:
                     cand = RawConclusion.model_validate(conclude_call.input)
                 except ValidationError as exc:
-                    msg = f"invalid conclusion: {exc.errors()[0]['msg']}"
+                    e0 = exc.errors()[0]
+                    where = ".".join(str(x) for x in e0["loc"])
+                    msg = f"invalid conclusion: {where}: {e0['msg']}" if where else f"invalid conclusion: {e0['msg']}"
                     out.steps.append(
                         {"type": "tool", "name": CONCLUDE, "input": conclude_call.input, "error": msg[:300]}
                     )
