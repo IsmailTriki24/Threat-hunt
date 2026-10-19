@@ -27,6 +27,7 @@ from app.connectors import registry as connectors
 from app.connectors._http import SourceError
 from app.connectors.base import NormalizationError
 from app.connectors.logrhythm import browse_filter, ioa_searches, ioc_query_filter, text_searches
+from app.connectors.logrhythm_admin import search_scopes
 from app.connectors.logrhythm_alarms import alarm_events, list_alarms, normalize_alarm
 from app.core.config import Settings
 from app.core.crypto import decrypt_json
@@ -490,6 +491,31 @@ async def searchable_sources(session: AsyncSession, tenant_id: uuid.UUID) -> lis
         if lr or trend:
             out.append(ds)
     return out
+
+
+async def lr_scopes(session: AsyncSession, settings: Settings, tenant_id: uuid.UUID) -> dict[str, Any]:
+    """What a LogRhythm browse can be narrowed to (entities, log source types), merged over the tenant's LogRhythm sources. A source that cannot be
+    asked is reported, not hidden."""
+    entities: dict[int, dict[str, Any]] = {}
+    types: dict[int, dict[str, Any]] = {}
+    errors: list[str] = []
+    for ds in await searchable_sources(session, tenant_id):
+        if ds.connector_type != "logrhythm":
+            continue
+        try:
+            found = await search_scopes(connectors.build("logrhythm", ds.config, _secrets(settings, ds)))
+        except (SourceError, ValueError, KeyError) as exc:
+            errors.append(f"{ds.name}: {str(exc)[:120]}")
+            continue
+        entities.update({e["id"]: e for e in found["entities"]})
+        for t in found["source_types"]:
+            row = types.setdefault(t["id"], {**t, "sources": 0})
+            row["sources"] += t["sources"]
+    return {
+        "entities": sorted(entities.values(), key=lambda r: r["name"].lower()),
+        "source_types": sorted(types.values(), key=lambda r: r["name"].lower()),
+        "errors": errors,
+    }
 
 
 def cache_key(tenant_id: uuid.UUID, search_id: str) -> str:

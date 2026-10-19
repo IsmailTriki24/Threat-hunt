@@ -107,6 +107,28 @@ def make_siem(logs):
     seen = []
 
     def handler(request):
+        if "/lr-admin-api/" in request.url.path:
+            if request.url.path.rstrip("/").endswith("entities"):
+                return httpx.Response(
+                    200,
+                    json=[
+                        {
+                            "id": 7,
+                            "name": "DC-System Devices",
+                            "fullName": "Wifak-Datacenter/DC-System Devices",
+                            "recordStatusName": "Active",
+                        },
+                        {"id": 9, "name": "Old", "recordStatusName": "Retired"},
+                    ],
+                )
+            return httpx.Response(
+                200,
+                json=[
+                    {"id": 1, "logSourceType": {"id": 1000639, "name": "Win Sec"}},
+                    {"id": 2, "logSourceType": {"id": 1000639, "name": "Win Sec"}},
+                    {"id": 3, "logSourceType": {"id": 86, "name": "Cisco Router"}},
+                ],
+            )
         if "/lr-alarm-api/" in request.url.path:  # the Alarm API: GET, nothing raised unless a test sets handler.alarms
             tail = request.url.path.split("/lr-alarm-api/")[1].strip("/")
             if tail == "alarms":

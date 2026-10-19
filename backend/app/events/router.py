@@ -154,6 +154,15 @@ async def siem_sources(
     ]
 
 
+@router.get("/siem-scopes")
+async def siem_scopes(
+    principal: Principal = Depends(require(Permission.EVENTS_READ)),
+    session: AsyncSession = Depends(get_session),
+) -> dict[str, Any]:
+    """The LogRhythm entities and log source types a browse can be narrowed to (ids for a browse)."""
+    return await siem_query.lr_scopes(session, get_settings(), principal.tid)
+
+
 @router.post("/siem-query")
 async def siem_query_events(
     query: siem_query.SiemQuery,

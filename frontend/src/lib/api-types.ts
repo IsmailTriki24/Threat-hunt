@@ -307,6 +307,7 @@ export interface TechniqueSummary {
 // ---- live SIEM search (nothing stored until an event is opened) ----------------------------------------
 export type SiemSourceStatus = "ok" | "partial" | "error" | "not_applicable";
 export interface SiemSourceInfo { id: string; name: string; kind: string }
+export interface SiemScopes { entities: { id: number; name: string }[]; source_types: { id: number; name: string; sources: number }[]; errors: string[] }
 export interface SiemSourceResult {
   id: string; name: string; kind: string; status: SiemSourceStatus; detail: string; searched: string[]; skipped: string[];
   scanned: number; matched: number; capped: boolean; ms: number;

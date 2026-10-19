@@ -236,6 +236,25 @@ async def test_an_alarm_api_failure_is_reported_and_does_not_fail_the_log_search
     assert any("Alarms could not be read" in n for n in out["sources"][0]["skipped"])
 
 
+async def test_the_scopes_endpoint_lists_the_entities_and_log_source_types_a_browse_can_be_narrowed_to(
+    client, make, app, wire
+):
+    handler, seen = make_siem([])
+    t, h = await _env(client, make, app, wire, handler=handler)
+    r = await client.get(f"{API}/siem-scopes", headers=h)
+    assert r.status_code == 200, r.text
+    out = r.json()
+    assert out["entities"] == [{"id": 7, "name": "Wifak-Datacenter/DC-System Devices"}]  # retired entities are left out
+    assert (
+        out["source_types"]
+        == [
+            {"id": 86, "name": "Cisco Router", "sources": 1},
+            {"id": 1000639, "name": "Win Sec", "sources": 2},
+        ]
+        and out["errors"] == []
+    )
+
+
 async def test_an_empty_search_does_not_browse_the_siem_and_missing_sources_are_said(client, make, app, wire):
     handler, seen = make_siem([lr_log(1)])
     t, h = await _env(client, make, app, wire, handler=handler)

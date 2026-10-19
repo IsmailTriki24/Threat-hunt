@@ -12,6 +12,7 @@ import { AggPanel } from "./agg-panel";
 import { EventDrawer } from "./event-drawer";
 import { FilterBuilder, FilterChips } from "./filter-builder";
 import { QueryEditorHint } from "./query-hint";
+import { ScopePicker } from "./scope-picker";
 import { RangeControl } from "./range-control";
 import { ResultsTable } from "./results-table";
 import { EmptyState } from "./ui/empty-state";
@@ -109,17 +110,27 @@ export function SiemSearchView() {
   const available = useQuery({ queryKey: ["siem-sources"], queryFn: api.siemSources, staleTime: 60_000 });
   const browse = sp.get("browse") === "1"; // list what LogRhythm holds for the range, with no search terms (up to the read limit)
   const hasQuery = !!(state.q.trim() || state.filters.length || browse);
+  const numbers = (key: string): number[] => sp.getAll(key).map(Number).filter((n) => Number.isInteger(n)).slice(0, 50);
+  const entityIds = useMemo(() => numbers("ent"), [sp]); // eslint-disable-line react-hooks/exhaustive-deps
+  const typeIds = useMemo(() => numbers("st"), [sp]); // eslint-disable-line react-hooks/exhaustive-deps
+  const setScope = (key: "ent" | "st", ids: number[]) => {
+    const p = new URLSearchParams(sp.toString());
+    p.delete(key);
+    for (const id of ids) p.append(key, String(id));
+    router.replace(`${pathname}?${p.toString()}`, { scroll: false });
+  };
   const setBrowse = (on: boolean) => {
     const p = new URLSearchParams(sp.toString());
-    if (on) p.set("browse", "1"); else p.delete("browse");
+    if (on) p.set("browse", "1"); else { p.delete("browse"); p.delete("ent"); p.delete("st"); }
     const qs = p.toString();
     router.replace(qs ? `${pathname}?${qs}` : pathname, { scroll: false });
   };
   // The request body (with its resolved "now") is computed once per applied search / explicit run, so paging and sorting never ask the SIEMs again.
-  const key = JSON.stringify([state.q, state.lang, state.range, state.filters, sources, nonce, browse]);
+  const scopes = useQuery({ queryKey: ["siem-scopes"], queryFn: api.siemScopes, staleTime: 300_000, enabled: browse });
+  const key = JSON.stringify([state.q, state.lang, state.range, state.filters, sources, nonce, browse, entityIds, typeIds]);
   const search = useQuery({
     queryKey: ["siem-query", key],
-    queryFn: () => api.siemQuery({ ...toRequestBody({ ...state, event: null, offset: 0, sort: null }, []), ...(sources.length ? { sources } : {}), ...(browse ? { browse: true } : {}) }),
+    queryFn: () => api.siemQuery({ ...toRequestBody({ ...state, event: null, offset: 0, sort: null }, []), ...(sources.length ? { sources } : {}), ...(browse ? { browse: true, ...(entityIds.length ? { entity_ids: entityIds } : {}), ...(typeIds.length ? { source_type_ids: typeIds } : {}) } : {}) }),
     enabled: hasQuery, staleTime: Infinity, retry: false, refetchOnWindowFocus: false, refetchOnMount: false,
   });
   const data: SiemQueryResult | undefined = search.data;
@@ -227,6 +238,15 @@ export function SiemSearchView() {
       {browse && !state.q.trim() && !state.filters.length && (
         <p className="flex flex-wrap items-center gap-2 text-xs text-ink-2">Browsing every log of the range (newest first within the read limit); add a search term or filter to narrow it.
           <button type="button" className="btn btn-sm" onClick={() => setBrowse(false)}>Stop browsing</button></p>
+      )}
+      {browse && !state.q.trim() && !state.filters.length && scopes.data && (
+        <div className="flex flex-wrap items-center gap-2" role="group" aria-label="Narrow the browse">
+          <span className="text-xs text-muted">Narrow to</span>
+          <ScopePicker label="Entities" options={scopes.data.entities} selected={entityIds} onChange={(ids) => setScope("ent", ids)} />
+          <ScopePicker label="Log source types" options={scopes.data.source_types} selected={typeIds} onChange={(ids) => setScope("st", ids)} />
+          {entityIds.length > 0 && <span className="text-xs text-muted">Alarms are left out while narrowed.</span>}
+          {scopes.data.errors.map((e) => <span key={e} className="text-xs text-sev-medium">{e}</span>)}
+        </div>
       )}
 
       {data?.no_sources && (

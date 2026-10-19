@@ -37,6 +37,19 @@ describe("SIEM Search", () => {
     expect(m.bodiesFor("POST /api/v1/events/siem-query")).toHaveLength(0);
   });
 
+  it("browsing can be narrowed to entities and log source types, which are sent as ids", async () => {
+    params = "browse=1&ent=7&st=1000639&st=86";
+    const m = mockFetch(routes({
+      "GET /api/v1/events/siem-scopes": () => ({ entities: [{ id: 7, name: "DC/System Devices" }], source_types: [{ id: 86, name: "Cisco Router", sources: 13 }, { id: 1000639, name: "Windows Security", sources: 44 }], errors: [] }),
+    }));
+    renderWithQuery(<SiemSearchView />);
+    expect(await screen.findByText("Entities · 1 selected")).toBeInTheDocument();
+    expect(screen.getByText("Log source types · 2 selected")).toBeInTheDocument();
+    await waitFor(() => expect(m.bodiesFor("POST /api/v1/events/siem-query")).toHaveLength(1));
+    const body = m.bodiesFor("POST /api/v1/events/siem-query")[0] as { browse: boolean; entity_ids: number[]; source_type_ids: number[] };
+    expect(body).toMatchObject({ browse: true, entity_ids: [7], source_type_ids: [1000639, 86] });
+  });
+
   it("sends the query straight to the SIEMs (no aggregations, no stored search) and shows each source's answer, including a failure", async () => {
     params = "q=203.0.113.5";
     const m = mockFetch(routes());

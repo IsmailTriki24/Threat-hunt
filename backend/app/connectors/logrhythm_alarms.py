@@ -42,12 +42,12 @@ def _parse(value: Any) -> datetime | None:
         return None
 
 
-async def _get(connector: Any, path: str, params: dict[str, Any] | None = None) -> dict[str, Any]:
+async def _get(connector: Any, path: str, params: dict[str, Any] | None = None, api: str = "lr-alarm-api") -> Any:
     token = connector.secrets.get("token")
     if not token:
         raise SourceError("no API token configured for this data source")
     cfg = connector.cfg
-    url = f"{str(cfg.base_url).rstrip('/')}/lr-alarm-api/{path}"
+    url = f"{str(cfg.base_url).rstrip('/')}/{api}/{path}"
     if params:
         url += "?" + urlencode(params)
     out = await request_json(
@@ -59,8 +59,6 @@ async def _get(connector: Any, path: str, params: dict[str, Any] | None = None) 
         tls_server_name=cfg.tls_server_name,
         timeout_s=cfg.timeout_s,
     )
-    if not isinstance(out, dict):
-        raise SourceError("unexpected alarm response shape")
     return out
 
 
@@ -75,6 +73,8 @@ async def list_alarms(
         if rule_like:
             params["alarmRuleName"] = f"%{rule_like}%"
         page = await _get(connector, "alarms/", params)
+        if not isinstance(page, dict):
+            raise SourceError("unexpected alarm response shape")
         items = [a for a in (page.get("alarmsSearchDetails") or []) if isinstance(a, dict)]
         for a in items:
             when = _parse(a.get("dateInserted"))
@@ -91,6 +91,8 @@ async def list_alarms(
 
 async def alarm_events(connector: Any, alarm_id: int) -> list[dict[str, Any]]:
     page = await _get(connector, f"alarms/{int(alarm_id)}/events")
+    if not isinstance(page, dict):
+        raise SourceError("unexpected alarm response shape")
     return [e for e in (page.get("alarmEventsDetails") or []) if isinstance(e, dict)]
 
 
