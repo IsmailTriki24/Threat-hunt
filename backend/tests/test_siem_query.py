@@ -96,7 +96,7 @@ async def test_an_indicator_search_goes_to_the_siem_and_shows_only_logs_that_rea
     assert out["total"] == 1 and out["hits"][0]["host"]["hostname"] == "srv9.corp.example" and out["search_id"]
     src = out["sources"][0]
     assert src["kind"] == "logrhythm" and src["status"] == "ok" and src["matched"] == 1 and src["scanned"] >= 1 and seen
-    assert "203.0.113.5" in src["searched"][0]
+    assert any("203.0.113.5" in s for s in src["searched"])
     assert out["origins"] == {out["hits"][0]["id"]: src["id"]}  # every result says which source returned it
     assert await _stored(client, h, "srv9.corp.example") == 0  # nothing was stored
 
@@ -133,8 +133,107 @@ async def test_a_bare_word_is_looked_for_in_process_command_user_host_url_reason
     out = await _q(client, h, q="backup")
     assert {x["host"]["hostname"] for x in out["hits"]} == {"srv-1", "web-1"}
     kinds = {i["filterType"] for f in seen for i in f["filterGroup"]["filterItems"][0]["filterItems"]}
-    assert {FT_PROCESS, FT_COMMAND, FT_LOGIN, FT_URL, 149, 34} <= kinds
-    assert any("process, command line, user, host, URL, reason and object" in n for n in out["sources"][0]["skipped"])
+    assert {FT_PROCESS, FT_COMMAND, FT_LOGIN, FT_URL, 149, 34, 35} <= kinds
+    assert {154, 144, 141} <= {
+        i["filterType"] for f in seen for i in f["filterGroup"]["filterItems"][0]["filterItems"]
+    }  # the hunting fields, OR-ed in one search
+    assert any(
+        "process, command line, user, host, URL, reason, object and the raw log text" in n
+        for n in out["sources"][0]["skipped"]
+    )
+
+
+async def test_a_word_found_only_in_the_raw_log_text_is_kept_because_the_siem_vouches_for_it(client, make, app, wire):
+    # the raw text never comes back, so the normalized log has no trace of the word; only the Message (35) search can have found it
+    logs = [
+        lr_log(1, impactedHost="dc-1", rawText="status 0xC000006A"),
+        lr_log(2, impactedHost="dc-2", rawText="status 0x0"),
+    ]
+    handler, seen = make_siem(logs)
+    t, h = await _env(client, make, app, wire, handler=handler)
+    out = await _q(client, h, q="0xC000006A")
+    assert {x["host"]["hostname"] for x in out["hits"]} == {"dc-1"}
+
+
+async def test_a_user_agent_or_firewall_action_is_found_by_a_bare_word(client, make, app, wire):
+    logs = [
+        lr_log(1, impactedHost="fw-1", userAgent="DNS over HTTPS"),
+        lr_log(2, impactedHost="fw-2", userAgent="curl/8"),
+    ]
+    handler, seen = make_siem(logs)
+    t, h = await _env(client, make, app, wire, handler=handler)
+    out = await _q(client, h, q='"DNS over HTTPS"')
+    assert {x["host"]["hostname"] for x in out["hits"]} == {"fw-1"}
+
+
+async def test_browse_lists_every_log_of_the_range_and_can_be_narrowed_to_entities(client, make, app, wire):
+    logs = [
+        lr_log(1, impactedHost="a-1", entityId=7),
+        lr_log(2, impactedHost="b-1", entityId=9),
+        lr_log(3, impactedHost="c-1", entityId=2, impactedEntityId=7),
+    ]
+    handler, seen = make_siem(logs)
+    t, h = await _env(client, make, app, wire, handler=handler)
+    out = await _q(client, h, browse=True)
+    assert out["empty_query"] is False and {x["host"]["hostname"] for x in out["hits"]} == {"a-1", "b-1", "c-1"}
+    assert {35} == {i["filterType"] for f in seen for i in f["filterGroup"]["filterItems"][0]["filterItems"]}
+    seen.clear()
+    out = await _q(client, h, browse=True, entity_ids=[7])
+    assert {x["host"]["hostname"] for x in out["hits"]} == {"a-1", "c-1"}  # the entity filter is re-checked locally
+    assert {35, 6} == {i["filterType"] for f in seen for i in f["filterGroup"]["filterItems"][0]["filterItems"]}
+
+
+def _alarm(i, rule, **event):
+    when = NOW.strftime("%Y-%m-%dT%H:%M:%S.000")
+    return {
+        "alarmId": i,
+        "alarmRuleName": rule,
+        "alarmStatus": 0,
+        "entityName": "Global Entity",
+        "dateInserted": when,
+        "associatedCases": [],
+    }, [{"commonEventName": rule, "priority": 40, "classificationName": "Reconnaissance", **event}]
+
+
+async def test_alarms_are_searched_with_the_logs_behind_them_raw_text_included(client, make, app, wire):
+    handler, seen = make_siem([])
+    handler.alarms = [
+        _alarm(
+            1, "AIE: port scan horizontal", originIP="45.148.10.188", logMessage="<aie>scan from 45.148.10.188</aie>"
+        ),
+        _alarm(
+            2,
+            "LogRhythm Agent Heartbeat Missed",
+            impactedHostName="poste_test",
+            logMessage="heartbeat missed 0xABCD1234",
+        ),
+    ]
+    t, h = await _env(client, make, app, wire, handler=handler)
+    by_rule = await _q(client, h, q="port scan")  # a word in the rule name
+    assert [x["action"] for x in by_rule["hits"]] == ["AIE: port scan horizontal"] and by_rule["hits"][0][
+        "event_type"
+    ] == "alert"
+    by_ip = await _q(client, h, q="45.148.10.188")  # an indicator in the logs behind the alarm
+    assert [x["original_id"] for x in by_ip["hits"]] == ["alarm-1"]
+    by_raw = await _q(client, h, q="0xABCD1234")  # a string only in the raw log text
+    assert [x["original_id"] for x in by_raw["hits"]] == ["alarm-2"]
+    assert "alarms" in by_raw["sources"][0]["searched"]
+    assert (await _q(client, h, q="nothing-like-this"))["hits"] == []
+
+
+async def test_an_alarm_api_failure_is_reported_and_does_not_fail_the_log_search(client, make, app, wire):
+    handler, seen = make_siem([lr_log(1, process="backup.exe", impactedHost="srv-1")])
+
+    def failing(request):
+        if "/lr-alarm-api/" in request.url.path:
+            return httpx.Response(500, json={})
+        return handler(request)
+
+    failing.results = handler.results
+    t, h = await _env(client, make, app, wire, handler=failing)
+    out = await _q(client, h, q="backup")
+    assert [x["host"]["hostname"] for x in out["hits"]] == ["srv-1"]
+    assert any("Alarms could not be read" in n for n in out["sources"][0]["skipped"])
 
 
 async def test_an_empty_search_does_not_browse_the_siem_and_missing_sources_are_said(client, make, app, wire):

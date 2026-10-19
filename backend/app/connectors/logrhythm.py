@@ -596,7 +596,29 @@ async def search_ioc_batch(
 # search are AND-ed, which narrows (verified). The search is a SUPERSET of the behaviour: conditions LogRhythm cannot express are dropped from
 # it and enforced locally on the returned logs, so a loose search can only cost time, never create a false match.
 FT_PROCESS, FT_COMMAND, FT_LOGIN, FT_SIP, FT_DIP, FT_VENDOR_MSG_ID = 41, 112, 29, 18, 19, 37
+FT_MESSAGE = 35  # free text over the raw log message (positive/negative controls on prod 2026-10-19: matches 0xC000006A, not a normalized field)
 FT_OBJECT, FT_REASON = 34, 149  # verified on production with positive and negative controls (docs/adr/0020)
+# Hunting fields verified on production 2026-10-19 (exact value from a real log: every log returned carried it, a nonsense value returned none).
+# String-valued (valueType 4): Action, Result, UserAgent, Subject, Policy, ResponseCode, Session, Severity, VendorInfo, ObjectType, Group, Status, Account,
+# Domain. Int32-valued (valueType 2; a string value makes the search fail): SPort, DPort, Port, PID, SessionType, Direction, Protocol.
+# ThreatName, ThreatId, Application, CVE, ParentProcessName had no value in any log of the window, so they are NOT used (untested).
+FT_ACTION, FT_RESULT, FT_USER_AGENT, FT_SUBJECT, FT_POLICY, FT_RESPONSE_CODE, FT_SESSION = (
+    154,
+    141,
+    144,
+    33,
+    139,
+    155,
+    40,
+)
+FT_SEVERITY, FT_VENDOR_INFO, FT_OBJECT_TYPE, FT_GROUP, FT_STATUS, FT_ACCOUNT, FT_DOMAIN = 110, 140, 142, 38, 150, 30, 39
+FT_SPORT, FT_DPORT, FT_PORT, FT_PID = 26, 27, 45, 109
+VT_INT = 2
+FT_ENTITY, FT_MSG_SOURCE_TYPE = 6, 9  # Int32 ids; verified 2026-10-19 (see browse_filter)
+_HUNT_TEXT_FIELDS = (
+    FT_ACTION, FT_RESULT, FT_USER_AGENT, FT_SUBJECT, FT_POLICY, FT_RESPONSE_CODE, FT_SESSION, FT_VENDOR_INFO, FT_OBJECT_TYPE, FT_GROUP, FT_STATUS,
+    FT_ACCOUNT, FT_DOMAIN,
+)  # fmt: skip
 MAX_BRANCHES = 16
 _STRING_FIELDS: dict[str, int] = {
     "process.name": FT_PROCESS,
@@ -700,8 +722,12 @@ def url_like_filter(pattern: str) -> dict[str, Any]:
 
 def text_searches(word: str) -> list[dict[str, Any]]:
     """Searches for a bare word: it may be a process, a command line, a user, a URL, a host, a reason or an object. One search each (a URL filter must stand
-    alone), all verified filters; the caller keeps only the logs that really contain the word."""
+    alone), all verified filters; the caller keeps only the logs that really contain the word. The last one searches the raw log text; its logs carry
+    no raw text back, so a log it returns is vouched for by the SIEM (see TEXT_RAW_LABEL)."""
     like = _str(f"%{word}%", PATTERN)
+    native = [_item(ft, VT_STRING, [like]) for ft in _HUNT_TEXT_FIELDS]
+    if word.isdigit() and int(word) <= 65535:  # a port or a pid: Int32 values, exact
+        native += [_item(ft, VT_INT, [int(word)]) for ft in (FT_PORT, FT_PID)]
     return [
         _wrap([_item(FT_PROCESS, VT_STRING, [like])], 1),
         _wrap([_item(FT_COMMAND, VT_STRING, [like])], 1),
@@ -710,4 +736,19 @@ def text_searches(word: str) -> list[dict[str, Any]]:
         _wrap([_item(FT_REASON, VT_STRING, [like])], 1),
         _wrap([_item(FT_OBJECT, VT_STRING, [like])], 1),
         url_like_filter(f"%{word}%"),
+        _wrap(native, 2),
+        _wrap([_item(FT_MESSAGE, VT_STRING, [like])], 1),
     ]
+
+
+def browse_filter(entity_ids: list[int] | None = None, source_type_ids: list[int] | None = None) -> dict[str, Any]:
+    """Every log of the window: a Message search for `%` matches all of them (verified on prod 2026-10-19, 5,000+ logs in 10 minutes from 11
+    source types). Optionally narrowed (AND) to entities and/or log source types, by Int32 id.
+    Source types narrow exactly. The Entity filter lets LogRhythm's own diagnostics logs (entity of the emitting service) through whatever
+    the id, so the caller must also check `entityId` / `originEntityId` / `impactedEntityId` locally."""
+    items = [_item(FT_MESSAGE, VT_STRING, [_str("%", PATTERN)])]
+    if entity_ids:
+        items.append(_item(FT_ENTITY, VT_INT, list(dict.fromkeys(entity_ids))))
+    if source_type_ids:
+        items.append(_item(FT_MSG_SOURCE_TYPE, VT_INT, list(dict.fromkeys(source_type_ids))))
+    return _wrap(items, 1)

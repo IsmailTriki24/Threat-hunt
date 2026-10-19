@@ -107,6 +107,22 @@ def make_siem(logs):
     seen = []
 
     def handler(request):
+        if "/lr-alarm-api/" in request.url.path:  # the Alarm API: GET, nothing raised unless a test sets handler.alarms
+            tail = request.url.path.split("/lr-alarm-api/")[1].strip("/")
+            if tail == "alarms":
+                found = getattr(handler, "alarms", [])
+                return httpx.Response(
+                    200, json={"alarmsSearchDetails": [a for a, _ in found] or None, "alarmsCount": len(found)}
+                )
+            alarm_id = int(tail.split("/")[1])
+            return httpx.Response(
+                200,
+                json={
+                    "alarmEventsDetails": dict((a["alarmId"], e) for a, e in getattr(handler, "alarms", [])).get(
+                        alarm_id, []
+                    )
+                },
+            )
         body = json.loads(request.content)
         if request.url.path.endswith("search-task"):
             flt = body["queryFilter"]
@@ -119,6 +135,9 @@ def make_siem(logs):
             for i in items_of(flt):
                 for v in i["values"]:
                     val = v["value"]["value"] if isinstance(v["value"], dict) else v["value"]
+                    if str(val) == "%":  # a match-all pattern returns every log
+                        hit += logs
+                        continue
                     needle = str(val).strip("%").lstrip(".").lower()
                     hit += [lg for lg in logs if needle and any(needle in str(x).lower() for x in lg.values())]
             tid = f"fail-{len(seen)}" if bad else f"ok-{len(seen)}"

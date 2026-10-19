@@ -26,7 +26,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.connectors import registry as connectors
 from app.connectors._http import SourceError
 from app.connectors.base import NormalizationError
-from app.connectors.logrhythm import ioa_searches, ioc_query_filter, text_searches
+from app.connectors.logrhythm import browse_filter, ioa_searches, ioc_query_filter, text_searches
+from app.connectors.logrhythm_alarms import alarm_events, list_alarms, normalize_alarm
 from app.core.config import Settings
 from app.core.crypto import decrypt_json
 from app.datasources.models import DataSource
@@ -38,6 +39,7 @@ from app.events.search.query import Condition, EventQuery, Filter, TimeRange
 from app.iochunt import hunting
 
 MAX_WINDOW = timedelta(days=14)
+CAP_ALARMS = 300  # alarms read per listing (each costs one more call for the logs behind it)
 CAP_PER_SEARCH = 1500  # logs / events read per search
 MAX_HITS = 500
 BUDGET_S = 120
@@ -51,6 +53,11 @@ class SiemQuery(EventQuery):
     sources: list[uuid.UUID] = Field(
         default_factory=list, max_length=20
     )  # data sources to ask; empty = all searchable ones
+    # Browse mode: with no search terms, list what LogRhythm holds for the time range (newest read first, capped), optionally narrowed to
+    # entities / log source types by id. Terms and filters, when given, still decide what is searched.
+    browse: bool = False
+    entity_ids: list[int] = Field(default_factory=list, max_length=50)
+    source_type_ids: list[int] = Field(default_factory=list, max_length=50)
 
 
 # ---- the query ----------------------------------------------------------------------------------------
@@ -67,6 +74,9 @@ class Parsed:
     where: Condition | None
     terms: dict[str, list[str]]  # indicators (kind -> values) from filter fields and bare tokens
     words: list[str]  # positive free-text words, longest first
+    browse: bool = False
+    entity_ids: list[int] = field(default_factory=list)
+    source_type_ids: list[int] = field(default_factory=list)
 
 
 def parse_text(free: str) -> list[Alt]:
@@ -102,7 +112,16 @@ def parse(query: EventQuery) -> Parsed:
         key=len,
         reverse=True,
     )
-    return Parsed(alts, query.effective_filters(), query.where, plan.terms, words)
+    return Parsed(
+        alts,
+        query.effective_filters(),
+        query.where,
+        plan.terms,
+        words,
+        browse=bool(getattr(query, "browse", False)),
+        entity_ids=list(getattr(query, "entity_ids", [])),
+        source_type_ids=list(getattr(query, "source_type_ids", [])),
+    )
 
 
 # ---- local verification -------------------------------------------------------------------------------
@@ -130,15 +149,19 @@ def _has(word: str, blob: str) -> bool:
     return local.glob_match(f"*{w.strip('*')}*", blob) if "*" in w else w in blob
 
 
-def accepts(parsed: Parsed, doc: dict[str, Any]) -> bool:
-    """Does this record satisfy the whole query? The authority on what is shown, whatever the vendor returned."""
+def accepts(parsed: Parsed, doc: dict[str, Any], vouched: frozenset[str] = frozenset()) -> bool:
+    """Does this record satisfy the whole query? The authority on what is shown, whatever the vendor returned. `vouched` are words the SIEM
+    itself found in this log's raw text, which we are never sent."""
     if not all(local.matches_filter(f, doc) for f in parsed.filters):
         return False
     if parsed.where is not None and not local.matches(parsed.where, doc):
         return False
     if parsed.alts:
         blob = _blob(doc)
-        if not any(all(_has(w, blob) for w in a.pos) and not any(_has(w, blob) for w in a.neg) for a in parsed.alts):
+        if not any(
+            all(_has(w, blob) or w in vouched for w in a.pos) and not any(_has(w, blob) for w in a.neg)
+            for a in parsed.alts
+        ):
             return False
     return True
 
@@ -169,7 +192,14 @@ def _secrets(settings: Settings, ds: DataSource) -> dict[str, str]:
     return {k: str(v) for k, v in decrypt_json(settings, ds.secrets_enc).items()} if ds.secrets_enc else {}
 
 
-def _collect(res: SourceResult, conn: Any, raws: list[dict[str, Any]], parsed: Parsed, tenant_id: uuid.UUID) -> None:
+def _collect(
+    res: SourceResult,
+    conn: Any,
+    raws: list[dict[str, Any]],
+    parsed: Parsed,
+    tenant_id: uuid.UUID,
+    vouched: dict[Any, set[str]] | None = None,
+) -> None:
     seen = {e.id for e in res.events}
     for raw in raws:
         try:
@@ -177,9 +207,18 @@ def _collect(res: SourceResult, conn: Any, raws: list[dict[str, Any]], parsed: P
         except NormalizationError:
             continue
         for ev in evs:
-            if ev.id not in seen and accepts(parsed, ev.to_document()):
+            if ev.id not in seen and accepts(
+                parsed, ev.to_document(), frozenset((vouched or {}).get(raw.get("messageId"), ()))
+            ):
                 seen.add(ev.id)
                 res.events.append(ev)
+
+
+def _in_entities(raw: dict[str, Any], ids: list[int]) -> bool:
+    return any(raw.get(k) in ids for k in ("entityId", "originEntityId", "impactedEntityId"))
+
+
+TEXT_RAW_LABEL = "text (raw log): "
 
 
 def _lr_plan(parsed: Parsed) -> tuple[list[tuple[str, dict[str, Any]]], list[str]]:
@@ -208,10 +247,16 @@ def _lr_plan(parsed: Parsed) -> tuple[list[tuple[str, dict[str, Any]]], list[str
     if out:
         return out, notes
     for w in parsed.words[:MAX_TEXT_SEARCH_TOKENS]:
-        out += [(f"text: {w}", s) for s in text_searches(w)]
+        found = text_searches(w)
+        out += [(f"text: {w}", s) for s in found[:-1]] + [(f"{TEXT_RAW_LABEL}{w}", found[-1])]
     if out:
         notes.append(
-            "A bare word is looked for in process, command line, user, host, URL, reason and object; use field:value for anything else"
+            "A bare word is looked for in process, command line, user, host, URL, reason, object and the raw log text; use field:value for anything else"
+        )
+    if not out and parsed.browse:
+        out.append(("browse", browse_filter(parsed.entity_ids, parsed.source_type_ids)))
+        notes.append(
+            "Browsing: every log of the time range is read, up to the read limit; narrow by time, entity or source type for more."
         )
     return out, notes
 
@@ -231,6 +276,7 @@ async def _run_lr(
     secrets = _secrets(settings, ds)
     sem = asyncio.Semaphore(int((ds.config or {}).get("sweep_parallel", 2) or 2))
     raws: dict[Any, dict[str, Any]] = {}
+    vouched: dict[Any, set[str]] = {}
 
     async def one(label: str, flt: dict[str, Any]) -> None:
         async with sem:
@@ -245,17 +291,78 @@ async def _run_lr(
             res.searched.append(label)
             res.capped = res.capped or conn.capped
             for r in logs:
+                if label == "browse" and parsed.entity_ids and not _in_entities(r, parsed.entity_ids):
+                    continue  # LogRhythm's own diagnostics logs pass an Entity filter whatever the id
                 raws[r.get("messageId")] = r
+                if label.startswith(TEXT_RAW_LABEL):
+                    vouched.setdefault(r.get("messageId"), set()).add(label[len(TEXT_RAW_LABEL) :])
 
-    try:
-        await asyncio.gather(*(one(label, flt) for label, flt in searches))
-        conn = connectors.build("logrhythm", ds.config, secrets)
-        res.scanned = len(raws)
-        _collect(res, conn, list(raws.values()), parsed, tenant_id)
-        res.detail = f"{len(res.searched)} search(es) over the whole SIEM, {res.scanned} log(s) read, {len(res.events)} match the whole query"
-    except (SourceError, ValueError) as exc:
-        res.status, res.detail = "error", str(exc)[:240]
+    async def logs_part() -> None:
+        try:
+            await asyncio.gather(*(one(label, flt) for label, flt in searches))
+            conn = connectors.build("logrhythm", ds.config, secrets)
+            res.scanned = len(raws)
+            _collect(res, conn, list(raws.values()), parsed, tenant_id, vouched)
+            res.detail = f"{len(res.searched)} search(es) over the whole SIEM, {res.scanned} log(s) read, {len(res.events)} match the whole query"
+        except (SourceError, ValueError) as exc:
+            res.status, res.detail = "error", str(exc)[:240]
+
+    # the alarms are read at the same time as the logs: a broad log search must not use up the time budget they need
+    _, alarms_read = await asyncio.gather(logs_part(), _lr_alarms(res, ds, secrets, parsed, rng, tenant_id, deadline))
+    if alarms_read is not None and res.status != "error":
+        res.detail += f"; {alarms_read} alarm(s) read"
     return res
+
+
+async def _lr_alarms(
+    res: SourceResult,
+    ds: DataSource,
+    secrets: dict[str, str],
+    parsed: Parsed,
+    rng: TimeRange,
+    tenant_id: uuid.UUID,
+    deadline: float,
+) -> int | None:
+    """The alarms LogRhythm raised in the range, with the logs behind them (raw text included), checked locally against the whole query.
+    A failure here is reported but never fails the log search."""
+    if parsed.entity_ids or parsed.source_type_ids:
+        res.skipped.append("Alarms are not narrowed by entity or source type, so they are left out of this browse.")
+        return None
+    try:
+        conn: Any = connectors.build("logrhythm", ds.config, secrets)
+        found, capped = await list_alarms(conn, rng.start, rng.end, cap=CAP_ALARMS)
+        by_id = {a.get("alarmId"): a for a in found}
+        for w in parsed.words[:MAX_TEXT_SEARCH_TOKENS]:  # a rule name may match beyond the newest alarms read above
+            extra, more = await list_alarms(conn, rng.start, rng.end, rule_like=w, cap=CAP_ALARMS)
+            by_id.update({a.get("alarmId"): a for a in extra})
+            capped = capped or more
+        sem = asyncio.Semaphore(4)
+
+        async def bundle(a: dict[str, Any]) -> tuple[dict[str, Any], list[dict[str, Any]]] | None:
+            async with sem:
+                if time.monotonic() > deadline:
+                    res.status = "partial" if res.status == "ok" else res.status
+                    return None
+                return a, await alarm_events(conn, int(a["alarmId"]))
+
+        bundles = [b for b in await asyncio.gather(*(bundle(a) for a in by_id.values())) if b]
+        seen = {e.id for e in res.events}
+        for summary, events in bundles:
+            try:
+                evs = [Event.from_input(e, tenant_id) for e in normalize_alarm(summary, events)]
+            except NormalizationError:
+                continue
+            for ev in evs:
+                if ev.id not in seen and accepts(parsed, ev.to_document()):
+                    seen.add(ev.id)
+                    res.events.append(ev)
+        res.searched.append("alarms")
+        res.scanned += len(bundles)
+        res.capped = res.capped or capped
+        return len(bundles)
+    except (SourceError, ValueError, KeyError) as exc:
+        res.skipped.append(f"Alarms could not be read: {str(exc)[:160]}")
+    return None
 
 
 def _tq(field_: str, value: str, wildcard: bool = False) -> str:
@@ -407,7 +514,7 @@ async def search(
     sources = await searchable_sources(session, tenant_id)
     if query.sources:
         sources = [d for d in sources if d.id in set(query.sources)]
-    empty = not (parsed.alts or parsed.filters or parsed.where is not None or parsed.terms)
+    empty = not (parsed.alts or parsed.filters or parsed.where is not None or parsed.terms or parsed.browse)
     results: list[SourceResult] = []
     if sources and not empty:
         deadline = time.monotonic() + budget_s

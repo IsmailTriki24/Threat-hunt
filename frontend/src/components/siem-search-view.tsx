@@ -107,12 +107,19 @@ export function SiemSearchView() {
 
   const fields = useQuery({ queryKey: ["fields"], queryFn: api.fields, staleTime: Infinity });
   const available = useQuery({ queryKey: ["siem-sources"], queryFn: api.siemSources, staleTime: 60_000 });
-  const hasQuery = !!(state.q.trim() || state.filters.length);
+  const browse = sp.get("browse") === "1"; // list what LogRhythm holds for the range, with no search terms (up to the read limit)
+  const hasQuery = !!(state.q.trim() || state.filters.length || browse);
+  const setBrowse = (on: boolean) => {
+    const p = new URLSearchParams(sp.toString());
+    if (on) p.set("browse", "1"); else p.delete("browse");
+    const qs = p.toString();
+    router.replace(qs ? `${pathname}?${qs}` : pathname, { scroll: false });
+  };
   // The request body (with its resolved "now") is computed once per applied search / explicit run, so paging and sorting never ask the SIEMs again.
-  const key = JSON.stringify([state.q, state.lang, state.range, state.filters, sources, nonce]);
+  const key = JSON.stringify([state.q, state.lang, state.range, state.filters, sources, nonce, browse]);
   const search = useQuery({
     queryKey: ["siem-query", key],
-    queryFn: () => api.siemQuery({ ...toRequestBody({ ...state, event: null, offset: 0, sort: null }, []), ...(sources.length ? { sources } : {}) }),
+    queryFn: () => api.siemQuery({ ...toRequestBody({ ...state, event: null, offset: 0, sort: null }, []), ...(sources.length ? { sources } : {}), ...(browse ? { browse: true } : {}) }),
     enabled: hasQuery, staleTime: Infinity, retry: false, refetchOnWindowFocus: false, refetchOnMount: false,
   });
   const data: SiemQueryResult | undefined = search.data;
@@ -202,8 +209,9 @@ export function SiemSearchView() {
 
       {!hasQuery && (
         <div className="panel"><EmptyState icon={Search} title="Search the SIEMs">
-          The SIEMs are never browsed whole. Type an IP address, domain, hash, e-mail, host, user, process or any word, or add a filter, and the question goes straight to LogRhythm and Trend Vision One.
+          Type an IP address, domain, hash, e-mail, host, user, process or any word, or add a filter, and the question goes straight to LogRhythm and Trend Vision One.
           Matching logs are shown here; nothing is stored until you open one.
+          <span className="mt-3 block"><button type="button" className="btn btn-sm" onClick={() => setBrowse(true)}>Browse all of LogRhythm for this range</button></span>
         </EmptyState></div>
       )}
 
@@ -215,6 +223,11 @@ export function SiemSearchView() {
         </div>
       )}
       {search.isFetching && !data && <div className="panel p-4"><SkeletonRows rows={6} /></div>}
+
+      {browse && !state.q.trim() && !state.filters.length && (
+        <p className="flex flex-wrap items-center gap-2 text-xs text-ink-2">Browsing every log of the range (newest first within the read limit); add a search term or filter to narrow it.
+          <button type="button" className="btn btn-sm" onClick={() => setBrowse(false)}>Stop browsing</button></p>
+      )}
 
       {data?.no_sources && (
         <div className="panel"><EmptyState icon={SearchX} title="No SIEM source to search">Add a LogRhythm or Trend Vision One data source (Data Sources) to search it from here.</EmptyState></div>

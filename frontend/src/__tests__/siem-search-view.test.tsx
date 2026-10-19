@@ -32,7 +32,7 @@ describe("SIEM Search", () => {
     params = "";
     const m = mockFetch(routes());
     renderWithQuery(<SiemSearchView />);
-    expect(await screen.findByText(/never browsed whole/)).toBeInTheDocument();
+    expect(await screen.findByText(/Browse all of LogRhythm/)).toBeInTheDocument();
     await new Promise((r) => setTimeout(r, 150));
     expect(m.bodiesFor("POST /api/v1/events/siem-query")).toHaveLength(0);
   });
