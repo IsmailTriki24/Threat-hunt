@@ -10,10 +10,12 @@ This is what the Events page is: the platform no longer copies the SIEMs' logs, 
   imported into the platform (`import_events`); until then nothing is stored."""
 
 import asyncio
+import base64
 import json
 import re
 import time
 import uuid
+import zlib
 from dataclasses import dataclass, field
 from datetime import timedelta
 from types import SimpleNamespace
@@ -41,8 +43,12 @@ from app.iochunt import hunting
 
 MAX_WINDOW = timedelta(days=14)
 CAP_ALARMS = 300  # alarms read per listing (each costs one more call for the logs behind it)
-CAP_PER_SEARCH = 1500  # logs / events read per search
-MAX_HITS = 500
+CAP_PER_SEARCH = 1500  # events read per search from Trend (and by the AI agent, which pages through a small result)
+LR_READ_CAP = (
+    10_000  # logs read per LogRhythm search for the SIEM page (about 3.5 KB each once normalized; ~25 s to read)
+)
+HOLD_MAX = 10_000  # events held server-side for a search; the browser fetches them page by page
+PAGE_SIZE = 500  # events sent with the search itself
 BUDGET_S = 120
 CACHE_TTL = 1800
 MAX_TEXT_SEARCH_TOKENS = 1
@@ -179,13 +185,16 @@ class SourceResult:
     skipped: list[str] = field(default_factory=list)
     scanned: int = 0
     capped: bool = False
+    found: int = 0  # results the SIEM reported (a floor when found_at_least)
+    found_at_least: bool = False
     ms: int = 0
     events: list[Event] = field(default_factory=list)
 
     def public(self) -> dict[str, Any]:
         return {
             "id": self.id, "name": self.name, "kind": self.kind, "status": self.status, "detail": self.detail, "searched": self.searched,
-            "skipped": self.skipped, "scanned": self.scanned, "matched": len(self.events), "capped": self.capped, "ms": self.ms,
+            "skipped": self.skipped, "scanned": self.scanned, "matched": len(self.events), "capped": self.capped, "found": max(self.found, self.scanned),
+            "found_at_least": self.found_at_least, "ms": self.ms,
         }  # fmt: skip
 
 
@@ -248,12 +257,11 @@ def _lr_plan(parsed: Parsed) -> tuple[list[tuple[str, dict[str, Any]]], list[str
     if out:
         return out, notes
     for w in parsed.words[:MAX_TEXT_SEARCH_TOKENS]:
-        found = text_searches(w)
-        out += [(f"text: {w}", s) for s in found[:-1]] + [(f"{TEXT_RAW_LABEL}{w}", found[-1])]
+        out.append(
+            (f"{TEXT_RAW_LABEL}{w}", text_searches(w)[-1])
+        )  # the raw log text holds the process, command line, user, host, URL...
     if out:
-        notes.append(
-            "A bare word is looked for in process, command line, user, host, URL, reason, object and the raw log text; use field:value for anything else"
-        )
+        notes.append("A bare word is looked for in the raw log text; use field:value to search one field")
     if not out and parsed.browse:
         out.append(("browse", browse_filter(parsed.entity_ids, parsed.source_type_ids)))
         notes.append(
@@ -263,7 +271,13 @@ def _lr_plan(parsed: Parsed) -> tuple[list[tuple[str, dict[str, Any]]], list[str
 
 
 async def _run_lr(
-    ds: DataSource, settings: Settings, parsed: Parsed, rng: TimeRange, tenant_id: uuid.UUID, deadline: float
+    ds: DataSource,
+    settings: Settings,
+    parsed: Parsed,
+    rng: TimeRange,
+    tenant_id: uuid.UUID,
+    deadline: float,
+    read_cap: int = LR_READ_CAP,
 ) -> SourceResult:
     res = SourceResult(str(ds.id), ds.name, "logrhythm")
     searches, notes = _lr_plan(parsed)
@@ -288,9 +302,11 @@ async def _run_lr(
                 "logrhythm", ds.config, secrets
             )  # own connector: the filter override is per instance
             conn._filter_override = flt
-            logs = await conn._search_window(rng.start, rng.end, None, CAP_PER_SEARCH)
+            logs = await conn._search_window(rng.start, rng.end, None, read_cap)
             res.searched.append(label)
             res.capped = res.capped or conn.capped
+            res.found += conn.found
+            res.found_at_least = res.found_at_least or conn.found_at_least
             for r in logs:
                 if label == "browse" and parsed.entity_ids and not _in_entities(r, parsed.entity_ids):
                     continue  # LogRhythm's own diagnostics logs pass an Entity filter whatever the id
@@ -328,6 +344,9 @@ async def _lr_alarms(
     A failure here is reported but never fails the log search."""
     if parsed.entity_ids or parsed.source_type_ids:
         res.skipped.append("Alarms are not narrowed by entity or source type, so they are left out of this browse.")
+        return None
+    if not secrets.get("token") or not (ds.config or {}).get("base_url"):
+        res.skipped.append("Alarms are not included: the alarm feed is not available through the console yet.")
         return None
     try:
         conn: Any = connectors.build("logrhythm", ds.config, secrets)
@@ -529,7 +548,13 @@ async def search(
     tenant_id: uuid.UUID,
     query: SiemQuery,
     budget_s: int = BUDGET_S,
+    *,
+    read_cap: int = LR_READ_CAP,
+    hold_max: int = HOLD_MAX,
+    page_size: int | None = PAGE_SIZE,
 ) -> dict[str, Any]:
+    """`read_cap` logs are read per LogRhythm search and at most `hold_max` events are kept (server-side, 30 minutes) under the returned
+    `search_id`; `hits` is the first `page_size` of them (None = all), the rest is fetched with `held_page`."""
     t0 = time.monotonic()
     parsed = parse(query)
     rng = query.effective_range()
@@ -547,9 +572,11 @@ async def search(
 
         async def go(ds: DataSource) -> SourceResult:
             async with _GATE:
-                fn = _run_lr if ds.connector_type == "logrhythm" else _run_trend
                 started = time.monotonic()
-                r = await fn(ds, settings, parsed, rng, tenant_id, deadline)
+                if ds.connector_type == "logrhythm":
+                    r = await _run_lr(ds, settings, parsed, rng, tenant_id, deadline, read_cap)
+                else:
+                    r = await _run_trend(ds, settings, parsed, rng, tenant_id, deadline)
                 r.ms = int((time.monotonic() - started) * 1000)
                 return r
 
@@ -561,24 +588,60 @@ async def search(
             events.setdefault(e.id, e)
             origin.setdefault(e.id, r.id)
     ordered = sorted(events.values(), key=lambda e: e.timestamp, reverse=True)
-    truncated = len(ordered) > MAX_HITS
-    ordered = ordered[:MAX_HITS]
+    truncated = len(ordered) > hold_max
+    ordered = ordered[:hold_max]
     search_id = uuid.uuid4().hex
     docs = [e.to_document() for e in ordered]
+    origins = {d["id"]: origin[d["id"]] for d in docs}
     if docs and redis is not None:
-        await redis.set(cache_key(tenant_id, search_id), json.dumps(docs), ex=CACHE_TTL)
+        await redis.set(cache_key(tenant_id, search_id), _pack({"docs": docs, "origins": origins}), ex=CACHE_TTL)
+    first = docs if page_size is None else docs[:page_size]
     return {
         "search_id": search_id,
-        "hits": docs,
-        "origins": {d["id"]: origin[d["id"]] for d in docs},
-        "total": len(docs),
+        "hits": first,
+        "origins": {d["id"]: origins[d["id"]] for d in first},
+        "total": len(
+            docs
+        ),  # events held for this search (the first page is in `hits`; the rest is fetched page by page)
         "truncated": truncated or any(r.capped for r in results),
+        "found": sum(r.public()["found"] for r in results),  # what the SIEMs reported, a floor when found_at_least
+        "found_at_least": any(r.found_at_least or r.capped for r in results),
         "sources": [r.public() for r in results],
         "empty_query": empty,
         "no_sources": not sources,
         "note": note,
         "time_range": {"start": rng.start.isoformat(), "end": rng.end.isoformat()},
         "took_ms": int((time.monotonic() - t0) * 1000),
+    }
+
+
+def _pack(held: dict[str, Any]) -> str:
+    """A held result as compressed text (about 8:1 on this JSON): ten thousand events would otherwise sit in Redis as ~35 MB."""
+    return "z:" + base64.b64encode(zlib.compress(json.dumps(held).encode(), 6)).decode()
+
+
+def _unpack(raw: str) -> dict[str, Any]:
+    if raw.startswith("z:"):
+        out = json.loads(zlib.decompress(base64.b64decode(raw[2:])))
+    else:  # a result held by an earlier version: a bare list of documents
+        out = {"docs": json.loads(raw), "origins": {}}
+    return out if isinstance(out, dict) else {"docs": out, "origins": {}}
+
+
+async def held_page(redis: Any, tenant_id: uuid.UUID, search_id: str, offset: int, limit: int) -> dict[str, Any]:
+    """Events `offset`.. of a held search (newest first, the order of the first page). `expired` once the 30 minutes are over."""
+    raw = await redis.get(cache_key(tenant_id, search_id))
+    if raw is None:
+        return {"expired": True, "hits": [], "origins": {}, "total": 0, "offset": offset}
+    held = _unpack(raw)
+    docs = held["docs"][offset : offset + limit]
+    origins = held.get("origins") or {}
+    return {
+        "expired": False,
+        "hits": docs,
+        "origins": {d["id"]: origins[d["id"]] for d in docs if d["id"] in origins},
+        "total": len(held["docs"]),
+        "offset": offset,
     }
 
 
@@ -620,7 +683,7 @@ async def import_events(
     if raw is None:
         return {"requested": len(ids), "imported": 0, "expired": 1}
     wanted = set(ids)
-    docs = [d for d in json.loads(raw) if d.get("id") in wanted]
+    docs = [d for d in _unpack(raw)["docs"] if d.get("id") in wanted]
     events = [Event.model_validate(d) for d in docs if str(d.get("tenant_id")) == str(tenant_id)]
     res = await backend.index_events(events) if events else None
     if events:

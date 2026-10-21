@@ -44,9 +44,11 @@ def _parse(value: Any) -> datetime | None:
 
 async def _get(connector: Any, path: str, params: dict[str, Any] | None = None, api: str = "lr-alarm-api") -> Any:
     token = connector.secrets.get("token")
-    if not token:
-        raise SourceError("no API token configured for this data source")
     cfg = connector.cfg
+    if not token or cfg.base_url is None:
+        raise SourceError(
+            "this needs the legacy LogRhythm API (base_url and the secret token), which is not configured"
+        )
     url = f"{str(cfg.base_url).rstrip('/')}/{api}/{path}"
     if params:
         url += "?" + urlencode(params)

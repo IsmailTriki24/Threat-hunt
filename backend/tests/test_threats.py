@@ -14,6 +14,7 @@ from app.core.config import get_settings
 from app.iochunt import hunting, ioa_catalog, runner, threats
 from app.iochunt.models import Ioc, IocHunt, Threat, ThreatIoa, ThreatTtp
 from app.mitre.models import MitreSoftware
+from tests import fake_console
 from tests.helpers import ev
 from tests.mitre_helpers import mitre_loaded  # noqa: F401
 
@@ -31,6 +32,7 @@ def wire(monkeypatch):
     def install(handler):
         monkeypatch.setattr(_http, "HTTP_TRANSPORT", httpx.MockTransport(handler))
         monkeypatch.setattr(_http, "RESOLVER", _resolve)
+        fake_console.install(monkeypatch, handler)
 
     return install
 

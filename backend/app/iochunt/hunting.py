@@ -516,7 +516,7 @@ async def absorb_logs(
         hits.setdefault((str(ioc.id), ev.id), Hit(ioc, ev.to_document(), fld, "logrhythm"))
 
 
-LR_BUDGET_S = 540
+LR_BUDGET_S = 420  # per LogRhythm adapter; enforced INSIDE a search too, so the hunt's 15-minute job limit is never the one that ends it
 
 
 async def search_logrhythm(
@@ -535,6 +535,7 @@ async def search_logrhythm(
     """Search the whole LogRhythm SIEM for the indicators with the built-in, verified filters (batched per type), then attribute every returned
     log to the exact indicator it contains. Matched logs are imported so cases can cite them."""
     from app.connectors.logrhythm import ioc_query_filter, search_ioc_batch
+    from app.connectors.logrhythm_console import BudgetExceeded
 
     result = AdapterResult()
     sources = (
@@ -572,6 +573,7 @@ async def search_logrhythm(
             chosen = ordered[: conn.cfg.ioc_search_max]
             hits: dict[tuple[str, str], Hit] = {}
             deadline = time.monotonic() + budget_s
+            conn._deadline = deadline
             # kind -> value searched -> indicators that value stands for. A URL is searched through its host, then verified against the full URL.
             plan: dict[str, dict[str, list[Ioc]]] = {}
             patterns: list[Ioc] = []
@@ -597,14 +599,18 @@ async def search_logrhythm(
                         break
                     vals = values[k : k + conn.cfg.ioc_batch]
                     candidates = [i for v in vals for i in by_value[v]]
-                    if kind.startswith("tpl:"):
-                        logs = await search_ioc_batch(conn, kind[4:], vals, start, end)
-                    else:
-                        conn._filter_override = ioc_query_filter(kind, vals)
-                        try:
-                            logs = await conn._search_window(start, end)
-                        finally:
-                            conn._filter_override = None
+                    try:
+                        if kind.startswith("tpl:"):
+                            logs = await search_ioc_batch(conn, kind[4:], vals, start, end)
+                        else:
+                            conn._filter_override = ioc_query_filter(kind, vals)
+                            try:
+                                logs = await conn._search_window(start, end)
+                            finally:
+                                conn._filter_override = None
+                    except BudgetExceeded:
+                        cut = True  # keep what was found; the rest is reported as not searched
+                        break
                     searches += 1
                     covered |= {i.id for i in candidates}
                     await absorb_logs(conn, backend, tenant_id, hits, logs, candidates)
@@ -618,6 +624,9 @@ async def search_logrhythm(
                 conn._filter_override = ioc_query_filter("url_pattern", [ioc.value])
                 try:
                     logs = await conn._search_window(start, end)
+                except BudgetExceeded:
+                    cut = True
+                    break
                 finally:
                     conn._filter_override = None
                 searches += 1
@@ -862,6 +871,7 @@ async def search_ioas_logrhythm(
     """Search the whole LogRhythm SIEM for behaviours. Each behaviour becomes one or more verified LogRhythm searches (a superset of the
     behaviour); every returned log is normalised and must satisfy the behaviour's full condition locally, so a loose search never over-reports."""
     from app.connectors.logrhythm import ioa_searches
+    from app.connectors.logrhythm_console import BudgetExceeded
 
     result = IoaSearch()
     sources = (
@@ -886,9 +896,11 @@ async def search_ioas_logrhythm(
             secrets = {k: str(v) for k, v in decrypt_json(settings, ds.secrets_enc).items()} if ds.secrets_enc else {}
             conn: Any = connectors.build("logrhythm", ds.config, secrets)
             deadline = time.monotonic() + budget_s
+            conn._deadline = deadline
             indexed: dict[str, Event] = {}
             fresh: list[SignalHit] = []
             searches, partial = 0, 0
+            stopped: str | None = None  # the behaviour the time budget ran out in
             for ioa in ioas:
                 if time.monotonic() > deadline:
                     cov.status = "truncated"
@@ -905,6 +917,9 @@ async def search_ioas_logrhythm(
                     conn._filter_override = flt
                     try:
                         logs = await conn._search_window(start, end)
+                    except BudgetExceeded:
+                        stopped = ioa.name
+                        break
                     finally:
                         conn._filter_override = None
                     searches += 1
@@ -918,6 +933,9 @@ async def search_ioas_logrhythm(
                             if cond is not None and ioa_matches(doc, cond):
                                 indexed[ev.id] = ev
                                 fresh.append(SignalHit("ioa", str(ioa.id), ioa.name, doc, "logrhythm", ioa.severity))
+                if stopped:
+                    cov.status = "truncated"
+                    break  # this behaviour was only partly searched: not counted as covered
                 result.covered.add(ioa.id)
                 cov.iocs_searched += 1
             if indexed:
@@ -925,10 +943,18 @@ async def search_ioas_logrhythm(
                 await backend.refresh()
             result.hits += fresh
             cov.hits = len(fresh)
-            cov.detail = f"{searches} search(es) over the whole SIEM for {cov.iocs_searched} behaviour(s)" + (
-                f"; {partial} behaviour(s) only partly searchable by LogRhythm (the rest is checked on the returned logs)"
-                if partial
-                else ""
+            cov.detail = (
+                f"{searches} search(es) over the whole SIEM for {cov.iocs_searched} behaviour(s)"
+                + (
+                    f"; the time budget ran out inside '{stopped}' (a search too broad for this window): it and the behaviours after it were not fully searched"
+                    if stopped
+                    else ""
+                )
+                + (
+                    f"; {partial} behaviour(s) only partly searchable by LogRhythm (the rest is checked on the returned logs)"
+                    if partial
+                    else ""
+                )
             )
         except (SourceError, ValueError) as exc:
             cov.status, cov.detail = "error", str(exc)[:240]

@@ -1,6 +1,6 @@
 import { screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { DataSourcesView } from "@/components/data-sources-view";
+import { DataSourcesView, SecretDialog, defaultSecretName } from "@/components/data-sources-view";
 import { mockFetch, renderWithQuery } from "./helpers";
 
 let perms: string[] = [];
@@ -130,4 +130,19 @@ it("shows the indicator sweep status of SIEM sources, and a dash for sources tha
   expect(within(tm).getByText("Trend returned 500")).toBeInTheDocument();
   expect(within(screen.getByText("TM new").closest("tr") as HTMLElement).getByText("starting")).toBeInTheDocument();
   expect(within(screen.getByText("Push").closest("tr") as HTMLElement).getByText("—")).toBeInTheDocument();
+});
+
+it("a LogRhythm source is given its console account as username, then password, never the old API token", async () => {
+  const lr = (keys: string[]) => ds({ id: "lr1", name: "LogRhythm SIEM", connector_type: "logrhythm", secret_keys: keys, has_secrets: keys.length > 0, supports_collect: true });
+  expect(defaultSecretName(lr([]))).toBe("username");
+  expect(defaultSecretName(lr(["username"]))).toBe("password");
+  expect(defaultSecretName(lr(["username", "password"]))).toBe("password");
+  expect(defaultSecretName(lr(["token"]))).toBe("username");
+  const m = mockFetch({ "PUT /api/v1/data-sources/lr1/secrets/username": () => ({}) });
+  renderWithQuery(<SecretDialog source={lr([])} onClose={() => {}} onSaved={() => {}} />);
+  expect(screen.getByLabelText("Credential name")).toHaveValue("username");
+  expect(screen.getByText(/dedicated read-only account/)).toBeInTheDocument();
+  await userEvent.type(screen.getByLabelText("Credential value"), "svc-account");
+  await userEvent.click(screen.getByRole("button", { name: "Save credential" }));
+  await waitFor(() => expect(m.calls.filter((c) => c.key.startsWith("PUT"))).toHaveLength(1));
 });

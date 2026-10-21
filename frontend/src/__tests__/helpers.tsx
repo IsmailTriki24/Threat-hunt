@@ -15,7 +15,7 @@ export function mockFetch(routes: Record<string, Handler>) {
     const key = [`${method} ${url}`, `${method} ${url.split("?")[0]}`].find((k) => k in routes);
     calls.push({ key: key ?? `${method} ${url}`, body });
     if (!key) return new Response(JSON.stringify({ error: { code: "not_found", message: `no mock for ${method} ${url}` } }), { status: 404 });
-    const out = routes[key](body, url);
+    const out = await routes[key](body, url); // a handler may answer later (a slow SIEM)
     if (out instanceof Blob) return new Response(out, { status: 200 });
     if (out && typeof out === "object" && "__status" in out) {
       const o = out as { __status: number; body: unknown };

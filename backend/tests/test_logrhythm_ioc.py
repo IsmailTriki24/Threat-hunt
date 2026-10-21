@@ -12,11 +12,13 @@ from sqlalchemy import select
 from app.auth.rbac import Role
 from app.connectors import _http, registry
 from app.connectors.logrhythm import FT_HASH, FT_HOSTNAME, FT_IP, FT_SENDER, FT_URL, ioc_query_filter
+from app.connectors.logrhythm_console import BudgetExceeded
 from app.core.config import get_settings
 from app.core.crypto import encrypt_json
 from app.datasources.models import DataSource
 from app.iochunt import hunting
 from app.iochunt.models import Ioc
+from tests import fake_console
 
 NOW = datetime.now(UTC)
 
@@ -195,12 +197,13 @@ async def setup(app, make, monkeypatch):
         return None
 
     monkeypatch.setattr("app.connectors._http.asyncio.sleep", nosleep)
-    monkeypatch.setattr("app.connectors.logrhythm._sleep", nosleep)
+    monkeypatch.setattr("app.connectors.logrhythm_console._sleep", nosleep)
     monkeypatch.setattr(_http, "RESOLVER", _resolve)
     t = await make.tenant()
 
     async def install(handler, config=None):
         monkeypatch.setattr(_http, "HTTP_TRANSPORT", httpx.MockTransport(handler))
+        fake_console.install(monkeypatch, handler)
         async with app.state.sessionmaker() as db:
             db.add(
                 DataSource(
@@ -372,3 +375,96 @@ def test_config_options_validate():
         with pytest.raises(Exception):  # noqa: B017, PT011
             registry.build("logrhythm", {"base_url": "https://lr.example", **bad})
     _ = Role
+
+
+async def test_a_hunt_that_runs_out_of_time_keeps_what_it_found_and_says_it_was_cut(app, setup, monkeypatch):
+    from app.connectors.logrhythm import LogRhythmConnector
+
+    t, install = setup
+    handler, _ = make_siem([lr_log(1, originIp="203.0.113.5")])
+    await install(handler)
+    real = LogRhythmConnector._search_window
+    calls = {"n": 0}
+
+    async def out_of_time_on_the_second(self, *a, **kw):
+        calls["n"] += 1
+        if calls["n"] > 1:
+            raise BudgetExceeded("the time budget ran out")
+        return await real(self, *a, **kw)
+
+    monkeypatch.setattr(LogRhythmConnector, "_search_window", out_of_time_on_the_second)
+    res = await run_search(
+        app, t, [ioc("ip", "203.0.113.5", tenant_id=t.id), ioc("domain", "evil.example", tenant_id=t.id)]
+    )
+    cov = res.coverage[0]
+    assert cov.status == "truncated" and "indicators searched" in cov.detail  # reported as cut, not as an error
+    assert {h.ioc.value for h in res.hits} == {"203.0.113.5"}  # the hit found before the budget ran out survives
+    assert calls["n"] == 2
+
+
+async def test_a_behaviour_search_that_runs_out_of_time_stops_there_and_says_which_one(app, setup, monkeypatch):
+    from app.connectors.logrhythm import LogRhythmConnector
+    from app.iochunt.models import ThreatIoa
+
+    t, install = setup
+    handler, _ = make_siem([lr_log(1, process="powershell.exe", command="powershell -enc AAAA", impactedHost="ws-1")])
+    await install(handler)
+    real = LogRhythmConnector._search_window
+    calls = {"n": 0}
+
+    async def second_behaviour_is_too_broad(self, *a, **kw):
+        calls["n"] += 1
+        if calls["n"] == 2:
+            raise BudgetExceeded("the time budget ran out")
+        return await real(self, *a, **kw)
+
+    monkeypatch.setattr(LogRhythmConnector, "_search_window", second_behaviour_is_too_broad)
+    cond = {
+        "all": [
+            {"filter": {"field": "process.name", "op": "in", "value": ["powershell.exe"]}},
+            {"filter": {"field": "process.command_line", "op": "contains", "value": "enc"}},
+        ]
+    }
+    broad = {"filter": {"field": "process.name", "op": "in", "value": ["cmd.exe", "powershell.exe"]}}
+    ioas = [
+        ThreatIoa(
+            id=uuid.uuid4(),
+            tenant_id=t.id,
+            threat_id=uuid.uuid4(),
+            name="encoded command",
+            condition=cond,
+            severity="HIGH",
+            source="manual",
+        ),
+        ThreatIoa(
+            id=uuid.uuid4(),
+            tenant_id=t.id,
+            threat_id=uuid.uuid4(),
+            name="a very broad behaviour",
+            condition=broad,
+            severity="LOW",
+            source="manual",
+        ),
+        ThreatIoa(
+            id=uuid.uuid4(),
+            tenant_id=t.id,
+            threat_id=uuid.uuid4(),
+            name="never reached",
+            condition=cond,
+            severity="LOW",
+            source="manual",
+        ),
+    ]
+    async with app.state.sessionmaker() as db:
+        res = await hunting.search_ioas_logrhythm(
+            db, app.state.search, get_settings(), t.id, ioas, NOW - timedelta(days=1), NOW
+        )
+    cov = res.coverage[0]
+    assert cov.status == "truncated" and "'a very broad behaviour'" in cov.detail
+    assert (
+        cov.iocs_searched == 1
+        and ioas[0].id in res.covered
+        and ioas[1].id not in res.covered
+        and ioas[2].id not in res.covered
+    )
+    assert len(res.hits) == 1 and res.hits[0].ref == str(ioas[0].id)  # the finding of the first behaviour is kept

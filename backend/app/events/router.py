@@ -2,7 +2,7 @@ import re
 from datetime import timedelta
 from typing import Any
 
-from fastapi import APIRouter, Depends, Request
+from fastapi import APIRouter, Depends, Path, Query, Request
 from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -201,6 +201,21 @@ async def siem_import(
     return await siem_query.import_events(
         request.app.state.redis, backend_of(request), principal.tid, body.search_id, body.ids
     )
+
+
+@router.get("/siem-query/{search_id}/hits")
+async def siem_query_hits(
+    request: Request,
+    search_id: str = Path(pattern=r"^[0-9a-f]{32}$"),
+    offset: int = Query(default=0, ge=0, le=100_000),
+    limit: int = Query(default=siem_query.PAGE_SIZE, ge=1, le=siem_query.PAGE_SIZE),
+    principal: Principal = Depends(require(Permission.EVENTS_READ)),
+) -> dict[str, Any]:
+    """More events of a held SIEM result (newest first, the order of the first page).
+
+    `expired` once its 30 minutes are over; nothing is searched again."""
+    await enforce(request, f"siem-hits:{principal.user_id}", 240, 60)
+    return await siem_query.held_page(request.app.state.redis, principal.tid, search_id, offset, limit)
 
 
 @router.get("/fields", response_model=list[FieldInfo])

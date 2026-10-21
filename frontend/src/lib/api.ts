@@ -9,7 +9,7 @@ import type {
   UserCreate, ApiErrorBody, Finding, FindingCreate, HistoryEntry, Hunt, HuntCreate, HuntUpdate, Note, ParsedQuery,
   SavedQuery, Timeline, TimelineScope,
   Asset, AssetCaseRef, AssetCreate, AssetEvents, AssetRelated, AssetUpdate, AuditRow, CaseActivity, CaseAssetRef, CaseCreate,
-  CaseEvidence, CaseIoc, CaseOut, CaseReport, CaseUpdate, ConnectorInfo, DataSource, SiemQueryResult, SiemScopes, SiemSourceInfo, DataSourceCreate, IocType,
+  CaseEvidence, CaseIoc, CaseOut, CaseReport, CaseUpdate, ConnectorInfo, DataSource, SiemHitsPage, SiemQueryResult, SiemScopes, SiemSourceInfo, DataSourceCreate, IocType,
   BatchVerdict, EnrichCaseResult, EntityUpdate, IntelDetail, IntelEntity, IntelProvider, LookupBody, Sightings, StixImportResult,
   MappingCreate, MatrixColumn, MitreMapping, MitreTactic, MitreTechnique, SuggestResponse, TechniqueSummary,
 } from "./api-types";
@@ -146,6 +146,7 @@ export const api = {
   siemSources: () => request<SiemSourceInfo[]>("/api/v1/events/siem-sources"),
   siemScopes: () => request<SiemScopes>("/api/v1/events/siem-scopes"),
   siemQuery: (body: EventQueryBody & { sources?: string[]; browse?: boolean; entity_ids?: number[]; source_type_ids?: number[] }) => request<SiemQueryResult>("/api/v1/events/siem-query", { method: "POST", body }),
+  siemHits: (search_id: string, offset: number, limit = 500) => request<SiemHitsPage>(`/api/v1/events/siem-query/${search_id}/hits?offset=${offset}&limit=${limit}`),
   siemImport: (search_id: string, ids: string[]) => request<{ requested: number; imported: number; duplicates?: number; expired: number }>("/api/v1/events/siem-import", { method: "POST", body: { search_id, ids } }),
   siemSearch: (body: EventQueryBody) => request<SiemResult>("/api/v1/events/siem-search", { method: "POST", body }),
   siemLookup: (kind: string, value: string, time_range?: { start: string; end: string }) => request<SiemResult>("/api/v1/events/siem-lookup", { method: "POST", body: { kind, value, ...(time_range ? { time_range } : {}) } }),

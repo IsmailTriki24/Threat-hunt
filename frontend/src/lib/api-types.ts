@@ -310,9 +310,11 @@ export interface SiemSourceInfo { id: string; name: string; kind: string }
 export interface SiemScopes { entities: { id: number; name: string }[]; source_types: { id: number; name: string; sources: number }[]; errors: string[] }
 export interface SiemSourceResult {
   id: string; name: string; kind: string; status: SiemSourceStatus; detail: string; searched: string[]; skipped: string[];
-  scanned: number; matched: number; capped: boolean; ms: number;
+  scanned: number; matched: number; capped: boolean; found: number; found_at_least: boolean; ms: number;
 }
 export interface SiemQueryResult {
-  search_id: string; hits: EventDoc[]; origins: Record<string, string>; total: number; truncated: boolean; sources: SiemSourceResult[]; empty_query: boolean;
-  no_sources: boolean; note: string; time_range: TimeRangeBody; took_ms: number;
+  search_id: string; hits: EventDoc[]; origins: Record<string, string>; total: number; truncated: boolean; found: number; found_at_least: boolean;
+  sources: SiemSourceResult[]; empty_query: boolean; no_sources: boolean; note: string; time_range: TimeRangeBody; took_ms: number;
 }
+/** Further events of a held search: nothing is searched again. */
+export interface SiemHitsPage { hits: EventDoc[]; origins: Record<string, string>; total: number; offset: number; expired: boolean }

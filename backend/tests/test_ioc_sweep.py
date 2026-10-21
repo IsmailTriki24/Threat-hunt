@@ -17,6 +17,7 @@ from app.core.config import get_settings
 from app.datasources.models import DataSource
 from app.iochunt import runner, sweep
 from app.iochunt.models import Ioc, IocHunt, IocMatch, IocSweep
+from tests import fake_console
 from tests.test_logrhythm_ioc import FT_URL, lr_log, make_siem
 
 API = "/api/v1/ioc"
@@ -33,12 +34,13 @@ def wire(monkeypatch):
     def install(handler):
         monkeypatch.setattr(_http, "HTTP_TRANSPORT", httpx.MockTransport(handler))
         monkeypatch.setattr(_http, "RESOLVER", _resolve)
+        fake_console.install(monkeypatch, handler)
 
     async def nosleep(_):
         return None
 
     monkeypatch.setattr("app.connectors._http.asyncio.sleep", nosleep)
-    monkeypatch.setattr("app.connectors.logrhythm._sleep", nosleep)
+    monkeypatch.setattr("app.connectors.logrhythm_console._sleep", nosleep)
     return install
 
 

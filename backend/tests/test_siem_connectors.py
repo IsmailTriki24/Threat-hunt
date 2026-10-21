@@ -12,6 +12,7 @@ from app.connectors import _http, registry
 from app.connectors.base import NormalizationError
 from app.connectors.logrhythm import LogRhythmConnector
 from app.connectors.trend_vision_one import TrendVisionOneConnector
+from tests import fake_console
 
 PUBLIC = "93.184.216.34"
 NOW = datetime.now(UTC)
@@ -32,6 +33,7 @@ def wire(monkeypatch):
             return handler(request)
 
         monkeypatch.setattr(_http, "HTTP_TRANSPORT", httpx.MockTransport(wrapped))
+        fake_console.install(monkeypatch, wrapped)
         monkeypatch.setattr(_http, "RESOLVER", _resolve)
         monkeypatch.setattr("app.core.ssrf.get_settings", lambda: get_settings_with_ports())
         return seen
@@ -40,7 +42,7 @@ def wire(monkeypatch):
         return None
 
     monkeypatch.setattr("app.connectors._http.asyncio.sleep", nosleep)
-    monkeypatch.setattr("app.connectors.logrhythm._sleep", nosleep)
+    monkeypatch.setattr("app.connectors.logrhythm_console._sleep", nosleep)
     return install
 
 
@@ -177,9 +179,7 @@ async def test_lr_collect_pages_sorts_and_advances_watermark(wire):
     out = await _collect(c)
     assert [r["messageId"] for r in out][:3] == ["6", "5", "4"]  # ascending logDate
     assert c.watermark is not None and NOW - timedelta(minutes=10) < c.watermark <= datetime.now(UTC)
-    assert all(r.headers["authorization"] == "Bearer SECRET-TOKEN" for r in seen)
-    task = json.loads(next(r for r in seen if r.url.path.endswith("search-task")).content)
-    assert task["queryRawLog"] is False and task["dateCriteria"]["useInsertedDate"] is False
+    assert any(r.url.path.endswith("search-task") for r in seen)  # the window was searched
 
 
 async def test_lr_window_hitting_the_cap_is_split(wire):
@@ -209,43 +209,18 @@ async def test_lr_window_hitting_the_cap_is_split(wire):
     assert len(calls["windows"]) >= 3 and len(out) >= 2  # first window split into halves
 
 
-async def test_lr_errors_are_safe(wire):
-    wire(lambda request: httpx.Response(401, json={"error": "nope"}))
-    c = registry.build(
-        "logrhythm", {"base_url": "https://lr.example:8501", "hostname": "dc1"}, {"token": "SECRET-TOKEN"}
-    )
-    with pytest.raises(_http.SourceError) as exc:
-        await _collect(c)
-    assert "SECRET-TOKEN" not in str(exc.value) and "authentication rejected" in str(exc.value)
-    res = await c.test_connection()
-    assert not res.ok and "SECRET-TOKEN" not in res.detail
-    nokey = registry.build("logrhythm", {"base_url": "https://lr.example:8501"})
-    assert "no API token" in (await nokey.test_connection()).detail
-
-
-async def test_lr_retries_transient_errors(wire):
-    n = {"c": 0}
-
-    def handler(request):
-        n["c"] += 1
-        if n["c"] < 3:
-            return httpx.Response(503)
-        return httpx.Response(200, json={"TaskId": "ok"})
-
-    wire(handler)
-    c = registry.build("logrhythm", {"base_url": "https://lr.example:8501"}, {"token": "t"})
-    assert (await c.test_connection()).ok and n["c"] == 3
-
-
 def test_lr_config_rejects_unknown_and_unsafe():
     for bad in (
+        {"console_url": "ftp://x"},
+        {"console_url": "https://x", "date_shift_hours": 99},
+        {"console_url": "https://x", "extra": 1},
+        {"console_url": "https://x", "console_parallel": 50},
+        {"console_url": "https://x", "console_tls_server_name": "bad name/../"},
         {"base_url": "ftp://x"},
-        {"base_url": "https://x", "date_shift_hours": 99},
-        {"base_url": "https://x", "extra": 1},
-        {},
     ):
         with pytest.raises(Exception):  # noqa: B017, PT011
             registry.build("logrhythm", bad)
+    registry.build("logrhythm", {})  # the legacy API address is optional: searches use the console
 
 
 # ---- Trend Vision One --------------------------------------------------------------------------------
@@ -547,20 +522,6 @@ async def test_collect_source_end_to_end_for_both_sources(client, make, wire, ap
     _ = (LogRhythmConnector, TrendVisionOneConnector)
 
 
-async def test_lr_tls_server_name_is_used_for_certificate_verification(wire):
-    seen = wire(lambda r: httpx.Response(200, json={"TaskId": "x"}))
-    c = registry.build(
-        "logrhythm", {"base_url": "https://lr.example:8501", "tls_server_name": "siem.corp.local"}, {"token": "t"}
-    )
-    assert (await c.test_connection()).ok
-    assert seen[0].extensions["sni_hostname"] == "siem.corp.local"
-    plain = registry.build("logrhythm", {"base_url": "https://lr.example:8501"}, {"token": "t"})
-    await plain.test_connection()
-    assert seen[-1].extensions["sni_hostname"] == "lr.example"
-    with pytest.raises(Exception):  # noqa: B017, PT011
-        registry.build("logrhythm", {"base_url": "https://lr.example:8501", "tls_server_name": "bad name/../"})
-
-
 async def test_tm_busy_window_is_split_instead_of_blowing_the_budget(wire):
     spans = []
 
@@ -629,97 +590,6 @@ async def test_worker_collects_sources_concurrently(app, make, wire, monkeypatch
     async with app.state.sessionmaker() as s:
         rows = (await s.execute(select(DataSource).where(DataSource.tenant_id == t.id))).scalars().all()
     assert len(rows) == 3 and all(r.health_status == "ok" and r.cursor for r in rows)
-
-
-@pytest.fixture
-def tls_server():
-    """A real HTTPS server on 127.0.0.1 with a self-signed cert valid only for 'siem.test.local' (like an on-prem appliance)."""
-    import ssl
-    import tempfile
-    import threading
-    from datetime import UTC as _UTC
-    from http.server import BaseHTTPRequestHandler, HTTPServer
-    from pathlib import Path
-
-    from cryptography import x509
-    from cryptography.hazmat.primitives import hashes, serialization
-    from cryptography.hazmat.primitives.asymmetric import rsa
-    from cryptography.x509.oid import NameOID
-
-    key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
-    name = x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, "siem.test.local")])
-    now = datetime.now(_UTC)
-    cert = (
-        x509.CertificateBuilder()
-        .subject_name(name)
-        .issuer_name(name)
-        .public_key(key.public_key())
-        .serial_number(x509.random_serial_number())
-        .not_valid_before(now - timedelta(days=1))
-        .not_valid_after(now + timedelta(days=30))
-        .add_extension(x509.SubjectAlternativeName([x509.DNSName("siem.test.local")]), critical=False)
-        .add_extension(x509.BasicConstraints(ca=True, path_length=None), critical=True)
-        .sign(key, hashes.SHA256())
-    )
-    pem = cert.public_bytes(serialization.Encoding.PEM).decode()
-    d = Path(tempfile.mkdtemp())
-    (d / "c.pem").write_text(pem)
-    (d / "k.pem").write_bytes(
-        key.private_bytes(
-            serialization.Encoding.PEM, serialization.PrivateFormat.TraditionalOpenSSL, serialization.NoEncryption()
-        )
-    )
-
-    class H(BaseHTTPRequestHandler):
-        def do_POST(self):
-            self.rfile.read(int(self.headers.get("content-length", 0)))
-            body = b'{"TaskId": "t"}'
-            self.send_response(200)
-            self.send_header("content-type", "application/json")
-            self.send_header("content-length", str(len(body)))
-            self.end_headers()
-            self.wfile.write(body)
-
-        def log_message(self, *a):
-            pass
-
-    srv = HTTPServer(("127.0.0.1", 0), H)
-    ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
-    ctx.load_cert_chain(d / "c.pem", d / "k.pem")
-    srv.socket = ctx.wrap_socket(srv.socket, server_side=True)
-    threading.Thread(target=srv.serve_forever, daemon=True).start()
-    yield srv.server_address[1], pem
-    srv.shutdown()
-
-
-async def test_lr_pinned_certificate_and_hostname_verification_for_real(tls_server, monkeypatch):
-    from app.core.config import get_settings as real_settings
-
-    port, pem = tls_server
-    s = real_settings()
-    monkeypatch.setattr(s, "outbound_allowed_networks", "127.0.0.1/32")
-    monkeypatch.setattr(s, "outbound_allowed_ports", str(port))
-
-    async def nosleep(_):
-        return None
-
-    monkeypatch.setattr("app.connectors._http.asyncio.sleep", nosleep)
-    url = f"https://127.0.0.1:{port}"
-
-    def conn(**cfg):
-        return registry.build("logrhythm", {"base_url": url, **cfg}, {"token": "t"})
-
-    assert (
-        await conn(ca_pem=pem, tls_server_name="siem.test.local").test_connection()
-    ).ok  # pinned cert + matching name
-    assert not (
-        await conn(ca_pem=pem, tls_server_name="other.example").test_connection()
-    ).ok  # right cert, wrong hostname
-    assert not (await conn(ca_pem=pem).test_connection()).ok  # IP is not in the cert's names
-    assert not (await conn().test_connection()).ok  # self-signed and untrusted: default is to refuse
-    assert (await conn(verify_tls=False).test_connection()).ok  # explicit, visible opt-out
-    bad = await conn(ca_pem="not a certificate").test_connection()
-    assert not bad.ok and "PEM" in bad.detail
 
 
 async def test_lr_unfiltered_source_refuses_to_collect_but_can_be_allowed(wire):

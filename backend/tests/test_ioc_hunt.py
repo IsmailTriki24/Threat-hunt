@@ -13,6 +13,7 @@ from app.connectors import _http
 from app.core.config import Settings, get_settings
 from app.iochunt import hunting, runner
 from app.iochunt.models import Ioc, IocHunt
+from tests import fake_console
 from tests.helpers import ev
 from tests.mitre_helpers import mitre_loaded  # noqa: F401
 
@@ -30,12 +31,13 @@ def wire(monkeypatch):
     def install(handler):
         monkeypatch.setattr(_http, "HTTP_TRANSPORT", httpx.MockTransport(handler))
         monkeypatch.setattr(_http, "RESOLVER", _resolve)
+        fake_console.install(monkeypatch, handler)
 
     async def nosleep(_):
         return None
 
     monkeypatch.setattr("app.connectors._http.asyncio.sleep", nosleep)
-    monkeypatch.setattr("app.connectors.logrhythm._sleep", nosleep)
+    monkeypatch.setattr("app.connectors.logrhythm_console._sleep", nosleep)
     return install
 
 

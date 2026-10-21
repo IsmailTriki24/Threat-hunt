@@ -1,6 +1,6 @@
 "use client";
-import { useQuery } from "@tanstack/react-query";
-import { Bell, ChevronDown, ChevronRight, LogOut, Menu, PanelLeftClose, PanelLeftOpen, Search, ShieldCheck, X } from "lucide-react";
+import { useIsFetching, useIsMutating, useQuery } from "@tanstack/react-query";
+import { Bell, ChevronDown, ChevronRight, Loader2, LogOut, Menu, PanelLeftClose, PanelLeftOpen, Search, ShieldCheck, X } from "lucide-react";
 import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
 import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
@@ -23,6 +23,8 @@ function Brand({ collapsed }: { collapsed?: boolean }) {
 }
 
 function NavList({ path, collapsed, onNavigate }: { path: string; collapsed: boolean; onNavigate?: () => void }) {
+  // A SIEM search keeps running (and its result is kept) while another module is open: say so on its entry.
+  const siemBusy = useIsFetching({ queryKey: ["siem-query"] }) + useIsMutating({ mutationKey: ["siem-more"] }) > 0;
   return (
     <nav aria-label="Primary" className="min-h-0 flex-1 overflow-y-auto px-2 py-3">
       {NAV_GROUPS.map((g, gi) => (
@@ -38,6 +40,7 @@ function NavList({ path, collapsed, onNavigate }: { path: string; collapsed: boo
                   {active && <span aria-hidden className="absolute -left-2 top-1.5 bottom-1.5 w-[3px] rounded-r bg-accent-brand" />}
                   <Icon aria-hidden className={`h-[18px] w-[18px] shrink-0 ${active ? "text-accent" : "text-muted group-hover:text-ink-2"}`} strokeWidth={active ? 2.2 : 1.9} />
                   {collapsed ? <span className="sr-only">{n.label}</span> : <span className="truncate">{n.label}</span>}
+                  {n.href === "/events" && siemBusy && <Loader2 role="status" aria-label="A SIEM search is running" className="ml-auto h-3.5 w-3.5 shrink-0 animate-spin text-accent" />}
                 </Link>
               );
               return <li key={n.href}>{collapsed ? <Tooltip text={n.label} side="right">{link}</Tooltip> : link}</li>;

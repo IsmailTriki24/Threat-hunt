@@ -1,12 +1,12 @@
-"""LogRhythm SIEM (Search API on the :8501 gateway) pull connector.
+"""LogRhythm SIEM connector. Searches go through the Web Console's own socket.io service (`logrhythm_console`, ADR 0025), the same way the
+console's Search tool asks: one task per search, the logs come back with their raw text. The `:8501` Search API is no longer used.
 
-Flow per window: POST search-task -> TaskId -> POST search-result (page until a completed, empty page). A window that hits the
-30,000-log cap is split in half and retried. Windows are read oldest-first and only whole windows are emitted, so the
-scheduler's watermark is always safe to advance.
+Per window: create a console search task over [start, end], read its logs, remove the task. A window that hits the 30,000-log cap is split in
+half and retried, so a window is only ever emitted whole and the scheduler's watermark is always safe to advance.
 
-Time: LogRhythm searches by true (UTC) time but reports `logDate` shifted by the console's UTC offset (observed: +1h for
-this deployment). `date_shift_hours` corrects the event timestamp only (true time = logDate + shift); search windows are sent
-unshifted so the collection watermark and the event times agree."""
+Time: LogRhythm searches by true (UTC) time but reports `logDate` shifted by the console's UTC offset (observed: +1h for this deployment).
+`date_shift_hours` corrects the event timestamp only (true time = logDate + shift); search windows are sent unshifted so the collection
+watermark and the event times agree."""
 
 import json
 import re
@@ -17,9 +17,10 @@ from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field, HttpUrl, model_validator
 
-from app.connectors._http import SourceError, request_json
+from app.connectors._http import SourceError
 from app.connectors._util import clip, finish, integer, ip_list, labels, text, valid_ip
 from app.connectors.base import ConnectionResult, Connector, ConnectorHealth, NormalizationError
+from app.connectors.logrhythm_console import BudgetExceeded, ConsoleClient, ConsoleSettings, client_for
 from app.events.schema import EventIn
 
 FILTER_HOSTNAME = 23  # LogRhythm filterType: Hostname (origin or impacted)
@@ -34,7 +35,40 @@ _TECHNIQUE = re.compile(r"\bT(\d{4})(?:\.(\d{3}))?\b")
 class LogRhythmConfig(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    base_url: HttpUrl = Field(description="Search API gateway, e.g. https://10.0.0.5:8501")
+    console_url: HttpUrl | None = Field(
+        default=None,
+        description="LogRhythm Web Console, e.g. https://10.0.0.5:8443. Every search goes through its socket service; the credentials are the secrets `username` and `password` of a dedicated read-only console account",
+    )
+    console_verify_tls: bool | None = Field(
+        default=None, description="Verify the console certificate (default: verify_tls)"
+    )
+    console_ca_pem: str | None = Field(
+        default=None,
+        max_length=20_000,
+        description="PEM CA bundle (or the self-signed certificate itself) of the CONSOLE (default: ca_pem)",
+    )
+    console_tls_server_name: str | None = Field(
+        default=None,
+        max_length=255,
+        pattern=r"^[A-Za-z0-9.-]+$",
+        description="Hostname the console certificate must match, when console_url is an IP (default: tls_server_name)",
+    )
+    console_parallel: int = Field(
+        default=2,
+        ge=1,
+        le=5,
+        description="Searches run at the same time on this console (it serves a handful of simultaneous searches)",
+    )
+    console_poll_s: float = Field(
+        default=1.0, ge=0.2, le=10, description="Seconds between checks of a running console search"
+    )
+    console_task_timeout_s: int = Field(
+        default=240, ge=20, le=900, description="Longest a console search may run before it is given up"
+    )
+    base_url: HttpUrl | None = Field(
+        default=None,
+        description="Legacy Search/Alarm/Admin API gateway (e.g. https://10.0.0.5:8501). Searches no longer use it; only the alarm feed and the entity/source-type pickers still do, with the secret `token`",
+    )
     verify_tls: bool = Field(
         default=True, description="Disable ONLY for a self-signed appliance you cannot add a CA for"
     )
@@ -170,33 +204,43 @@ class LogRhythmConnector(Connector):
     collect_limit = 20_000
 
     _filter_override: dict[str, Any] | None = None
+    found: int = 0  # results the SIEM reported across this connector's searches
+    found_at_least: bool = False  # a search stopped early or hit the cap, so `found` is a floor, not a count
+    _deadline: float | None = (
+        None  # time.monotonic() by which the caller's budget is used up; searches past it raise BudgetExceeded
+    )
     capped: bool = False  # the last interactive search stopped at its log cap
 
     @property
     def cfg(self) -> LogRhythmConfig:
         return self.config  # type: ignore[return-value]
 
-    # ---- transport -------------------------------------------------------------------------------
-    async def _post(self, endpoint: str, body: dict[str, Any]) -> dict[str, Any]:
-        token = self.secrets.get("token")
-        if not token:
-            raise SourceError("no API token configured for this data source")
-        base = str(self.cfg.base_url).rstrip("/")
-        out = await request_json(
-            "POST",
-            f"{base}/lr-search-api/actions/{endpoint}",
-            headers={"Authorization": f"Bearer {token}", "Accept": "application/json"},
-            json_body=body,
-            verify_tls=self.cfg.verify_tls,
-            ca_pem=self.cfg.ca_pem,
-            tls_server_name=self.cfg.tls_server_name,
-            timeout_s=self.cfg.timeout_s,
+    # ---- transport: the Web Console's socket service (logrhythm_console) -----------------------------
+    def _console(self) -> ConsoleClient:
+        cfg = self.cfg
+        user, password = self.secrets.get("username"), self.secrets.get("password")
+        if cfg.console_url is None or not user or not password:
+            raise SourceError(
+                "the LogRhythm console is not configured: set console_url and the username and password secrets of a read-only console account"
+            )
+        return client_for(
+            ConsoleSettings(
+                url=str(cfg.console_url),
+                username=user,
+                password=password,
+                verify_tls=cfg.verify_tls if cfg.console_verify_tls is None else cfg.console_verify_tls,
+                ca_pem=cfg.console_ca_pem or cfg.ca_pem,
+                tls_server_name=cfg.console_tls_server_name or cfg.tls_server_name,
+                query_timeout_min=cfg.query_timeout_min,
+                max_results=MAX_MSGS,
+                parallel=cfg.console_parallel,
+                poll_s=cfg.console_poll_s,
+                task_timeout_s=float(cfg.console_task_timeout_s),
+                timeout_s=cfg.timeout_s,
+            )
         )
-        if not isinstance(out, dict):
-            raise SourceError("unexpected response shape")
-        return out
 
-    def _task_body(self, start: datetime, end: datetime) -> dict[str, Any]:
+    def _query_filter(self) -> dict[str, Any]:
         items: list[dict[str, Any]] = []
         if self.cfg.hostname:
             items.append(
@@ -213,12 +257,11 @@ class LogRhythmConnector(Connector):
                     ],
                 }
             )
-        query_filter: dict[str, Any] = (
+        return (
             self._filter_override
             or self.cfg.query_filter
             or {
                 "msgFilterType": 2,
-                "isSavedFilter": False,
                 "filterGroup": {
                     "filterItemType": 1,
                     "filterGroupOperator": 0,
@@ -228,76 +271,51 @@ class LogRhythmConnector(Connector):
                 },
             }
         )
-        return {
-            "maxMsgsToQuery": MAX_MSGS,
-            "logCacheSize": 10000,
-            "queryTimeout": self.cfg.query_timeout_min,
-            "queryRawLog": False,
-            "queryEventManager": False,
-            "queryFilter": query_filter,
-            "dateCriteria": {"useInsertedDate": False, "dateMin": _iso(start), "dateMax": _iso(end)},
-        }
 
     async def _search_window(
         self, start: datetime, end: datetime, budget: list[int] | None = None, max_logs: int | None = None
     ) -> list[dict[str, Any]]:
-        """All logs of a window. With `max_logs` (interactive search) paging stops once that many are read and `self.capped` is set."""
+        """All logs of a window. With `max_logs` (interactive search) only the newest that many are read and `self.capped` is set when there
+        were more."""
         budget = budget if budget is not None else [MAX_SEARCHES_PER_WINDOW]
         if budget[0] <= 0:
             raise SourceError(
                 "too many searches needed for one window; narrow this source with hostname or query_filter"
             )
         budget[0] -= 1
-        task = await self._post("search-task", self._task_body(start, end))
-        task_id = task.get("TaskId") or task.get("taskId")
-        if not task_id:
-            raise SourceError("search-task returned no TaskId")
-        logs: list[dict[str, Any]] = []
-        origin, status = 0, "unknown"
-        for _ in range(600):
-            page = await self._post(
-                "search-result",
-                {
-                    "data": {
-                        "searchGuid": task_id,
-                        "search": {"sort": [], "fields": [], "searchType": 2, "searchMode": 2, "entityId": 0},
-                        "paginator": {"origin": origin, "page_size": PAGE_SIZE},
-                    }
-                },
-            )
-            status = str(page.get("TaskStatus") or page.get("taskStatus") or "unknown")
-            items = page.get("Items") or page.get("items") or []
-            if items:
-                logs.extend(i for i in items if isinstance(i, dict))
-                origin += len(items)
-                if max_logs is not None and len(logs) >= max_logs:
-                    self.capped = True
-                    return logs[:max_logs]
-                continue
-            if "Completed" in status or "Failed" in status or "Cancel" in status:
-                break
-            await _sleep(2)
-        if "Max Results" in status or "Failed" in status:
-            # Too many logs for one search (cap) or the search timed out under load: retry the two halves.
+        if self._deadline is not None and time.monotonic() > self._deadline:
+            raise BudgetExceeded("the time budget ran out before this search could start")
+        out = await self._console().run_search(
+            self._query_filter(), start, end, max_logs=max_logs, deadline=self._deadline
+        )
+        if max_logs is not None and out.logs and out.capped:
+            self.capped = True
+            self.found += out.total
+            self.found_at_least = True
+            return out.logs[:max_logs]
+        status = out.status
+        if "Max Results" in status or "Failed" in status or "Cancel" in status:
+            # Too many logs for one search (cap) or the search failed under load: retry the two halves.
             if end - start <= MIN_WINDOW:
                 raise SourceError(
                     f"LogRhythm returned '{status}' for a 1-minute window (over {MAX_MSGS} logs/minute?). "
                     "Narrow this source with hostname or query_filter"
                 )
             mid = start + (end - start) / 2
-            return [*await self._search_window(start, mid, budget), *await self._search_window(mid, end, budget)]
-        if status == "unknown":
-            raise SourceError("search window ended with an unknown status")
-        return logs
+            return [
+                *await self._search_window(start, mid, budget, max_logs),
+                *await self._search_window(mid, end, budget, max_logs),
+            ]
+        self.found += len(out.logs)
+        return out.logs
 
     # ---- Connector API ---------------------------------------------------------------------------
     async def test_connection(self) -> ConnectionResult:
         try:
-            now = datetime.now(UTC)
-            task = await self._post("search-task", self._task_body(now - timedelta(minutes=1), now))
+            detail = await self._console().ping()
         except SourceError as exc:
             return ConnectionResult(ok=False, detail=str(exc)[:200])
-        return ConnectionResult(ok="TaskId" in task or "taskId" in task, detail="search API reachable, token accepted")
+        return ConnectionResult(ok=True, detail=detail)
 
     async def health(self) -> ConnectorHealth:
         res = await self.test_connection()
@@ -337,12 +355,6 @@ class LogRhythmConnector(Connector):
 
     def normalize(self, raw: dict[str, Any]) -> list[EventIn]:
         return _normalize(raw, self.cfg.date_shift_hours)
-
-
-async def _sleep(s: float) -> None:
-    import asyncio
-
-    await asyncio.sleep(s)
 
 
 # ---- normalisation ---------------------------------------------------------------------------------

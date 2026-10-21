@@ -1131,7 +1131,17 @@ class SiemSearch(Tool):
         except ValidationError as exc:
             raise ToolError(f"invalid query: {_validation_message(exc)}", "invalid_query") from None
         ctx.siem_calls += 1
-        out = await sq.search(ctx.session, None, settings, ctx.principal.tid, query, budget_s=90)
+        out = await sq.search(
+            ctx.session,
+            None,
+            settings,
+            ctx.principal.tid,
+            query,
+            budget_s=90,
+            read_cap=sq.CAP_PER_SEARCH,  # the agent pages through a small result of its own: unchanged by the SIEM page's larger one
+            hold_max=500,
+            page_size=None,
+        )
         if out["empty_query"]:
             raise ToolError(
                 "nothing searchable in that query: give an indicator, user, host, process or a specific word",

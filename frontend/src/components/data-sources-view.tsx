@@ -54,11 +54,18 @@ export function SweepCell({ sweep }: { sweep?: SweepStatus | null }) {
   );
 }
 
-const DEFAULT_SECRET: Record<string, string> = { logrhythm: "token", trend_vision_one: "api_key", generic_rest: "authorization" };
+const DEFAULT_SECRET: Record<string, string> = { trend_vision_one: "api_key", generic_rest: "authorization" };
+/** LogRhythm is searched through its Web Console: a read-only console account, saved as the secrets `username` and `password`. */
+const LOGRHYTHM_SECRETS = ["username", "password"];
+
+export function defaultSecretName(source: DataSource): string {
+  if (source.connector_type === "logrhythm") return LOGRHYTHM_SECRETS.find((k) => !source.secret_keys.includes(k)) ?? "password";
+  return source.secret_keys[0] ?? DEFAULT_SECRET[source.connector_type] ?? "authorization";
+}
 
 /** Write-only credential editor: the value is never read back from the server and is cleared on close. */
 export function SecretDialog({ source, onClose, onSaved }: { source: DataSource; onClose: () => void; onSaved: () => void }) {
-  const [name, setName] = useState(source.secret_keys[0] ?? DEFAULT_SECRET[source.connector_type] ?? "authorization");
+  const [name, setName] = useState(defaultSecretName(source));
   const [value, setValue] = useState("");
   const save = useMutation({ mutationFn: () => api.setDataSourceSecret(source.id, name.trim(), value), onSuccess: () => { setValue(""); onSaved(); onClose(); } });
   const valid = /^[A-Za-z0-9_.-]{1,64}$/.test(name.trim()) && value.length > 0;
@@ -66,6 +73,7 @@ export function SecretDialog({ source, onClose, onSaved }: { source: DataSource;
     <Modal title={`Set credential — ${source.name}`} onClose={onClose}>
       <form className="space-y-2" onSubmit={(e) => { e.preventDefault(); if (valid) save.mutate(); }}>
         <p className="text-xs text-muted">Stored encrypted and never shown again. Other credentials on this source are kept. Use this to rotate a key too.</p>
+        {source.connector_type === "logrhythm" && <p className="text-xs text-muted">LogRhythm is searched through its Web Console: save the console account as <code>username</code>, then <code>password</code>. Use a dedicated read-only account without multi-factor authentication.</p>}
         <label className="block text-xs">Name <input aria-label="Credential name" className="input w-full font-mono" value={name} onChange={(e) => setName(e.target.value)} /></label>
         <label className="block text-xs">Value <input aria-label="Credential value" className="input w-full" type="password" autoComplete="new-password" value={value} onChange={(e) => setValue(e.target.value)} /></label>
         <ErrorLine error={save.error} fallback="Could not save the credential" />

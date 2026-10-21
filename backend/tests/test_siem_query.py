@@ -1,12 +1,13 @@
 # ruff: noqa: E501, F811
 """The live SIEM search page: queries go to LogRhythm / Trend, every result is re-checked locally, and nothing is stored until an event is opened."""
 
+import json
 from datetime import UTC, datetime, timedelta
 
 import httpx
 
 from app.auth.rbac import Role
-from app.connectors.logrhythm import FT_COMMAND, FT_LOGIN, FT_PROCESS, FT_URL
+from app.connectors.logrhythm import FT_LOGIN, FT_PROCESS
 from app.events import siem_query as sq
 from app.events.search.query import Filter
 from tests.test_ioc_sweep import empty_siem, wire  # noqa: F401, F811
@@ -122,7 +123,7 @@ async def test_filters_become_verified_logrhythm_searches_and_the_rest_is_checke
     assert FT_PROCESS in kinds and FT_LOGIN in kinds
 
 
-async def test_a_bare_word_is_looked_for_in_process_command_user_host_url_reason_and_object(client, make, app, wire):
+async def test_a_bare_word_is_one_search_of_the_raw_log_text(client, make, app, wire):
     logs = [
         lr_log(1, process="backup.exe", command="backup.exe /full", impactedHost="srv-1"),
         lr_log(2, url="/x/backup/run", command="GET", impactedHost="web-1"),
@@ -133,14 +134,9 @@ async def test_a_bare_word_is_looked_for_in_process_command_user_host_url_reason
     out = await _q(client, h, q="backup")
     assert {x["host"]["hostname"] for x in out["hits"]} == {"srv-1", "web-1"}
     kinds = {i["filterType"] for f in seen for i in f["filterGroup"]["filterItems"][0]["filterItems"]}
-    assert {FT_PROCESS, FT_COMMAND, FT_LOGIN, FT_URL, 149, 34, 35} <= kinds
-    assert {154, 144, 141} <= {
-        i["filterType"] for f in seen for i in f["filterGroup"]["filterItems"][0]["filterItems"]
-    }  # the hunting fields, OR-ed in one search
-    assert any(
-        "process, command line, user, host, URL, reason, object and the raw log text" in n
-        for n in out["sources"][0]["skipped"]
-    )
+    assert kinds == {35}  # one search on the raw log text (it holds the process, command line, user, URL...), not nine
+    assert len(seen) == 1
+    assert any("looked for in the raw log text" in n for n in out["sources"][0]["skipped"])
 
 
 async def test_a_word_found_only_in_the_raw_log_text_is_kept_because_the_siem_vouches_for_it(client, make, app, wire):
@@ -379,3 +375,87 @@ async def test_a_word_in_the_vendors_own_fields_of_an_authentication_log_is_foun
     assert out["total"] == 1 and out["hits"][0]["process"]["name"] == "krbtgt"
     out2 = await _q(client, h, text="process.name:krbtgt")
     assert out2["total"] == 1
+
+
+# ---- more than one page: the whole result is held server-side and fetched page by page ---------------------------------------------------
+def _many(n, ip="203.0.113.5"):
+    return [lr_log(i, originIp=ip, logDate=1_700_000_000_000 + i * 1000) for i in range(1, n + 1)]
+
+
+async def _hits(client, h, sid, offset, limit=500):
+    r = await client.get(f"{API}/siem-query/{sid}/hits", headers=h, params={"offset": offset, "limit": limit})
+    assert r.status_code == 200, r.text
+    return r.json()
+
+
+async def test_a_result_larger_than_a_page_is_fetched_page_by_page_without_gaps_or_duplicates(client, make, app, wire):
+    handler, _ = make_siem(_many(1200))
+    t, h = await _env(client, make, app, wire, handler=handler)
+    out = await _q(client, h, q="203.0.113.5")
+    assert out["total"] == 1200 and len(out["hits"]) == 500 and out["truncated"] is False
+    assert (
+        out["found"] == 1200 and out["found_at_least"] is False
+    )  # the SIEM's own count, exact because nothing was cut
+    sid = out["search_id"]
+    p2, p3 = await _hits(client, h, sid, 500), await _hits(client, h, sid, 1000)
+    assert (len(p2["hits"]), len(p3["hits"]), p3["total"], p3["expired"]) == (500, 200, 1200, False)
+    pages = [*out["hits"], *p2["hits"], *p3["hits"]]
+    assert len({e["id"] for e in pages}) == 1200  # every event exactly once
+    stamps = [e["timestamp"] for e in pages]
+    assert stamps == sorted(stamps, reverse=True)  # one newest-first order across the pages
+    origins = {**out["origins"], **p2["origins"], **p3["origins"]}
+    assert all(e["id"] in origins for e in pages)  # each page says which SIEM returned its events
+    assert (await _hits(client, h, sid, 1200))["hits"] == []  # past the end is empty, not an error
+
+
+async def test_an_event_from_a_later_page_can_still_be_opened_and_added_to_a_case(client, make, app, wire):
+    handler, _ = make_siem(_many(700))
+    t, h = await _env(client, make, app, wire, handler=handler)
+    out = await _q(client, h, q="203.0.113.5")
+    late = (await _hits(client, h, out["search_id"], 600, 1))["hits"][0]["id"]
+    r = await client.post(f"{API}/siem-import", headers=h, json={"search_id": out["search_id"], "ids": [late]})
+    assert r.status_code == 200 and r.json()["imported"] == 1 and r.json()["expired"] == 0
+    assert (
+        await client.get(f"{API}/{late}", headers=h)
+    ).status_code == 200  # stored now: the drawer, pivots and cases work
+
+
+async def test_a_held_result_expires_and_is_never_readable_by_another_tenant(client, make, app, wire):
+    handler, _ = make_siem(_many(60))
+    t, h = await _env(client, make, app, wire, handler=handler)
+    sid = (await _q(client, h, q="203.0.113.5"))["search_id"]
+    assert (await _hits(client, h, sid, 0))["expired"] is False
+    other = await make.tenant()
+    _, h2 = await make.login_as(other, Role.TENANT_ADMIN)
+    stolen = await _hits(client, h2, sid, 0)
+    assert stolen["expired"] is True and stolen["hits"] == []  # the key carries the tenant: another tenant sees nothing
+    assert (await _hits(client, h, "0" * 32, 0))["expired"] is True  # unknown / expired id
+    bad = await client.get(f"{API}/siem-query/not-an-id/hits", headers=h)
+    assert bad.status_code == 422  # only a 32-character hex id is accepted
+
+
+async def test_the_read_and_hold_limits_are_explicit_and_say_the_result_is_cut(client, make, app, wire):
+    from app.core.config import get_settings
+
+    handler, _ = make_siem(_many(1200))
+    t, h = await _env(client, make, app, wire, handler=handler)
+    q = sq.SiemQuery.model_validate({"q": "203.0.113.5", "time_range": RANGE})
+    async with app.state.sessionmaker() as db:
+        out = await sq.search(db, app.state.redis, get_settings(), t.id, q, read_cap=300, hold_max=250, page_size=100)
+    assert len(out["hits"]) == 100 and out["total"] == 250  # a page of the 250 held
+    assert out["truncated"] is True  # the SIEM had more than was read
+    assert out["found"] == 1200 and out["found_at_least"] is True  # ... and says how much more
+    assert out["sources"][0]["found"] == 1200 and out["sources"][0]["capped"] is True
+    async with app.state.sessionmaker() as db:  # page_size=None (the AI agent) = everything held in `hits`
+        everything = await sq.search(db, None, get_settings(), t.id, q, read_cap=300, hold_max=250, page_size=None)
+    assert len(everything["hits"]) == 250
+
+
+def test_held_results_are_packed_and_an_older_plain_list_is_still_readable():
+    docs = [{"id": f"e{i}", "message": "x" * 200} for i in range(50)]
+    packed = sq._pack({"docs": docs, "origins": {"e1": "src"}})
+    assert (
+        packed.startswith("z:") and len(packed) < len(str(docs)) / 3
+    )  # compressed: ten thousand events do not sit in Redis as 35 MB
+    assert sq._unpack(packed) == {"docs": docs, "origins": {"e1": "src"}}
+    assert sq._unpack(json.dumps(docs)) == {"docs": docs, "origins": {}}  # a result held by the previous version

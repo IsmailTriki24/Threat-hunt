@@ -1,4 +1,5 @@
-import { screen, waitFor, within } from "@testing-library/react";
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { Shell } from "@/components/shell";
 import { mockFetch, renderWithQuery } from "./helpers";
@@ -144,4 +145,16 @@ it("the user menu shows identity, switches tenant when there are several, and si
   await userEvent.click(screen.getByRole("menuitem", { name: /Sign out/ }));
   await waitFor(() => expect(replace).toHaveBeenCalledWith("/login"));
   expect(logout).toHaveBeenCalled();
+});
+
+it("shows on the SIEM Search entry that a search is still running while another module is open", async () => {
+  const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  render(<QueryClientProvider client={qc}><Shell><p>content</p></Shell></QueryClientProvider>);
+  const link = () => within(nav()).getByRole("link", { name: /SIEM Search/ });
+  expect(within(link()).queryByRole("status")).not.toBeInTheDocument();
+  let done!: () => void;
+  const search = qc.fetchQuery({ queryKey: ["siem-query", "k"], queryFn: () => new Promise<string>((r) => { done = () => r("x"); }) });
+  expect(await within(link()).findByRole("status", { name: "A SIEM search is running" })).toBeInTheDocument();
+  done(); await search;
+  await waitFor(() => expect(within(link()).queryByRole("status")).not.toBeInTheDocument());
 });

@@ -15,6 +15,7 @@ from app.core.crypto import encrypt_json
 from app.datasources.models import DataSource
 from app.events.search.query import EventQuery
 from app.events.siem_search import classify, plan_for, plan_for_indicator
+from tests import fake_console
 from tests.test_logrhythm_ioc import lr_log, make_siem
 
 API = "/api/v1/events"
@@ -74,11 +75,12 @@ async def siem(app, make, monkeypatch):
         return None
 
     monkeypatch.setattr("app.connectors._http.asyncio.sleep", nosleep)
-    monkeypatch.setattr("app.connectors.logrhythm._sleep", nosleep)
+    monkeypatch.setattr("app.connectors.logrhythm_console._sleep", nosleep)
     monkeypatch.setattr(_http, "RESOLVER", _resolve)
 
     async def install(tenant, handler, *, enabled=True, config=None):
         monkeypatch.setattr(_http, "HTTP_TRANSPORT", httpx.MockTransport(handler))
+        fake_console.install(monkeypatch, handler)
         async with app.state.sessionmaker() as db:
             db.add(
                 DataSource(

@@ -1,5 +1,5 @@
 "use client";
-import { useMutation, useQuery } from "@tanstack/react-query";
+import { useIsMutating, useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { usePathname, useRouter, useSearchParams } from "next/navigation";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { api, ApiError } from "@/lib/api";
@@ -65,12 +65,19 @@ function SourceLine({ s }: { s: SiemSourceResult }) {
       <span className="text-muted">{KIND_LABEL(s.kind)}</span>
       <span>{bad || s.status === "not_applicable" ? s.detail : s.scanned === 0 ? <>No log found{s.searched.length ? <> for <span className="font-mono">{s.searched.slice(0, 2).join(" · ")}</span></> : null} — this source holds nothing for it in this time range</> : `${s.matched.toLocaleString("en-US")} of ${s.scanned.toLocaleString("en-US")} read match`}</span>
       {s.status === "partial" && <span className="text-sev-medium">time budget reached; not everything was searched</span>}
-      {s.capped && <span className="text-sev-medium">stopped at the read limit; narrow the query or range</span>}
+      {s.found > s.scanned && <span className="text-ink">the SIEM reports {s.found_at_least ? "at least " : ""}{s.found.toLocaleString("en-US")} logs for this</span>}
+      {s.capped && <span className="text-sev-medium">only the newest {s.scanned.toLocaleString("en-US")} were read; narrow the query or range for the rest</span>}
       <span className="text-muted tabular-nums">{s.ms} ms</span>
       {s.skipped.map((n) => <span key={n} className="basis-full pl-5 text-sev-medium">{n}</span>)}
     </li>
   );
 }
+
+type LastSearch = { qs: string; nonce: number };
+type MoreHits = { hits: EventDoc[]; origins: Record<string, string> };
+const LAST_SEARCH = ["siem-last-search"];
+const NO_MORE: MoreHits = { hits: [], origins: {} };
+const HOLD_MS = 30 * 60_000; // the server keeps a result this long
 
 export function SiemSearchView() {
   const router = useRouter();
@@ -81,7 +88,14 @@ export function SiemSearchView() {
   const legacyId = /^[a-f0-9]{32}$/.test(sp.get("id") ?? "") ? sp.get("id") : null; // older links use ?id=
   const openId = state.event ?? legacyId;
   const [draft, setDraft] = useState(state.q);
-  const [nonce, setNonce] = useState(0);
+  const qc = useQueryClient();
+  // A search outlives this page: the cache keeps its result (and the pages loaded after it) for as long as the server holds it, and the last
+  // search is remembered so the sidebar link, which has no query in it, brings it back. logout / tenant switch clear the cache.
+  const [nonce, setNonce] = useState(() => {
+    const last = qc.getQueryData<LastSearch>(LAST_SEARCH);
+    return last?.qs && (last.qs === sp.toString() || !sp.toString()) ? last.nonce : 0;
+  });
+  const restoring = useRef(false);
   const [dense, setDense] = useState(true);
   const [notice, setNotice] = useState<string | null>(null);
   const [caseEvent, setCaseEvent] = useState<string | null>(null);
@@ -110,6 +124,14 @@ export function SiemSearchView() {
   const available = useQuery({ queryKey: ["siem-sources"], queryFn: api.siemSources, staleTime: 60_000 });
   const browse = sp.get("browse") === "1"; // list what LogRhythm holds for the range, with no search terms (up to the read limit)
   const hasQuery = !!(state.q.trim() || state.filters.length || browse);
+  useEffect(() => {
+    const last = qc.getQueryData<LastSearch>(LAST_SEARCH);
+    if (last?.qs && !hasQuery) { restoring.current = true; router.replace(`${pathname}?${last.qs}`, { scroll: false }); }
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
+  useEffect(() => {
+    if (restoring.current) { if (hasQuery) restoring.current = false; return; }
+    qc.setQueryData<LastSearch>(LAST_SEARCH, hasQuery ? { qs: sp.toString(), nonce } : { qs: "", nonce: 0 }); // empty qs = nothing to bring back
+  }, [hasQuery, sp, nonce, qc]);
   const numbers = (key: string): number[] => sp.getAll(key).map(Number).filter((n) => Number.isInteger(n)).slice(0, 50);
   const entityIds = useMemo(() => numbers("ent"), [sp]); // eslint-disable-line react-hooks/exhaustive-deps
   const typeIds = useMemo(() => numbers("st"), [sp]); // eslint-disable-line react-hooks/exhaustive-deps
@@ -131,9 +153,38 @@ export function SiemSearchView() {
   const search = useQuery({
     queryKey: ["siem-query", key],
     queryFn: () => api.siemQuery({ ...toRequestBody({ ...state, event: null, offset: 0, sort: null }, []), ...(sources.length ? { sources } : {}), ...(browse ? { browse: true, ...(entityIds.length ? { entity_ids: entityIds } : {}), ...(typeIds.length ? { source_type_ids: typeIds } : {}) } : {}) }),
-    enabled: hasQuery, staleTime: Infinity, retry: false, refetchOnWindowFocus: false, refetchOnMount: false,
+    enabled: hasQuery, staleTime: Infinity, gcTime: HOLD_MS, retry: false, refetchOnWindowFocus: false, refetchOnMount: false,
   });
-  const data: SiemQueryResult | undefined = search.data;
+  // Further pages of the held result are fetched on demand and appended: sorting, paging, counts and aggregations all work on what is loaded.
+  // They live in the cache, not in this component, so loading goes on (and what was loaded stays) while another module is open.
+  const base: SiemQueryResult | undefined = search.data;
+  const moreKey = ["siem-more", base?.search_id ?? ""];
+  const moreQ = useQuery<MoreHits>({ queryKey: moreKey, queryFn: async () => NO_MORE, initialData: NO_MORE, staleTime: Infinity, gcTime: HOLD_MS, enabled: !!base });
+  const more = moreQ.data ?? NO_MORE;
+  const data: SiemQueryResult | undefined = useMemo(
+    () => (base && more.hits.length ? { ...base, hits: [...base.hits, ...more.hits], origins: { ...base.origins, ...more.origins } } : base),
+    [base, more],
+  );
+  const loadingMore = useIsMutating({ mutationKey: ["siem-more", base?.search_id ?? ""] }) > 0;
+  const [moreError, setMoreError] = useState<string | null>(null);
+  const loadMore = useMutation({
+    mutationKey: ["siem-more", base?.search_id ?? ""],
+    mutationFn: async (all: boolean) => {
+      if (!base) return;
+      const key = ["siem-more", base.search_id];
+      for (let guard = 0; guard < 25; guard++) {
+        const have = qc.getQueryData<MoreHits>(key) ?? NO_MORE;
+        if (base.hits.length + have.hits.length >= base.total) break;
+        const page = await api.siemHits(base.search_id, base.hits.length + have.hits.length);
+        if (page.expired) throw new Error("This result is no longer held (30 minutes); search again.");
+        if (page.hits.length === 0) break;
+        qc.setQueryData<MoreHits>(key, { hits: [...have.hits, ...page.hits], origins: { ...have.origins, ...page.origins } });
+        if (!all) break;
+      }
+    },
+    onMutate: () => setMoreError(null),
+    onError: (e: Error) => setMoreError(e.message),
+  });
   const [only, setOnly] = useState<string | null>(null); // a data source id: show just what that source returned
   useEffect(() => setOnly(null), [data?.search_id]);
   const originOf = (e: EventDoc): string | undefined => data?.origins?.[e.id];
@@ -301,7 +352,16 @@ export function SiemSearchView() {
                   <button className="btn" disabled={offset === 0} onClick={() => update({ offset: Math.max(0, offset - limit) }, { resetPage: false })}><ChevronLeft aria-hidden className="h-4 w-4" />Prev</button>
                   <span className="px-1 tabular-nums text-muted">{offset + 1}–{Math.min(offset + limit, sorted.length)} of {sorted.length}</span>
                   <button className="btn" disabled={!canNext} onClick={() => update({ offset: offset + limit }, { resetPage: false })}>Next<ChevronRight aria-hidden className="h-4 w-4" /></button>
-                  {data.truncated && <span className="text-muted">The SIEMs returned more than is shown; narrow the query or range.</span>}
+                  {data.truncated && <span className="text-muted">The SIEMs returned more than can be held ({data.found_at_least ? "at least " : ""}{data.found.toLocaleString("en-US")} found); narrow the query or range to see the rest.</span>}
+                </div>
+              )}
+              {data.hits.length > 0 && data.hits.length < data.total && (
+                <div className="mt-2 flex flex-wrap items-center gap-2 text-sm">
+                  <span className="tabular-nums text-muted">{data.hits.length.toLocaleString("en-US")} of {data.total.toLocaleString("en-US")} events loaded</span>
+                  <button className="btn" disabled={loadingMore} onClick={() => loadMore.mutate(false)}>Load next {Math.min(500, data.total - data.hits.length).toLocaleString("en-US")}</button>
+                  <button className="btn" disabled={loadingMore} onClick={() => loadMore.mutate(true)}>Load all {data.total.toLocaleString("en-US")}</button>
+                  {loadingMore && <span role="status" className="text-accent">Loading…</span>}
+                  {moreError && <span role="alert" className="text-sev-critical">{moreError}</span>}
                 </div>
               )}
             </div>
