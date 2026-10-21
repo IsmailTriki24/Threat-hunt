@@ -4,7 +4,7 @@ import { usePathname, useRouter, useSearchParams } from "next/navigation";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { api, ApiError } from "@/lib/api";
 import type { Bucket, EventDoc, Filter, SiemQueryResult, SiemSourceResult } from "@/lib/api-types";
-import { addFilter, clampPaging, paramsToState, stateToParams, toRequestBody, type SearchState } from "@/lib/query";
+import { addFilter, clampPaging, paramsToState, stateToParams, toRequestBody, type RangeSpec, type SearchState } from "@/lib/query";
 import { useAuth } from "@/lib/auth";
 import { ChevronLeft, ChevronRight, CircleAlert, CircleCheck, Info, Loader2, Search, SearchX } from "lucide-react";
 import { AddToCaseDialog } from "./add-to-case-dialog";
@@ -74,6 +74,8 @@ function SourceLine({ s }: { s: SiemSourceResult }) {
 }
 
 type LastSearch = { qs: string; nonce: number };
+/** What the controls can change without searching: it takes effect when "Search the SIEMs" is clicked. */
+type Edits = { range: RangeSpec; filters: Filter[]; lang: boolean; sources: string[]; ent: number[]; st: number[] };
 type MoreHits = { hits: EventDoc[]; origins: Record<string, string> };
 const LAST_SEARCH = ["siem-last-search"];
 const NO_MORE: MoreHits = { hits: [], origins: {} };
@@ -116,9 +118,10 @@ export function SiemSearchView() {
     const next = { ...state, ...patch, ...(opts.resetPage !== false && !("offset" in patch) && !("event" in patch) ? { offset: 0 } : {}) };
     const p = stateToParams(next);
     for (const id of opts.sources ?? sources) p.append("src", id);
+    for (const k of ["browse", "ent", "st"]) for (const v of sp.getAll(k)) p.append(k, v); // paging or sorting must not leave browse mode
     const qs = p.toString();
     router.replace(qs ? `${pathname}?${qs}` : pathname, { scroll: false });
-  }, [state, sources, router, pathname]);
+  }, [state, sources, sp, router, pathname]);
 
   const fields = useQuery({ queryKey: ["fields"], queryFn: api.fields, staleTime: Infinity });
   const available = useQuery({ queryKey: ["siem-sources"], queryFn: api.siemSources, staleTime: 60_000 });
@@ -135,18 +138,31 @@ export function SiemSearchView() {
   const numbers = (key: string): number[] => sp.getAll(key).map(Number).filter((n) => Number.isInteger(n)).slice(0, 50);
   const entityIds = useMemo(() => numbers("ent"), [sp]); // eslint-disable-line react-hooks/exhaustive-deps
   const typeIds = useMemo(() => numbers("st"), [sp]); // eslint-disable-line react-hooks/exhaustive-deps
-  const setScope = (key: "ent" | "st", ids: number[]) => {
-    const p = new URLSearchParams(sp.toString());
-    p.delete(key);
-    for (const id of ids) p.append(key, String(id));
-    router.replace(`${pathname}?${p.toString()}`, { scroll: false });
-  };
-  const setBrowse = (on: boolean) => {
-    const p = new URLSearchParams(sp.toString());
-    if (on) p.set("browse", "1"); else { p.delete("browse"); p.delete("ent"); p.delete("st"); }
+  // Changing a filter, the time range, the sources or the scope only edits the search; nothing is sent to the SIEMs until "Search the SIEMs".
+  const applied: Edits = useMemo(
+    () => ({ range: state.range, filters: state.filters, lang: state.lang, sources, ent: entityIds, st: typeIds }),
+    [state.range, state.filters, state.lang, sources, entityIds, typeIds],
+  );
+  const appliedKey = JSON.stringify([state.q, applied, browse]);
+  const [edits, setEdits] = useState<Partial<Edits>>({});
+  useEffect(() => setEdits({}), [appliedKey]);
+  const cur: Edits = { ...applied, ...edits };
+  const dirty = draft !== state.q || JSON.stringify(cur) !== JSON.stringify(applied);
+  const edit = <K extends keyof Edits>(k: K, v: Edits[K]) => setEdits((e) => ({ ...e, [k]: v }));
+  /** Apply the edits (and the text typed) as the search to run. The same search again is a re-run. */
+  const commit = (over: { browse?: boolean } = {}) => {
+    const want = { ...cur, ...(over.browse === false ? { ent: [], st: [] } : {}) };
+    const on = over.browse ?? browse;
+    const p = stateToParams({ ...state, q: draft, lang: want.lang, range: want.range, filters: want.filters, offset: 0, event: null });
+    for (const id of want.sources) p.append("src", id);
+    if (on) p.set("browse", "1");
+    for (const id of want.ent) p.append("ent", String(id));
+    for (const id of want.st) p.append("st", String(id));
+    if (JSON.stringify([draft, want, on]) === appliedKey) { setNonce((n) => n + 1); return; }
     const qs = p.toString();
     router.replace(qs ? `${pathname}?${qs}` : pathname, { scroll: false });
   };
+  const setBrowse = (on: boolean) => commit({ browse: on }); // the two browse buttons are the search action itself
   // The request body (with its resolved "now") is computed once per applied search / explicit run, so paging and sorting never ask the SIEMs again.
   const scopes = useQuery({ queryKey: ["siem-scopes"], queryFn: api.siemScopes, staleTime: 300_000, enabled: browse });
   const key = JSON.stringify([state.q, state.lang, state.range, state.filters, sources, nonce, browse, entityIds, typeIds]);
@@ -216,16 +232,16 @@ export function SiemSearchView() {
     onSuccess: (id) => { setNotice(null); update({ event: id }, { resetPage: false }); },
     onError: (e) => setNotice(e instanceof Error && e.message === "expired" ? "This result is no longer held (results are kept for 30 minutes). Search again to open the event." : e instanceof ApiError ? e.friendly : "Could not open the event"),
   });
-  const run = () => { if (draft !== state.q) update({ q: draft }); else setNonce((n) => n + 1); };
-  const addF = (f: Filter) => update({ filters: addFilter(state.filters, f) });
+  const run = () => commit();
+  const addF = (f: Filter) => edit("filters", addFilter(cur.filters, f));
   const toggleSource = (id: string) => {
     const all = (available.data ?? []).map((s) => s.id);
-    const current = sources.length ? sources : all;
+    const current = cur.sources.length ? cur.sources : all;
     const next = current.includes(id) ? current.filter((x) => x !== id) : [...current, id];
-    update({}, { sources: next.length === all.length ? [] : next });
+    edit("sources", next.length === all.length ? [] : next);
   };
   const canNext = offset + limit < sorted.length;
-  const shown = sources.length ? sources : (available.data ?? []).map((s) => s.id);
+  const shown = cur.sources.length ? cur.sources : (available.data ?? []).map((s) => s.id);
   const failed = data?.sources.filter((s) => s.status === "error") ?? [];
 
   return (
@@ -234,20 +250,21 @@ export function SiemSearchView() {
       <form className="panel flex flex-wrap gap-2 p-3" onSubmit={(e) => { e.preventDefault(); run(); }} role="search" aria-label="SIEM search">
         <div className="relative min-w-[16rem] flex-1">
           <Search aria-hidden className="pointer-events-none absolute left-2.5 top-1/2 h-4 w-4 -translate-y-1/2 text-muted" />
-          <input ref={searchRef} className="input w-full pl-8 font-mono" value={draft} onChange={(e) => setDraft(e.target.value)} maxLength={state.lang ? 2000 : 512}
-            aria-label="Search query" placeholder={state.lang ? "process.name:powershell.exe user.name:bob   (hunt query language)" : "An IP, domain, hash, user, host, process or word…  e.g. 203.0.113.5 · powershell -chrome   (press / to focus)"} />
+          <input ref={searchRef} className="input w-full pl-8 font-mono" value={draft} onChange={(e) => setDraft(e.target.value)} maxLength={cur.lang ? 2000 : 512}
+            aria-label="Search query" placeholder={cur.lang ? "process.name:powershell.exe user.name:bob   (hunt query language)" : "An IP, domain, hash, user, host, process or word…  e.g. 203.0.113.5 · powershell -chrome   (press / to focus)"} />
         </div>
-        <RangeControl value={state.range} onChange={(range) => update({ range })} />
+        <RangeControl value={cur.range} onChange={(range) => edit("range", range)} />
         <button className="btn btn-primary" type="submit" disabled={search.isFetching}><Search aria-hidden className="h-3.5 w-3.5" />Search the SIEMs</button>
+        {dirty && <p role="status" className="w-full text-xs text-sev-medium">Changes are not applied yet: click Search the SIEMs to search with them.</p>}
       </form>
 
       <div className="flex flex-wrap items-center gap-3">
         {fields.data && <FilterBuilder fields={fields.data.filter((f) => f.kind !== "date")} onAdd={addF} />}
-        <label className="flex items-center gap-1.5 text-sm text-ink-2"><input type="checkbox" checked={state.lang} onChange={(e) => update({ lang: e.target.checked })} /> Query language</label>
+        <label className="flex items-center gap-1.5 text-sm text-ink-2"><input type="checkbox" checked={cur.lang} onChange={(e) => edit("lang", e.target.checked)} /> Query language</label>
         <label className="ml-auto flex items-center gap-1.5 text-sm text-ink-2"><input type="checkbox" checked={dense} onChange={(e) => setDense(e.target.checked)} /> Dense</label>
       </div>
-      {state.lang && <p className="text-xs text-muted">{QueryEditorHint}</p>}
-      <FilterChips filters={state.filters} onRemove={(i) => update({ filters: state.filters.filter((_, j) => j !== i) })} />
+      {cur.lang && <p className="text-xs text-muted">{QueryEditorHint}</p>}
+      <FilterChips filters={cur.filters} onRemove={(i) => edit("filters", cur.filters.filter((_, j) => j !== i))} />
 
       {available.data && available.data.length > 0 && (
         <fieldset className="flex flex-wrap items-center gap-x-3 gap-y-1 text-sm" aria-label="Sources to search">
@@ -293,8 +310,8 @@ export function SiemSearchView() {
       {browse && !state.q.trim() && !state.filters.length && scopes.data && (
         <div className="flex flex-wrap items-center gap-2" role="group" aria-label="Narrow the browse">
           <span className="text-xs text-muted">Narrow to</span>
-          <ScopePicker label="Entities" options={scopes.data.entities} selected={entityIds} onChange={(ids) => setScope("ent", ids)} />
-          <ScopePicker label="Log source types" options={scopes.data.source_types} selected={typeIds} onChange={(ids) => setScope("st", ids)} />
+          <ScopePicker label="Entities" options={scopes.data.entities} selected={cur.ent} onChange={(ids) => edit("ent", ids)} />
+          <ScopePicker label="Log source types" options={scopes.data.source_types} selected={cur.st} onChange={(ids) => edit("st", ids)} />
           {entityIds.length > 0 && <span className="text-xs text-muted">Alarms are left out while narrowed.</span>}
           {scopes.data.errors.map((e) => <span key={e} className="text-xs text-sev-medium">{e}</span>)}
         </div>
@@ -372,7 +389,7 @@ export function SiemSearchView() {
 
       {openId && (
         <EventDrawer id={openId} onClose={() => update({ event: null }, { resetPage: false })}
-          onPivot={(f) => update({ filters: addFilter(state.filters, f), event: null })}
+          onPivot={(f) => { addF(f); update({ event: null }, { resetPage: false }); }}
           onAddToCase={can("cases:write") ? setCaseEvent : undefined} />
       )}
       {caseEvent && <AddToCaseDialog eventIds={[caseEvent]} onClose={() => setCaseEvent(null)} />}

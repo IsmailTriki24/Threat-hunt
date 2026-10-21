@@ -98,14 +98,19 @@ describe("SIEM Search", () => {
     expect(screen.getByText(/can't be searched by process.parent.name/)).toBeInTheDocument();
   });
 
-  it("a search can be limited to some sources (kept in the URL)", async () => {
+  it("a search can be limited to some sources, which apply only when you click Search the SIEMs", async () => {
     params = "q=x";
-    mockFetch(routes());
+    const m = mockFetch(routes());
     renderWithQuery(<SiemSearchView />);
     await screen.findByText("2 events");
     await userEvent.click(screen.getByLabelText("Search Trend endpoint"));
+    expect(screen.getByLabelText("Search Trend endpoint")).not.toBeChecked(); // the control shows the change ...
+    expect(replace).not.toHaveBeenCalled(); // ... but nothing is searched yet
+    expect(screen.getByText(/Changes are not applied yet/)).toBeInTheDocument();
+    await userEvent.click(screen.getByRole("button", { name: "Search the SIEMs" }));
     expect(replace).toHaveBeenCalledWith(expect.stringContaining("src=l1"), expect.anything());
     expect(replace.mock.calls[0][0]).not.toContain("src=t1");
+    expect(m.bodiesFor("POST /api/v1/events/siem-query")).toHaveLength(1);
   });
 
   it("with no SIEM source configured it says how to add one", async () => {
@@ -304,5 +309,73 @@ describe("SIEM Search: a search outlives the page", () => {
     await new Promise((r) => setTimeout(r, 100));
     expect(replace).not.toHaveBeenCalled();
     expect(screen.getByText(/Browse all of LogRhythm/)).toBeInTheDocument();
+  });
+});
+
+describe("SIEM Search: changing the search does not run it", () => {
+  const searches = (m: ReturnType<typeof mockFetch>) => m.bodiesFor("POST /api/v1/events/siem-query");
+  const click = (name: string) => userEvent.click(screen.getByRole("button", { name }));
+
+  it("adding a filter, changing the time or the query language waits for Search the SIEMs", async () => {
+    params = "q=203.0.113.5";
+    const m = mockFetch(routes());
+    renderWithQuery(<SiemSearchView />);
+    await screen.findByText("2 events");
+    await userEvent.selectOptions(screen.getByLabelText("Field"), "network.dst_ip");
+    await userEvent.type(screen.getByLabelText("Value"), "10.0.0.9");
+    await click("Add filter");
+    expect(within(screen.getByRole("list", { name: "Active filters" })).getByText(/10\.0\.0\.9/)).toBeInTheDocument();
+    await userEvent.selectOptions(screen.getByLabelText("Time range"), "7d");
+    await userEvent.click(screen.getByLabelText("Query language"));
+    await new Promise((r) => setTimeout(r, 150));
+    expect(replace).not.toHaveBeenCalled();
+    expect(searches(m)).toHaveLength(1); // still the one search from the page load
+    expect(screen.getByText(/Changes are not applied yet/)).toBeInTheDocument();
+
+    await click("Search the SIEMs"); // one click applies all of it, in one search
+    expect(replace).toHaveBeenCalledTimes(1);
+    const url = String(replace.mock.calls[0][0]);
+    expect(url).toContain("range=7d");
+    expect(url).toContain("lang=1");
+    expect(url).toContain("f=");
+  });
+
+  it("removing a filter is also only an edit until Search the SIEMs", async () => {
+    params = "q=x&f=" + encodeURIComponent("host.hostname|eq|srv9");
+    const m = mockFetch(routes());
+    renderWithQuery(<SiemSearchView />);
+    await screen.findByText("2 events");
+    await userEvent.click(screen.getByRole("button", { name: /Remove filter/ }));
+    await new Promise((r) => setTimeout(r, 100));
+    expect(replace).not.toHaveBeenCalled();
+    expect(searches(m)).toHaveLength(1);
+    await click("Search the SIEMs");
+    expect(String(replace.mock.calls[0][0])).not.toContain("f=");
+  });
+
+  it("clicking Search the SIEMs with nothing changed runs the same search again", async () => {
+    params = "q=203.0.113.5";
+    const m = mockFetch(routes());
+    renderWithQuery(<SiemSearchView />);
+    await screen.findByText("2 events");
+    expect(screen.queryByText(/Changes are not applied yet/)).not.toBeInTheDocument();
+    await click("Search the SIEMs");
+    await waitFor(() => expect(searches(m)).toHaveLength(2));
+    expect(replace).not.toHaveBeenCalled(); // same URL, a fresh search
+  });
+
+  it("paging, sorting and opening results never lose pending edits or leave browse mode", async () => {
+    params = "browse=1&ent=7";
+    const m = mockFetch(routes({ "GET /api/v1/events/siem-scopes": () => ({ entities: [{ id: 7, name: "HQ" }], source_types: [], errors: [] }) }));
+    renderWithQuery(<SiemSearchView />);
+    await screen.findByText("2 events");
+    await userEvent.selectOptions(screen.getByLabelText("Time range"), "7d"); // a pending edit ...
+    await userEvent.click(within(screen.getByRole("table")).getByRole("button", { name: /Host/ })); // ... then a sort
+    const url = String(replace.mock.calls.at(-1)?.[0]);
+    expect(url).toContain("browse=1");
+    expect(url).toContain("ent=7"); // sorting stays in the same browse
+    expect(url).not.toContain("range=7d"); // and does not smuggle the pending edit in
+    expect(searches(m)).toHaveLength(1);
+    expect(screen.getByLabelText("Time range")).toHaveValue("7d"); // the edit is still there
   });
 });
