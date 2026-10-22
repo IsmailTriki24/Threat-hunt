@@ -1,5 +1,5 @@
 import type { AllowEntry, Bulletin, FeedType, Ioa, IocFeed, IocHunt, IocHuntDetail, IocItem, IocOverview, IocPage, ThreatPage, Ttp } from "./ioc";
-import type { AiRun, AiRunBody, AiStatus } from "./ai";
+import type { AiLesson, AiRun, AiRunBody, AiStatus } from "./ai";
 import type { SiemResult } from "./siem";
 import type { Correlation, FlowsResponse, IndicatorDetail, MapData, MapStatus } from "./threat-map";
 import type { EvPoint } from "./ai-stream";
@@ -245,6 +245,10 @@ export const api = {
   aiStatus: () => request<AiStatus>("/api/v1/ai/status"),
   aiTranslate: (question: string) => request<{ query: string | null; note: string }>("/api/v1/ai/translate", J({ question })),
   aiRuns: () => request<AiRun[]>("/api/v1/ai/runs"),
+  aiLessons: () => request<AiLesson[]>("/api/v1/ai/lessons"),
+  aiAddLesson: (b: { cue: string; lesson: string; evidence?: string }) => request<AiLesson>("/api/v1/ai/lessons", J(b)),
+  aiSetLesson: (id: string, status: "active" | "disabled") => request<AiLesson>(`/api/v1/ai/lessons/${enc(id)}`, { method: "PATCH", body: { status } }),
+  aiDeleteLesson: (id: string) => request<void>(`/api/v1/ai/lessons/${enc(id)}`, { method: "DELETE" }),
   aiRun: (b: { goal: string; hunt_id?: string; hours_back: number }) => request<AiRun>("/api/v1/ai/runs", J(b)),
   aiRunStream: (b: AiRunBody, signal?: AbortSignal) => requestStream("/api/v1/ai/runs/stream", b, signal),
   aiResumeStream: (id: string, signal?: AbortSignal) => requestStream(`/api/v1/ai/runs/${enc(id)}/resume/stream`, {}, signal),

@@ -61,8 +61,8 @@ class Settings(BaseSettings):
     tavily_base_url: str = "https://api.tavily.com"  # operator-controlled; never user input
     ai_web_max_calls: int = Field(default=6, ge=0, le=30)
     ai_siem_max_calls: int = Field(
-        default=6, ge=0, le=30
-    )  # live SIEM searches per run (each takes 10-60 s and loads a production SIEM)
+        default=0, ge=0, le=200
+    )  # live SIEM searches per run (each takes 10-60 s and loads a production SIEM); 0 = no limit, the run's own step/time limits apply
     # Indicator enrichment (tenant's intel providers + public threat-intel sites). Only public indicators ever leave.
     ai_auto_enrich: bool = True  # the platform looks up new public indicators itself after each turn
     ai_auto_enrich_max: int = Field(default=10, ge=0, le=50)  # automatic look-ups per run
@@ -70,13 +70,19 @@ class Settings(BaseSettings):
     ai_enrich_max_calls: int = Field(default=16, ge=0, le=100)  # look-ups per run, automatic + requested by the model
     ai_model: str = "claude-sonnet-5-5"
     ai_base_url: str = "https://api.anthropic.com"  # operator-controlled (gateway/proxy); never user input
-    # Operator ceilings. A run's effective budget is its mode's (quick/standard/deep) clamped by these; they are not turn counts the
-    # model can be cut off by mid-investigation - hitting one triggers a final conclusion turn / interim report (see ai/agent.py).
-    ai_max_steps: int = Field(default=48, ge=1, le=200)
-    ai_max_tool_calls: int = Field(default=120, ge=1, le=400)
-    ai_token_budget: int = Field(default=2_000_000, ge=10_000, le=20_000_000)
-    ai_run_timeout_s: int = Field(default=540, ge=20, le=1800)  # wall-clock for one run
+    # Operator ceilings; 0 (the default) = none. A run's budget is its mode's (quick/standard have their own; deep has none),
+    # clamped by these. Hitting one triggers a final conclusion turn / interim report (see ai/agent.py).
+    ai_max_steps: int = Field(default=0, ge=0, le=100_000)
+    ai_max_tool_calls: int = Field(default=0, ge=0, le=100_000)
+    ai_token_budget: int = Field(default=0, ge=0, le=2_000_000_000)
+    ai_run_timeout_s: int = Field(default=0, ge=0, le=604_800)  # wall-clock for one run
     ai_timeout_s: int = Field(default=120, ge=10, le=600)  # one provider HTTP call
+    ai_learn_lessons: bool = (
+        True  # after a run, write lessons about how to search for the tenant's future hunts (one extra model call)
+    )
+    ai_lessons_shown: int = Field(
+        default=6, ge=0, le=20
+    )  # most lessons put in front of the agent at the start of a hunt
 
     # Threat map. GeoIP is a local MaxMind-format database (GeoLite2, DB-IP Lite); no IP leaves the platform.
     geoip_provider: Literal["none", "mmdb"] = "mmdb"

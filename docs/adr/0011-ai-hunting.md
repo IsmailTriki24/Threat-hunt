@@ -33,3 +33,9 @@ per-user rate limit), multi-provider routing, per-tenant provider credentials.
 **Addendum — OpenRouter.** `AI_PROVIDER=openrouter` (+ `OPENROUTER_API_KEY`, `AI_MODEL`, optional `OPENROUTER_BASE_URL`) uses the OpenAI-compatible
 chat-completions API. The adapter maps the neutral blocks to `tool_calls`/`tool` messages and back, ignores malformed tool arguments, and retries
 429/502/503 a few times with backoff (shared upstream pools throttle in bursts). Keys live in `.env` only.
+
+
+**Update (2026-10-22): deep mode has no limits.** `deep` has no step, tool-call, token or time limit (`quick` and `standard` keep theirs); the operator
+ceilings `AI_MAX_STEPS`, `AI_MAX_TOOL_CALLS`, `AI_TOKEN_BUDGET`, `AI_RUN_TIMEOUT_S` default to 0 = none and can still be set. A deep run ends when
+the model concludes, when the analyst presses Stop, or when it stalls: turns that add nothing new (an empty `test`/`refute` search counts as progress
+for up to 12 turns in a row, so a model that only ever asks new empty questions still ends). The live view shows no meters for an unlimited run.

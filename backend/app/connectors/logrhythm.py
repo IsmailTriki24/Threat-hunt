@@ -8,6 +8,7 @@ Time: LogRhythm searches by true (UTC) time but reports `logDate` shifted by the
 `date_shift_hours` corrects the event timestamp only (true time = logDate + shift); search windows are sent unshifted so the collection
 watermark and the event times agree."""
 
+import copy
 import json
 import re
 import time
@@ -751,6 +752,16 @@ def text_searches(word: str) -> list[dict[str, Any]]:
         _wrap(native, 2),
         _wrap([_item(FT_MESSAGE, VT_STRING, [like])], 1),
     ]
+
+
+def narrow_to_types(query_filter: dict[str, Any], source_type_ids: list[int]) -> dict[str, Any]:
+    """The same filter AND-ed with log source types (by id): LogRhythm then collects only what those sources logged. Verified on a production
+    7.9 console (2026-10-22): an unrelated type returned 'Completed: No Results', the matching type the same logs as the unscoped search."""
+    if not source_type_ids or not isinstance(query_filter.get("filterGroup"), dict):
+        return query_filter
+    out = copy.deepcopy(query_filter)
+    out["filterGroup"]["filterItems"].append(_item(FT_MSG_SOURCE_TYPE, VT_INT, list(dict.fromkeys(source_type_ids))))
+    return out
 
 
 def browse_filter(entity_ids: list[int] | None = None, source_type_ids: list[int] | None = None) -> dict[str, Any]:

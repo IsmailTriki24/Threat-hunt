@@ -28,7 +28,13 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.connectors import registry as connectors
 from app.connectors._http import SourceError
 from app.connectors.base import NormalizationError
-from app.connectors.logrhythm import browse_filter, ioa_searches, ioc_query_filter, text_searches
+from app.connectors.logrhythm import (
+    browse_filter,
+    ioa_searches,
+    ioc_query_filter,
+    narrow_to_types,
+    text_searches,
+)
 from app.connectors.logrhythm_admin import search_scopes
 from app.connectors.logrhythm_alarms import alarm_events, list_alarms, normalize_alarm
 from app.core.config import Settings
@@ -202,6 +208,10 @@ def _secrets(settings: Settings, ds: DataSource) -> dict[str, str]:
     return {k: str(v) for k, v in decrypt_json(settings, ds.secrets_enc).items()} if ds.secrets_enc else {}
 
 
+def lr_connector(settings: Settings, ds: DataSource) -> Any:
+    return connectors.build("logrhythm", ds.config, _secrets(settings, ds))
+
+
 def _collect(
     res: SourceResult,
     conn: Any,
@@ -301,7 +311,7 @@ async def _run_lr(
             conn: Any = connectors.build(
                 "logrhythm", ds.config, secrets
             )  # own connector: the filter override is per instance
-            conn._filter_override = flt
+            conn._filter_override = flt if label == "browse" else narrow_to_types(flt, parsed.source_type_ids)
             logs = await conn._search_window(rng.start, rng.end, None, read_cap)
             res.searched.append(label)
             res.capped = res.capped or conn.capped
@@ -331,6 +341,31 @@ async def _run_lr(
     return res
 
 
+ALARM_TTL_S = 600  # the logs behind an alarm are read once and reused by every search in this time: a hunt asks dozens of questions of one window
+ALARM_CACHE_MAX = 5000
+_ALARM_CACHE: dict[tuple[Any, ...], tuple[float, list[dict[str, Any]]]] = {}
+_ALARM_INFLIGHT: dict[tuple[Any, ...], "asyncio.Future[list[dict[str, Any]]]"] = {}
+
+
+async def _alarm_events_once(conn: Any, key: tuple[Any, ...], alarm_id: int) -> list[dict[str, Any]]:
+    """`alarm_events`, but each alarm is fetched from LogRhythm once per ALARM_TTL_S (concurrent searches share the fetch in flight)."""
+    now = time.monotonic()
+    hit = _ALARM_CACHE.get(key)
+    if hit is not None and now - hit[0] < ALARM_TTL_S:
+        return hit[1]
+    fetch = _ALARM_INFLIGHT.get(key)
+    if fetch is None:
+        fetch = asyncio.ensure_future(alarm_events(conn, alarm_id))
+        _ALARM_INFLIGHT[key] = fetch
+        fetch.add_done_callback(lambda _f: _ALARM_INFLIGHT.pop(key, None))
+    events = await asyncio.shield(fetch)  # a caller that gives up must not cancel the fetch the others wait on
+    if len(_ALARM_CACHE) >= ALARM_CACHE_MAX:
+        for old in sorted(_ALARM_CACHE, key=lambda k: _ALARM_CACHE[k][0])[: ALARM_CACHE_MAX // 10]:
+            _ALARM_CACHE.pop(old, None)
+    _ALARM_CACHE[key] = (time.monotonic(), events)
+    return events
+
+
 async def _lr_alarms(
     res: SourceResult,
     ds: DataSource,
@@ -343,7 +378,7 @@ async def _lr_alarms(
     """The alarms LogRhythm raised in the range, with the logs behind them (raw text included), checked locally against the whole query.
     A failure here is reported but never fails the log search."""
     if parsed.entity_ids or parsed.source_type_ids:
-        res.skipped.append("Alarms are not narrowed by entity or source type, so they are left out of this browse.")
+        res.skipped.append("Alarms are not narrowed by entity or source type, so they are left out of this search.")
         return None
     if not secrets.get("token") or not (ds.config or {}).get("base_url"):
         res.skipped.append("Alarms are not included: the alarm feed is not available through the console yet.")
@@ -363,7 +398,7 @@ async def _lr_alarms(
                 if time.monotonic() > deadline:
                     res.status = "partial" if res.status == "ok" else res.status
                     return None
-                return a, await alarm_events(conn, int(a["alarmId"]))
+                return a, await _alarm_events_once(conn, (tenant_id, ds.id, int(a["alarmId"])), int(a["alarmId"]))
 
         bundles = [b for b in await asyncio.gather(*(bundle(a) for a in by_id.values())) if b]
         seen = {e.id for e in res.events}
@@ -552,8 +587,10 @@ async def search(
     read_cap: int = LR_READ_CAP,
     hold_max: int = HOLD_MAX,
     page_size: int | None = PAGE_SIZE,
+    sources: list[DataSource] | None = None,
 ) -> dict[str, Any]:
-    """`read_cap` logs are read per LogRhythm search and at most `hold_max` events are kept (server-side, 30 minutes) under the returned
+    """`sources` (already loaded, already narrowed) spares the database lookup, so a caller sharing its session between parallel tool
+    calls need not hold it for the whole search. `read_cap` logs are read per LogRhythm search and at most `hold_max` events are kept (server-side, 30 minutes) under the returned
     `search_id`; `hits` is the first `page_size` of them (None = all), the rest is fetched with `held_page`."""
     t0 = time.monotonic()
     parsed = parse(query)
@@ -562,9 +599,10 @@ async def search(
     if rng.end - rng.start > MAX_WINDOW:
         rng = TimeRange(start=rng.end - MAX_WINDOW, end=rng.end)
         note = f"The SIEMs are searched over at most the last {MAX_WINDOW.days} days of your range."
-    sources = await searchable_sources(session, tenant_id)
-    if query.sources:
-        sources = [d for d in sources if d.id in set(query.sources)]
+    if sources is None:
+        sources = await searchable_sources(session, tenant_id)
+        if query.sources:
+            sources = [d for d in sources if d.id in set(query.sources)]
     empty = not (parsed.alts or parsed.filters or parsed.where is not None or parsed.terms or parsed.browse)
     results: list[SourceResult] = []
     if sources and not empty:

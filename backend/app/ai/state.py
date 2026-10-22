@@ -17,6 +17,8 @@ from typing import Any, Literal
 
 from app.events.pivots import pivots_for
 
+DATA_TOOLS = ("search_events", "siem_search", "aggregate_events", "pivot_entity", "events_around", "process_lineage")
+LIVE_TOOLS = ("siem_search", "pivot_entity", "events_around")
 HypStatus = Literal["open", "supported", "refuted", "inconclusive"]
 MAX_EVIDENCE = 600
 MAX_QUERIES = 400
@@ -43,7 +45,9 @@ class Mode:
 MODES: dict[str, Mode] = {
     "quick": Mode("quick", 10, 15, 200_000, 120, 2, 1, 2, 99, False, 2, 3),
     "standard": Mode("standard", 24, 50, 600_000, 300, 4, 3, 3, 4, True, 3, 4),
-    "deep": Mode("deep", 48, 120, 2_000_000, 540, 8, 5, 5, 3, True, 4, 6),
+    "deep": Mode(
+        "deep", 0, 0, 0, 0, 8, 5, 5, 3, True, 4, 6
+    ),  # 0 = no limit: a complete engagement takes as long as it takes
 }
 
 
@@ -51,18 +55,21 @@ MODES: dict[str, Mode] = {
 class Limits:
     """Effective budget = the mode's, clamped by operator ceilings from settings."""
 
-    max_steps: int
+    max_steps: int  # every limit: 0 = none
     max_tool_calls: int
     token_budget: int
     wall_s: int
 
     @classmethod
     def resolve(cls, mode: Mode, *, steps: int, calls: int, tokens: int, wall_s: int) -> "Limits":
+        def tighter(a: int, b: int) -> int:
+            return min(a, b) if a and b else a or b  # 0 on either side = no limit from that side
+
         return cls(
-            min(mode.max_steps, steps),
-            min(mode.max_tool_calls, calls),
-            min(mode.token_budget, tokens),
-            min(mode.wall_s, wall_s),
+            tighter(mode.max_steps, steps),
+            tighter(mode.max_tool_calls, calls),
+            tighter(mode.token_budget, tokens),
+            tighter(mode.wall_s, wall_s),
         )
 
 
@@ -601,7 +608,14 @@ class Investigation:
         lines = ["== INVESTIGATION STATE (maintained by the platform; authoritative over your own recollection) =="]
         lines.append(f"Objective: {self.objective[:400]}")
         lines.append(f"Window: last {self.hours_back}h | mode: {self.mode} | resumes: {self.resumes}")
-        lines.append("Budget left: " + ", ".join(f"{k} {v}" for k, v in remaining.items()))
+        lines.append(
+            "Budget left: " + ", ".join(f"{k} {'unlimited' if v is None else v}" for k, v in remaining.items())
+        )
+        if remaining and all(v is None for v in remaining.values()):
+            lines.append(
+                "There is no step, time or token limit: keep investigating until every hypothesis is settled and the leads worth "
+                "following are exhausted, then conclude. Do not stop early for want of budget; do not repeat yourself."
+            )
         cov = self.coverage
         if cov:
             lines.append(
@@ -611,8 +625,18 @@ class Investigation:
         live = cov.get("live_sources") if cov else None
         if live:
             lines.append(
-                "Live SIEMs (siem_search; slow, budgeted; no counts): "
-                + "; ".join(f"{x['name']} [{', '.join(x.get('event_types') or [])}]" for x in live)
+                "Live SIEMs (siem_search; slow; no counts): "
+                + "; ".join(
+                    f"{x['name']} [{', '.join(x.get('event_types') or [])}]"
+                    + (
+                        " ACTIVE LOG SOURCES BY ROLE: "
+                        + ", ".join(f"{r} {n}" for r, n in x["roles"].items())
+                        + " (siem_map has the types)"
+                        if x.get("roles")
+                        else ""
+                    )
+                    for x in live
+                )
                 + f". The stored copy above is frozen (newest stored event: {cov.get('stored_newest') or 'none'}): it is NOT current."
             )
         lines.append(
@@ -704,6 +728,23 @@ class Investigation:
         )
         return "\n".join(lines)
 
+    def efficiency(self) -> dict[str, Any]:
+        """How well the calls were spent: for comparing runs (and changes to the agent), never shown to the model."""
+        asked = [q for q in self.queries if not q.auto and q.tool in DATA_TOOLS]
+        productive = [q for q in asked if q.status != "error" and (q.new_events or q.new_entities)]
+        live = [q for q in asked if q.tool in LIVE_TOOLS]
+        decided = sum(1 for h in self.hypotheses.values() if h.status in ("supported", "refuted"))
+        return {
+            "queries": len(asked),
+            "productive": len(productive),
+            "productive_pct": round(100 * len(productive) / len(asked)) if asked else 0,
+            "errors": sum(1 for q in asked if q.status == "error"),
+            "live_searches": len(live),
+            "live_seconds": round(sum(q.ms for q in live) / 1000),
+            "hypotheses_decided": decided,
+            "hypotheses": len(self.hypotheses),
+        }
+
     def interim_report(self, reason: str) -> dict[str, Any]:
         """Deterministic (no LLM) report used when the budget ends before the model concludes."""
         leads = self.leads(5)
@@ -730,6 +771,7 @@ class Investigation:
     def report_extras(self, stop_reason: str) -> dict[str, Any]:
         return {
             "stop_reason": stop_reason,
+            "efficiency": self.efficiency(),
             "intel": self.intel,
             "playbooks_used": self.playbooks_used,
             "playbooks": self.playbook_status(),
@@ -780,9 +822,11 @@ class Clock:
     """Wall-clock budget for one agent session (a resume starts a new session with a fresh clock)."""
 
     def __init__(self, wall_s: int) -> None:
-        self.wall_s = wall_s
+        self.wall_s = wall_s  # 0 = no limit
         self.t0 = time.monotonic()
 
     @property
     def left(self) -> float:
+        if not self.wall_s:
+            return float("inf")
         return max(0.0, self.wall_s - (time.monotonic() - self.t0))

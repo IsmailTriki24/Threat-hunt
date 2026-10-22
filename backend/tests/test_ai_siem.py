@@ -2,6 +2,7 @@
 """The AI hunting agent searches the LIVE SIEMs: coverage knows about them (so an empty stored copy is not "nothing to hunt"), siem_search is
 budgeted, honest about failures, and what it shows is storable evidence; siem_findings reports what the sweep already found."""
 
+import contextlib
 import uuid
 from datetime import UTC, datetime, timedelta
 
@@ -276,3 +277,147 @@ def test_the_report_counts_live_searches_as_telemetry_and_labels_them():
     from app.ai import hunt_report
 
     assert "siem_search" in hunt_report.TELEMETRY_TOOLS and hunt_report.TOOL_LABEL["siem_search"] == "Live SIEM search"
+
+
+async def test_paging_through_a_live_result_does_not_search_the_siem_again(client, make, llm, app, wire, monkeypatch):
+    calls = []
+    real_search = tools.sq.search
+
+    async def counting(*a, **kw):
+        calls.append(kw.get("budget_s"))
+        return await real_search(*a, **kw)
+
+    monkeypatch.setattr(tools.sq, "search", counting)
+    many = [lr_log(i, originIp="203.0.113.5", impactedHost=f"srv{i}.corp.example") for i in range(1, 5)]
+    wire(make_siem(many)[0])
+    t, h = await _hunter(make, app, None)
+    p = llm(
+        Scripted(
+            nb(H1),
+            tool("siem_search", query="203.0.113.5", limit=2, hypothesis="H1"),
+            tool("siem_search", query="203.0.113.5", limit=2, offset=2, hypothesis="H1"),
+            conclude([]),
+        )
+    )
+    run = await _run(client, h, mode="quick")
+    steps = [s for s in real_steps(run) if s["name"] == "siem_search"]
+    assert [x["status"] for x in steps] == ["partial", "ok"] and len(calls) == 1  # one live search served both pages
+
+    def page(call):
+        return next(r["data"] for r in results(call["messages"]) if (r.get("data") or {}).get("sources"))
+
+    first, second = page(p.calls[2]), page(p.calls[-1])  # the older result is compacted by the time of the last call
+    assert second.get("from_held_result") and not first.get("from_held_result")
+    assert {e["id"] for e in first["events"]}.isdisjoint({e["id"] for e in second["events"]})
+
+
+async def test_a_search_matching_more_than_a_page_describes_all_of_its_matches(client, make, llm, app, wire):
+    many = [lr_log(i, originIp="203.0.113.5", impactedHost=f"srv{i % 3}.corp.example") for i in range(1, 10)]
+    wire(make_siem(many)[0])
+    t, h = await _hunter(make, app, None)
+    p = llm(Scripted(nb(H1), tool("siem_search", query="203.0.113.5", limit=2, hypothesis="H1"), conclude([])))
+    await _run(client, h, mode="quick")
+    res = next(r["data"] for r in results(p.calls[-1]["messages"]) if (r.get("data") or {}).get("sources"))
+    ov = res["overview"]
+    assert res["returned"] == 2 and ov["of"] == 9
+    assert (
+        sum(n for _, n in ov["host"]) == 9 and len(ov["host"]) == 3
+    )  # the page shows 2 hosts at most; the overview knows all 3
+    assert ov["span"][0] <= ov["span"][1]
+
+
+# ---- following a lead asks the live SIEMs, not the (nearly empty) stored copy -----------------------------------------------
+async def test_pivot_entity_asks_the_live_siems_when_there_are_some(client, make, llm, app, wire):
+    wire(make_siem(logs())[0])
+    t, h = await _hunter(make, app, None)
+    p = llm(Scripted(nb(H1), tool("pivot_entity", type="ip", value="203.0.113.5", hypothesis="H1"), conclude([])))
+    run = await _run(client, h, mode="quick")
+    step = next(s for s in real_steps(run) if s["name"] == "pivot_entity")
+    assert (
+        step["status"] == "ok" and step["total"] == 1
+    )  # the stored copy is empty: only the live SIEM could have answered
+    res = next(r["data"] for r in results(p.calls[-1]["messages"]) if (r.get("data") or {}).get("entity"))
+    assert (
+        res["via"] == "live SIEMs"
+        and res["entity"] == "ip:203.0.113.5"
+        and res["events"][0]["from"] == "LogRhythm SIEM"
+    )
+
+
+async def test_events_around_asks_the_live_siems_for_the_neighbourhood_of_a_host(client, make, llm, app, wire):
+    wire(make_siem(logs())[0])
+    t, h = await _hunter(make, app, None)
+    when = datetime.now(UTC).replace(microsecond=0).isoformat()
+    p = llm(
+        Scripted(
+            nb(H1),
+            tool("events_around", host="srv9.corp.example", at=when, window_minutes=60, hypothesis="H1"),
+            conclude([]),
+        )
+    )
+    run = await _run(client, h, mode="quick")
+    step = next(s for s in real_steps(run) if s["name"] == "events_around")
+    assert step["status"] in ("ok", "empty"), step
+    res = next(r["data"] for r in results(p.calls[-1]["messages"]) if (r.get("data") or {}).get("anchor"))
+    assert (
+        res["via"] == "live SIEMs"
+        and res["host"] == "srv9.corp.example"
+        and res["sources"][0]["name"] == "LogRhythm SIEM"
+    )
+
+
+async def test_searches_asked_for_in_one_turn_run_at_the_same_time(client, make, llm, app, wire, monkeypatch):
+    import asyncio
+
+    from app.ai.providers import LLMResponse, ToolCall
+
+    running, peak = 0, 0
+    both_in = asyncio.Event()
+    real = tools.sq.search
+
+    async def slow(*a, **kw):
+        nonlocal running, peak
+        running += 1
+        peak = max(peak, running)
+        if running == 2:
+            both_in.set()
+        try:
+            with contextlib.suppress(TimeoutError):
+                await asyncio.wait_for(
+                    both_in.wait(), 5
+                )  # serialised searches never meet here: the first waits alone and times out
+            return await real(*a, **kw)
+        finally:
+            running -= 1
+
+    monkeypatch.setattr(tools.sq, "search", slow)
+    wire(make_siem(logs())[0])
+    t, h = await _hunter(make, app, None)
+    both = LLMResponse(
+        tool_calls=[
+            ToolCall(id="a", name="siem_search", input={"query": "203.0.113.5", "hypothesis": "H1"}),
+            ToolCall(id="b", name="siem_search", input={"query": "bob", "hypothesis": "H1"}),
+        ],
+        input_tokens=10,
+        output_tokens=5,
+    )
+    llm(Scripted(nb(H1), both, conclude([])))
+    await _run(client, h, mode="quick")
+    assert peak == 2  # the session lock no longer serialises two live searches
+
+
+async def test_a_run_reports_how_well_its_calls_were_spent(client, make, llm, app, wire):
+    wire(make_siem(logs())[0])
+    t, h = await _hunter(make, app, None)
+    llm(
+        Scripted(
+            nb(H1),
+            tool("siem_search", query="203.0.113.5", hypothesis="H1"),
+            tool("siem_search", query="198.51.100.77", hypothesis="H1"),  # finds nothing
+            conclude([]),
+        )
+    )
+    run = await _run(client, h, mode="quick")
+    eff = run["conclusion"]["efficiency"]
+    assert eff["queries"] == 2 and eff["productive"] == 1 and eff["productive_pct"] == 50
+    assert eff["live_searches"] == 2 and eff["errors"] == 0 and eff["hypotheses"] == 1

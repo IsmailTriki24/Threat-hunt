@@ -12,8 +12,10 @@ import contextlib
 import difflib
 import ipaddress
 import json
+import logging
 import re
 import time
+from collections import Counter
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from typing import Any, ClassVar, Literal
@@ -26,8 +28,10 @@ from app.ai import enrich, playbooks, websearch
 from app.ai import state as st
 from app.auth.deps import Principal
 from app.auth.rbac import Permission
+from app.connectors._http import SourceError
 from app.core.config import get_settings
 from app.detections.models import Alert, DetectionRule
+from app.events import siem_map
 from app.events import siem_query as sq
 from app.events.fields import FIELDS
 from app.events.search.base import SearchBackend
@@ -37,6 +41,8 @@ from app.intel import types as intel_types
 from app.intel.models import IntelEntity
 from app.iochunt.models import Ioc, IocHunt, IocMatch
 from app.mitre.models import MitreTechnique
+
+log = logging.getLogger("hunt.ai.tools")
 
 MAX_RESULT_CHARS = 12_000
 MAX_HITS = 25
@@ -78,6 +84,9 @@ class ToolContext:
     web_calls: int = 0  # web searches made in this run (they leave the platform, so they are budgeted separately)
     enrich_calls: int = 0  # indicator look-ups made in this run (automatic + requested)
     siem_calls: int = 0  # live SIEM searches made in this run (each loads a production SIEM and takes 10-60 s)
+    siem_held: dict[tuple[Any, ...], dict[str, Any]] = field(
+        default_factory=dict
+    )  # results of this run's live searches by question, so paging through one costs no new search
 
 
 @dataclass
@@ -225,6 +234,39 @@ def _compact(doc: dict[str, Any]) -> dict[str, Any]:
     return out
 
 
+OVERVIEW_FIELDS = (
+    ("host", "host.hostname"),
+    ("user", "user.name"),
+    ("process", "process.name"),
+    ("action", "action"),
+    ("src_ip", "network.src_ip"),
+    ("dst_ip", "network.dst_ip"),
+    ("event_type", "event_type"),
+    ("source", "source"),
+)
+
+
+def _overview(docs: list[dict[str, Any]]) -> dict[str, Any]:
+    """What ALL the held matches of a search look like (most common values per field), so a page of a few says what the other hundreds are."""
+    out: dict[str, Any] = {}
+    for label, path in OVERVIEW_FIELDS:
+        counts: Counter[str] = Counter()
+        for d in docs:
+            v: Any = d
+            for part in path.split("."):
+                v = v.get(part) if isinstance(v, dict) else None
+            if isinstance(v, str | int) and not isinstance(v, bool) and str(v):
+                counts[str(v)[:80]] += 1
+            elif isinstance(v, list):
+                counts.update(str(x)[:80] for x in v[:3] if isinstance(x, str | int))
+        if counts:
+            out[label] = [[k, n] for k, n in counts.most_common(5)]
+    stamps = sorted(str(d["timestamp"]) for d in docs if d.get("timestamp"))
+    if stamps:
+        out["span"] = [stamps[0], stamps[-1]]
+    return out
+
+
 def _fit(events: list[dict[str, Any]], budget: int = MAX_RESULT_CHARS - 1500) -> list[dict[str, Any]]:
     """Drop trailing events (never silently: callers report returned/next_offset) until the page fits the result size cap."""
     out = list(events)
@@ -241,6 +283,25 @@ def _validation_message(exc: ValidationError) -> str:
         if close:
             msg += f" (did you mean: {', '.join(close)}?)"
     return msg
+
+
+async def _live_sources(ctx: ToolContext) -> list[Any]:
+    """The tenant's searchable SIEM sources. The shared session is held only for this lookup, never while a SIEM is being searched."""
+    async with ctx.session_lock:
+        return list(await sq.searchable_sources(ctx.session, ctx.principal.tid))
+
+
+async def _lr_maps(sources: list[Any]) -> list[tuple[Any, siem_map.LrMap]]:
+    """(source, map of its log sources) for each LogRhythm among `sources`; one that cannot be read is left out, never fatal."""
+    out: list[tuple[Any, siem_map.LrMap]] = []
+    for ds in sources:
+        if ds.connector_type != "logrhythm":
+            continue
+        try:
+            out.append((ds, await siem_map.load(ds.id, sq.lr_connector(get_settings(), ds))))
+        except (SourceError, ValueError, KeyError):
+            continue
+    return out
 
 
 def _window(args: Any) -> TimeRange:
@@ -425,14 +486,19 @@ class PivotEntity(Tool):
     name = "pivot_entity"
     description = (
         "Follow a lead: find everywhere an entity (host, user, ip, domain, hash, process, file) appears across ALL hosts and event "
-        "types - one call runs the relevant field searches in parallel and returns, per field, the match count, the hosts it touched "
-        "and the newest events. Use it as the default next step for any suspicious indicator."
+        "types. When live SIEMs are configured this asks THEM (the same engine as siem_search, so SLOW, 10-90 s, and its results can be paged "
+        "with offset); without one it reads the stored copy, which only holds what earlier searches showed you. Use it as the default next "
+        "step for a suspicious indicator instead of composing the equivalent siem_search yourself."
     )
     input_model = PivotIn
     permission = Permission.EVENTS_READ
+    timeout_s = 120.0
+    retry = False
 
     async def run(self, ctx: ToolContext, args: PivotIn, scope: Scope) -> dict[str, Any]:
         value = args.value.strip()
+        if await _live_sources(ctx):
+            return await self._live(ctx, args, value, scope)
         if args.type == "hash":
             algo = _HASH_LEN.get(len(value))
             if algo is None or not re.fullmatch(r"[A-Fa-f0-9]+", value):
@@ -491,6 +557,43 @@ class PivotEntity(Tool):
             )
         return out
 
+    async def _live(self, ctx: ToolContext, args: PivotIn, value: str, scope: Scope) -> dict[str, Any]:
+        if args.type == "hash" and (_HASH_LEN.get(len(value)) is None or not re.fullmatch(r"[A-Fa-f0-9]+", value)):
+            raise ToolError("hash must be a hex md5 (32), sha1 (40) or sha256 (64) digest", "invalid_arguments")
+        field_ = _LIVE_PIVOT_FIELD.get(
+            args.type
+        )  # None: a bare indicator, which each SIEM searches in every field it can
+        res = await SiemSearch().run(
+            ctx,
+            SiemSearchIn(
+                query=_term(field_, value),
+                hours_back=args.hours_back,
+                limit=10,
+                purpose=args.purpose,
+                hypothesis=args.hypothesis,
+            ),
+            scope,
+        )
+        return {"entity": f"{args.type}:{value}", "via": "live SIEMs", **res}
+
+
+def _term(field_: str | None, value: str) -> str:
+    """One query term for a value: bare when it is a plain token, quoted when it needs it."""
+    if re.search(r"[\s\"()|]", value):
+        value = '"' + value.replace('"', " ").strip() + '"'
+    return f"{field_}:{value}" if field_ else value
+
+
+_LIVE_PIVOT_FIELD: dict[str, str | None] = {
+    "host": "host.hostname",
+    "user": "user.name",
+    "process": "process.name",
+    "file": "file.name",
+    "ip": None,
+    "domain": None,
+    "hash": None,
+}
+
 
 def _shrink(fields: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """Keep the whole per-field summary but trim events until the payload fits."""
@@ -506,11 +609,13 @@ class EventsAround(Tool):
     name = "events_around"
     description = (
         "Temporal neighbourhood of an event (or host + time): everything on that host (and/or by that user) within +/- N minutes, "
-        "oldest first, each with its offset in seconds. Proximity suggests relationships (execution, persistence, credential misuse, "
-        "lateral movement) but does not prove causation."
+        "oldest first, each with its offset in seconds. Asks the live SIEMs when any is configured (SLOW, 10-90 s), else the stored copy. "
+        "Proximity suggests relationships (execution, persistence, credential misuse, lateral movement) but does not prove causation."
     )
     input_model = AroundIn
     permission = Permission.EVENTS_READ
+    timeout_s = 150.0
+    retry = False
 
     async def run(self, ctx: ToolContext, args: AroundIn, scope: Scope) -> dict[str, Any]:
         host, user, anchor = args.host, None, None
@@ -527,6 +632,8 @@ class EventsAround(Tool):
         if anchor is None or not (host or user):
             raise ToolError("provide event_id, or host together with a valid ISO-8601 `at`", "invalid_arguments")
         w = timedelta(minutes=args.window_minutes)
+        if await _live_sources(ctx):
+            return await self._live(ctx, args, host, user, anchor, w, scope)
         conds: list[Condition] = []
         if args.scope in ("host", "both") and host:
             conds.append(Condition(filter=_eq("host.hostname", host)))
@@ -562,6 +669,66 @@ class EventsAround(Tool):
         }
         if res.total > len(events):
             out["partial"] = res.total <= 500
+            out["note"] = "more events in the window than shown; narrow window_minutes or add a query"
+        return out
+
+    async def _live(
+        self,
+        ctx: ToolContext,
+        args: AroundIn,
+        host: str | None,
+        user: str | None,
+        anchor: datetime,
+        w: timedelta,
+        scope: Scope,
+    ) -> dict[str, Any]:
+        asks = []
+        if args.scope in ("host", "both") and host:
+            asks.append(_term("host.hostname", host))
+        if args.scope in ("user", "both") and user:
+            asks.append(_term("user.name", user))
+        if not asks:
+            raise ToolError("no host/user available for the requested scope", "invalid_arguments")
+        events: dict[str, dict[str, Any]] = {}
+        sources: list[Any] = []
+        total, partial = 0, False
+        for ask in asks:  # cross-field OR does not exist, so a host + user neighbourhood is two searches
+            res = await SiemSearch().run(
+                ctx,
+                SiemSearchIn(
+                    query=f"{ask} {args.query}".strip(),
+                    start=(anchor - w).isoformat(),
+                    end=(anchor + w).isoformat(),
+                    limit=min(args.limit, MAX_HITS),
+                    order="oldest",
+                    purpose=args.purpose,
+                    hypothesis=args.hypothesis,
+                ),
+                scope,
+            )
+            total += int(res.get("total") or 0)
+            partial = partial or bool(res.get("partial"))
+            sources = sources or res.get("sources", [])
+            for e in res.get("events", []):
+                events.setdefault(e["id"], e)
+        ordered = sorted(events.values(), key=lambda e: str(e.get("timestamp")))
+        for e in ordered:
+            ts = _parse_ts(e.get("timestamp"))
+            if ts:
+                e["offset_s"] = int((ts - anchor).total_seconds())
+        shown = _fit(ordered)
+        out: dict[str, Any] = {
+            "anchor": anchor.isoformat(),
+            "host": host,
+            "via": "live SIEMs",
+            "total": total,
+            "returned": len(shown),
+            "events": shown,
+            "sources": sources,
+            "caveat": "temporal proximity is not causation; confirm relationships with process lineage, shared identifiers or network flows",
+        }
+        if partial or total > len(shown):
+            out["partial"] = True
             out["note"] = "more events in the window than shown; narrow window_minutes or add a query"
         return out
 
@@ -677,6 +844,14 @@ class DataCoverage(Tool):
             return {str(b.key): b.count for b in (res.aggregations[n].buckets if n in res.aggregations else [])}
 
         live = await sq.live_sources(ctx.session, ctx.principal.tid)
+        try:  # which kinds of log LogRhythm is really receiving right now: the first thing a hunt needs to know
+            for ds, m in await _lr_maps(await sq.searchable_sources(ctx.session, ctx.principal.tid)):
+                roles = {r: v["active_sources"] for r, v in siem_map.summary(m).get("by_role", {}).items()}
+                for entry in live:
+                    if entry["name"] == ds.name:
+                        entry["roles"] = roles
+        except Exception:  # noqa: BLE001 - coverage never fails because the map could not be read
+            log.warning("could not read the LogRhythm log source map for the coverage", exc_info=True)
         return {
             "total": res.total,
             "returned": res.total and 1,
@@ -1082,6 +1257,15 @@ class SiemSearchIn(_Traced):
     hours_back: int = Field(default=0, ge=0, le=336, description="0 = the run window (max 14 days)")
     start: str | None = Field(default=None, max_length=40, description="Optional ISO-8601 window start")
     end: str | None = Field(default=None, max_length=40, description="Optional ISO-8601 window end")
+    log_source_types: list[str] = Field(
+        default_factory=list,
+        max_length=10,
+        description=(
+            "LogRhythm only: ask just the log sources of these types (names or parts of names as siem_map lists them, or a role such as "
+            "web_server, proxy_gateway, firewall, endpoint_agent, windows_events). Much faster and quieter than the whole SIEM: use it "
+            "whenever you know which kind of log can answer."
+        ),
+    )
     where: Literal["all", "logrhythm", "trend"] = Field(
         default="all",
         description="logrhythm: network, web, firewall and domain-controller sign-in logs. trend: endpoint, cloud/Entra identity, product detections.",
@@ -1095,9 +1279,9 @@ class SiemSearch(Tool):
     name = "siem_search"
     description = (
         "Search the LIVE SIEMs (LogRhythm, Trend Vision One) directly - the authoritative source for recent activity. Each source is asked "
-        "what it can answer and every returned record is re-checked against your whole query, so results are real hits. SLOW (10-90 s) and "
-        "budgeted per run: ask focused questions (an indicator, a host/user, a process) over the window you need, not broad words. "
-        "Query syntax: space = AND; for alternatives use field:(a|b), never `field:a OR field:b`; `limit` is at most 25. LogRhythm cannot filter "
+        "what it can answer and every returned record is re-checked against your whole query, so results are real hits. SLOW (10-90 s): "
+        "ask focused questions (an indicator, a host/user, a process) over the window you need, not broad words. "
+        "Query syntax: space = AND; for alternatives use field:(a|b), never `field:a OR field:b`; `limit` is at most 25. A search keeps up to 500 matches: read the rest by repeating the SAME query with `offset` = next_offset (that does not search the SIEM again, so paging is free). When more than a page matches, `overview` lists the most common hosts, processes, actions and IPs of ALL the matches: use it to see what the rest is and to narrow the question instead of reading page after page. LogRhythm cannot filter "
         "on event_type or outcome (they are applied afterwards to the logs it returns), so search it by host, user or IP, then read the "
         "outcome/action of the returned events. "
         "LogRhythm holds network, web-server, firewall and domain-controller sign-in logs (no endpoint process data); Trend holds endpoint "
@@ -1107,50 +1291,80 @@ class SiemSearch(Tool):
     )
     input_model = SiemSearchIn
     permission = Permission.EVENTS_READ
-    uses_session = True
-    timeout_s = 120.0
+    timeout_s = 120.0  # no session lock for the whole call: parallel searches really run in parallel (the lock covers only the lookup)
     retry = False
 
     async def run(self, ctx: ToolContext, args: SiemSearchIn, scope: Scope) -> dict[str, Any]:
         settings = get_settings()
-        if ctx.siem_calls >= settings.ai_siem_max_calls:
-            raise ToolError(
-                "the live SIEM search budget for this run is used up; use what you have (search_events, pivot on stored evidence) or conclude",
-                "budget",
+        # the same question with another offset/limit/order is the agent paging through a result it already holds: no SIEM is asked again
+        key = (args.query, args.where, args.hours_back, args.start, args.end, tuple(args.log_source_types))
+        out = ctx.siem_held.get(key)
+        held = out is not None
+        if out is None:
+            if settings.ai_siem_max_calls and ctx.siem_calls >= settings.ai_siem_max_calls:
+                raise ToolError(
+                    "the live SIEM search budget for this run is used up; use what you have (search_events, pivot on stored evidence) or conclude",
+                    "budget",
+                )
+            tr = _window(args)
+            avail = await _live_sources(ctx)
+            if args.where != "all":
+                avail = [d for d in avail if (d.connector_type == "logrhythm") == (args.where == "logrhythm")]
+            if not avail:
+                raise ToolError(
+                    "no live SIEM source of that kind is configured; only the stored copy can be searched",
+                    "unavailable",
+                )
+            type_ids: list[int] = []
+            if args.log_source_types:
+                maps = await _lr_maps(avail)
+                if not maps:
+                    raise ToolError(
+                        "log_source_types needs a LogRhythm source whose log sources can be listed", "unavailable"
+                    )
+                missing = list(args.log_source_types)
+                for _, m in maps:
+                    ids, missing = siem_map.resolve_types(m, missing)
+                    type_ids += [i for i in ids if i not in type_ids]
+                if missing:
+                    raise ToolError(
+                        f"no LogRhythm log source type matches {missing}; call siem_map to see the types that exist",
+                        "invalid_arguments",
+                    )
+            try:
+                query = sq.SiemQuery(
+                    text=args.query, time_range=tr, sources=[d.id for d in avail], limit=1, source_type_ids=type_ids
+                )
+            except ValidationError as exc:
+                raise ToolError(f"invalid query: {_validation_message(exc)}", "invalid_query") from None
+            ctx.siem_calls += 1
+            out = await sq.search(
+                ctx.session,
+                None,
+                settings,
+                ctx.principal.tid,
+                query,
+                budget_s=90,
+                read_cap=sq.CAP_PER_SEARCH,  # the agent pages through a small result of its own: unchanged by the SIEM page's larger one
+                hold_max=500,
+                page_size=None,
+                sources=avail,
             )
-        tr = _window(args)
-        avail = await sq.searchable_sources(ctx.session, ctx.principal.tid)
-        if args.where != "all":
-            avail = [d for d in avail if (d.connector_type == "logrhythm") == (args.where == "logrhythm")]
-        if not avail:
-            raise ToolError(
-                "no live SIEM source of that kind is configured; only the stored copy can be searched", "unavailable"
-            )
-        try:
-            query = sq.SiemQuery(text=args.query, time_range=tr, sources=[d.id for d in avail], limit=1)
-        except ValidationError as exc:
-            raise ToolError(f"invalid query: {_validation_message(exc)}", "invalid_query") from None
-        ctx.siem_calls += 1
-        out = await sq.search(
-            ctx.session,
-            None,
-            settings,
-            ctx.principal.tid,
-            query,
-            budget_s=90,
-            read_cap=sq.CAP_PER_SEARCH,  # the agent pages through a small result of its own: unchanged by the SIEM page's larger one
-            hold_max=500,
-            page_size=None,
-        )
-        if out["empty_query"]:
-            raise ToolError(
-                "nothing searchable in that query: give an indicator, user, host, process or a specific word",
-                "invalid_query",
-            )
+            if out["empty_query"]:
+                raise ToolError(
+                    "nothing searchable in that query: give an indicator, user, host, process or a specific word",
+                    "invalid_query",
+                )
         sources = out["sources"]
-        if sources and all(s["status"] == "not_applicable" for s in sources):
+        if not held and sources and all(s["status"] == "not_applicable" for s in sources):
             ctx.siem_calls -= 1  # no SIEM was loaded, so a query nothing could answer costs no budget
         failed = [s for s in sources if s["status"] == "error"]
+        if not held and not failed and out["hits"]:
+            if len(ctx.siem_held) >= 8:
+                ctx.siem_held.pop(
+                    next(iter(ctx.siem_held))
+                )  # oldest first: a run holds a few results, not all it ever made
+            ctx.siem_held[key] = out
         total = out["total"]
         if failed and total == 0:
             answered = [s["name"] for s in sources if s["status"] in ("ok", "partial")]
@@ -1194,6 +1408,10 @@ class SiemSearch(Tool):
         }
         if out["note"]:
             result["note"] = out["note"]
+        if total > len(events):
+            result["overview"] = {"of": total, **_overview(out["hits"])}  # the whole held result, not just this page
+        if held:
+            result["from_held_result"] = True  # paged from the search already made: no SIEM was asked again
         if failed:
             result["unanswered_sources"] = [s["name"] for s in failed]
             result["partial"] = True
@@ -1212,6 +1430,61 @@ class SiemSearch(Tool):
 class FindingsIn(_In):
     hours_back: int = Field(default=0, ge=0, le=720, description="0 = the run window")
     limit: int = Field(default=15, ge=1, le=30)
+
+
+class SiemMapIn(_In):
+    about: str = Field(
+        default="",
+        max_length=120,
+        description="Optional words (e.g. 'apache web proxy'): keep only the log source types that match them",
+    )
+    host: str = Field(
+        default="",
+        max_length=255,
+        description="Optional host name: list the log sources LogRhythm has FOR that host, whether they are active, and what they are",
+    )
+    hours: int = Field(default=24, ge=1, le=168, description="A source is active when it logged within this many hours")
+
+
+class SiemMap(Tool):
+    name = "siem_map"
+    description = (
+        "WHERE the data lives, before you search for it: the LogRhythm log sources that are active (enabled and logging), grouped by role "
+        "(web_server, proxy_gateway, firewall, endpoint_agent, windows_events, linux_unix, directory_auth, ...) with their log source types, "
+        "how many sources each has and example hosts; plus the Trend datasets. With `host` it lists the log sources of that host and says "
+        "when LogRhythm has none for it or all are silent (an empty search then proves nothing). Cheap (cached). Call it first, then pass the "
+        "types that can answer your hypothesis as log_source_types to siem_search instead of searching the whole SIEM."
+    )
+    input_model = SiemMapIn
+    permission = Permission.EVENTS_READ
+    timeout_s = 90.0
+    retry = False
+
+    async def run(self, ctx: ToolContext, args: SiemMapIn, scope: Scope) -> dict[str, Any]:
+        sources = await _live_sources(ctx)
+        if not sources:
+            raise ToolError("no live SIEM source is configured", "unavailable")
+        maps = await _lr_maps(sources)
+        out: dict[str, Any] = {
+            "logrhythm": [
+                {"source": ds.name, **siem_map.summary(m, about=args.about, host=args.host, hours=args.hours)}
+                for ds, m in maps
+            ],
+            "trend": [
+                {"name": ds.name, "kind": sq.kind_of(ds), "event_types": sq.LIVE_TYPES.get(sq.kind_of(ds), [])}
+                for ds in sources
+                if ds.connector_type != "logrhythm"
+            ],
+        }
+        if any(ds.connector_type == "logrhythm" for ds in sources) and not maps:
+            out["note"] = (
+                "The LogRhythm log sources could not be listed (admin API unavailable): search it without log_source_types."
+            )
+        out["total"] = (
+            sum(len(s.get("by_role") or {}) + len(s.get("log_sources_of_host") or []) for s in out["logrhythm"]) or 1
+        )
+        out["returned"] = out["total"]
+        return out
 
 
 class SiemFindings(Tool):
@@ -1316,6 +1589,7 @@ TOOLS: dict[str, Tool] = {
         EnrichIndicator(),
         HuntPlaybook(),
         Notebook(),
+        SiemMap(),
     )
 }
 

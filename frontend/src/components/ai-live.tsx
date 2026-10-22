@@ -493,7 +493,7 @@ function ThinkingRow({ state }: { state: LiveState }) {
       <div className="flex min-h-[34px] items-center gap-2 rounded-md px-1 text-sm text-violet-200">
         <span>{connecting ? "Connecting to the investigator" : t?.final ? "Wrapping up - writing the conclusion" : "Deciding the next move"}</span>
         <span className="flex gap-1" aria-hidden="true">{[0, 1, 2].map((i) => <span key={i} className="h-1.5 w-1.5 animate-dot-bounce rounded-full bg-violet-300" style={{ animationDelay: `${i * 0.18}s` }} />)}</span>
-        {t && limit && <span className="ml-auto font-mono text-xs text-muted">turn {t.step}/{limit}</span>}
+        {t && <span className="ml-auto font-mono text-xs text-muted">turn {t.step}{limit ? `/${limit}` : ""}</span>}
       </div>
     </li>
   );

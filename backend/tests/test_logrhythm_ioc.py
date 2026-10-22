@@ -11,7 +11,15 @@ from sqlalchemy import select
 
 from app.auth.rbac import Role
 from app.connectors import _http, registry
-from app.connectors.logrhythm import FT_HASH, FT_HOSTNAME, FT_IP, FT_SENDER, FT_URL, ioc_query_filter
+from app.connectors.logrhythm import (
+    FT_HASH,
+    FT_HOSTNAME,
+    FT_IP,
+    FT_MSG_SOURCE_TYPE,
+    FT_SENDER,
+    FT_URL,
+    ioc_query_filter,
+)
 from app.connectors.logrhythm_console import BudgetExceeded
 from app.core.config import get_settings
 from app.core.crypto import encrypt_json
@@ -125,7 +133,8 @@ def make_siem(logs):
                 )
             return httpx.Response(
                 200,
-                json=[
+                json=getattr(handler, "logsources", None)
+                or [
                     {"id": 1, "logSourceType": {"id": 1000639, "name": "Win Sec"}},
                     {"id": 2, "logSourceType": {"id": 1000639, "name": "Win Sec"}},
                     {"id": 3, "logSourceType": {"id": 86, "name": "Cisco Router"}},
@@ -156,6 +165,14 @@ def make_siem(logs):
                 v["valueType"] == 5 and not isinstance(v["value"], str) for i in items_of(flt) for v in i["values"]
             )
             hit = []
+            scope = [
+                v["value"]
+                for i in flt["filterGroup"]["filterItems"][
+                    1:
+                ]  # a log source type scope is AND-ed on beside the term group
+                if i.get("filterType") == FT_MSG_SOURCE_TYPE
+                for v in i["values"]
+            ]
             for i in items_of(flt):
                 for v in i["values"]:
                     val = v["value"]["value"] if isinstance(v["value"], dict) else v["value"]
@@ -165,7 +182,9 @@ def make_siem(logs):
                     needle = str(val).strip("%").lstrip(".").lower()
                     hit += [lg for lg in logs if needle and any(needle in str(x).lower() for x in lg.values())]
             tid = f"fail-{len(seen)}" if bad else f"ok-{len(seen)}"
-            handler.results[tid] = list({id(x): x for x in hit}.values())
+            handler.results[tid] = [
+                x for x in {id(x): x for x in hit}.values() if not scope or x.get("msgSourceTypeId") in scope
+            ]
             return httpx.Response(200, json={"TaskId": tid})
         guid = body["data"]["searchGuid"]
         origin = body["data"]["paginator"]["origin"]

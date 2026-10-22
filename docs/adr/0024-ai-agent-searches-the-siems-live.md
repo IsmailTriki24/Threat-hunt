@@ -8,7 +8,7 @@ collected, nothing to hunt" without ever asking a SIEM.
 
 **Decision.**
 * **`siem_search`** (new tool): the live engine of the SIEM Search page (`events/siem_query.py`). Same query language, per-source translation, and local
-  re-check of every record; each event says which source returned it. Slow (10-90 s), so it is **budgeted** (`ai_siem_max_calls`, default 6 per run),
+  re-check of every record; each event says which source returned it. Slow (10-90 s), so it has **no per-run count limit by default** (`ai_siem_max_calls`, 0 = unlimited; an operator may set one; the run's step, time and token limits still bound it),
   has its own timeout (120 s), is **never retried** on a transient failure, and is served from the run cache when repeated. Honest statuses: a source
   that failed makes that part **UNANSWERED** (an error, not an empty result, unless other sources answered); conditions a source could not be asked are
   listed (`not_asked`); empty means only "no log matched in these sources and this window".

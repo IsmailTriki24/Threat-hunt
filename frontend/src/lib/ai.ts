@@ -30,6 +30,10 @@ export interface AiStep {
   attempts?: number; purpose?: string; hypothesis?: string | null; injection_suspected?: boolean; rejected?: string[]; attempt?: number; sources?: { title: string; url: string; domain: string }[]; intel?: IntelSummary; playbook?: { id: string; title: string; attack: string[]; feasibility: string; missing: string[] };
   pb?: { id: string; step: number; of: number; purpose: string; confidence: number };
 }
+export interface AiLesson {
+  id: string; cue: string; lesson: string; evidence: string; confidence: "low" | "medium" | "high"; origin: "auto" | "analyst";
+  status: "active" | "disabled"; times_shown: number; run_id: string | null; created_at: string;
+}
 export interface AiRun {
   id: string; hunt_id: string | null; case_id?: string | null; case_number?: number | null; goal: string; status: "COMPLETED" | "INCOMPLETE" | "FAILED"; provider: string; model: string;
   hours_back: number; mode?: string; resumable?: boolean; steps: AiStep[]; conclusion: AiConclusion | null; saved_findings: string[];

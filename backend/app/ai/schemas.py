@@ -73,3 +73,28 @@ class RunOut(BaseModel):
     output_tokens: int
     error: str
     created_at: datetime
+
+
+class LessonOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: uuid.UUID
+    cue: str
+    lesson: str
+    evidence: str
+    confidence: str
+    origin: str
+    status: str
+    times_shown: int
+    run_id: uuid.UUID | None
+    created_at: datetime
+
+
+class LessonIn(_In):
+    cue: str = Field(min_length=8, max_length=200)
+    lesson: str = Field(min_length=20, max_length=400)
+    evidence: str = Field(default="", max_length=300)
+
+
+class LessonPatch(_In):
+    status: Literal["active", "disabled"]

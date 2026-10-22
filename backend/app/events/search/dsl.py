@@ -54,7 +54,9 @@ def _filter(neg: bool, field: str, sym: str, raw: str) -> "Filter":
         elif not quoted and value.endswith("*") and len(value) > 1:
             kwargs.update(op="prefix", value=value[:-1])
         elif not quoted and value.startswith("*"):
-            raise QueryParseError("leading wildcard requires a trailing one too (*value*)")
+            raise QueryParseError(
+                f"leading wildcard requires a trailing one too: write {field}:{value}* (contains {value[1:]!r})"
+            )
         elif spec.kind == "text":
             kwargs.update(op="contains", value=value)
         else:
@@ -75,7 +77,7 @@ def _make_filter(**kw: Any) -> "Filter":
 def parse(text: str) -> tuple[str | None, list["Filter"]]:
     if len(text) > MAX_TEXT:
         raise QueryParseError(f"query text longer than {MAX_TEXT} characters")
-    tokens = _TOKEN.findall(text)
+    tokens = _merge_same_field_or(_TOKEN.findall(text))
     free: list[str] = []
     filters: list[Filter] = []
     pending_not = False
@@ -99,7 +101,11 @@ def parse(text: str) -> tuple[str | None, list["Filter"]]:
             last_was_filter = True
             continue
         if tok == "OR" and (last_was_filter or _next_is_filter(tokens, i)):
-            raise QueryParseError("OR works between free-text terms only; use field:(a|b) for alternatives")
+            raise QueryParseError(
+                "OR works between free-text terms only. Exact alternatives of ONE field: field:(a|b). "
+                "Patterns (with *) or different "
+                "fields cannot be OR-ed: run one query per condition"
+            )
         if pending_not:
             free.append("NOT")
             pending_not = False
@@ -110,6 +116,37 @@ def parse(text: str) -> tuple[str | None, list["Filter"]]:
     if pending_not:
         raise QueryParseError("dangling NOT")
     return (" ".join(free) or None), filters
+
+
+def _exact_values(raw: str) -> list[str] | None:
+    """The values of `x` or `(x|y)` if all are plain exact values (no wildcard, quote or space); otherwise None."""
+    items = raw[1:-1].split("|") if raw.startswith("(") and raw.endswith(")") else [raw]
+    return items if items and all(i and not re.search(r'[*?"\s()|]', i) for i in items) else None
+
+
+def _merge_same_field_or(tokens: list[str]) -> list[str]:
+    """`f:a OR f:b` is exactly `f:(a|b)`: whoever writes the first gets the second instead of an error."""
+    out: list[str] = []
+    i = 0
+    while i < len(tokens):
+        out.append(tokens[i])
+        i += 1
+        while i + 1 < len(tokens) and tokens[i] == "OR" and (len(out) < 2 or out[-2] != "NOT"):
+            a, b = _FIELD_EXPR.match(out[-1]), _FIELD_EXPR.match(tokens[i + 1])
+            if not (
+                a
+                and b
+                and a.group(1) == b.group(1) == ""
+                and a.group(3) == b.group(3) == ":"
+                and a.group(2) == b.group(2)
+            ):
+                break
+            va, vb = _exact_values(a.group(4)), _exact_values(b.group(4))
+            if va is None or vb is None:
+                break
+            out[-1] = f"{a.group(2)}:({'|'.join([*va, *vb])})"
+            i += 2
+    return out
 
 
 def _next_is_filter(tokens: list[str], i: int) -> bool:

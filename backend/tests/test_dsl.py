@@ -93,3 +93,23 @@ async def test_text_query_executes_and_endpoint_reports_errors(client, make):
     assert bad.status_code == 400 and "unknown field" in bad.json()["error"]["message"]
     ok = await client.post("/api/v1/queries/parse", headers=h, json={"text": "process.name:cmd.exe hello"})
     assert ok.json()["q"] == "hello" and ok.json()["filters"][0]["field"] == "process.name"
+
+
+def test_same_field_exact_alternatives_written_with_or_mean_the_in_list():
+    _, filters = parse("process.name:php OR process.name:php-fpm OR process.name:(sh|bash) evil")
+    assert len(filters) == 1 and filters[0].op == "in" and filters[0].value == ["php", "php-fpm", "sh", "bash"]
+
+
+def test_or_that_cannot_be_an_in_list_is_refused_with_the_way_out():
+    for q in (
+        "message:*php* OR message:*cgi*",
+        "process.name:a OR host.hostname:b",
+        "NOT process.name:a OR process.name:b",
+    ):
+        with pytest.raises(QueryParseError, match="one query per condition"):
+            parse(q)
+
+
+def test_a_leading_wildcard_error_says_what_to_write_instead():
+    with pytest.raises(QueryParseError, match=r"write file\.name:\*\.php\*"):
+        parse("file.name:*.php")

@@ -10,6 +10,7 @@ import { liveFromRun } from "@/lib/ai-stream";
 import { ErrorBoundary } from "./error-boundary";
 import { Icon, useHuntStream } from "./ai-live";
 import { AgentWindow, WindowPill } from "./ai-window";
+import { Lessons } from "./ai-lessons";
 
 const EXAMPLES = [
   "Is anything abnormal in the last day?",
@@ -108,7 +109,7 @@ export function AiHuntingView() {
           <div className="flex flex-wrap items-center gap-3 text-xs">
             <div role="radiogroup" aria-label="Depth" className="inline-flex overflow-hidden rounded-md border border-line">
               {MODES.map((m) => { const lim = status.data?.modes?.[m.id]; return (
-                <button key={m.id} role="radio" aria-checked={mode === m.id} type="button" disabled={busy} title={`${m.hint}${lim ? ` · up to ${lim.max_tool_calls} queries, ${Math.round(lim.wall_s / 60 * 10) / 10} min` : ""}`} onClick={() => setMode(m.id)}
+                <button key={m.id} role="radio" aria-checked={mode === m.id} type="button" disabled={busy} title={`${m.hint}${lim ? (lim.max_tool_calls && lim.wall_s ? ` · up to ${lim.max_tool_calls} queries, ${Math.round(lim.wall_s / 60 * 10) / 10} min` : " · no query or time limit") : ""}`} onClick={() => setMode(m.id)}
                   className={`px-3 py-1 transition ${mode === m.id ? "bg-violet-500/20 text-violet-200" : "text-muted hover:text-slate-200"}`}>{m.label}</button>
               ); })}
             </div>
@@ -141,6 +142,7 @@ export function AiHuntingView() {
       {!winOpen && !history && state.phase !== "idle" && <WindowPill state={state} onOpen={() => setWinOpen(true)} onDismiss={live.reset} />}
 
       {enabled && <Translate />}
+      {enabled && <Lessons />}
       {runs.data && runs.data.length > 0 && (
         <div className="space-y-1.5">
           <h2 className="text-xs font-semibold">Previous runs</h2>

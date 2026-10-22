@@ -39,6 +39,7 @@ os.environ.update(
     JWT_SECRET="test-secret-test-secret-test-secret-0123456789",
     LOG_LEVEL="WARNING",
     SEED_DEMO_DATA="false",
+    AI_LEARN_LESSONS="false",  # an extra model call after each run would consume a scripted provider; the lesson tests switch it on
 )
 os.environ.pop("METRICS_TOKEN", None)
 

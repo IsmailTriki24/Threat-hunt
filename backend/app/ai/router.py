@@ -10,13 +10,25 @@ from fastapi.responses import StreamingResponse
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.ai import casebuilder, tools
+from app.ai import casebuilder, lessons, tools
 from app.ai import state as st
 from app.ai import translate as translator
 from app.ai.agent import Outcome, Sink, run_agent
-from app.ai.models import AiRun
+from app.ai.models import AiLesson, AiRun
 from app.ai.providers import LLMProvider, ProviderUnavailable, build_provider
-from app.ai.schemas import CaseLinkOut, ResumeIn, RunCreate, RunOut, SaveIn, Status, TranslateIn, TranslateOut
+from app.ai.schemas import (
+    CaseLinkOut,
+    LessonIn,
+    LessonOut,
+    LessonPatch,
+    ResumeIn,
+    RunCreate,
+    RunOut,
+    SaveIn,
+    Status,
+    TranslateIn,
+    TranslateOut,
+)
 from app.ai.tools import Ledger, ToolContext
 from app.audit import service as audit
 from app.auth.deps import Principal, require
@@ -72,11 +84,11 @@ async def status(
         intel_providers=await _intel_providers(session, settings, principal),
         modes={
             name: {
-                "max_steps": min(m.max_steps, settings.ai_max_steps),
-                "max_tool_calls": min(m.max_tool_calls, settings.ai_max_tool_calls),
-                "wall_s": min(m.wall_s, settings.ai_run_timeout_s),
+                "max_steps": _limits(name, settings).max_steps,
+                "max_tool_calls": _limits(name, settings).max_tool_calls,
+                "wall_s": _limits(name, settings).wall_s,
             }
-            for name, m in st.MODES.items()
+            for name in st.MODES
         },
     )
 
@@ -149,7 +161,9 @@ async def _drive(
         waiters.add(asyncio.create_task(stop.wait()))
     try:
         # the agent enforces its own wall-clock budget; the timeout is only the backstop for a stuck provider/tool call
-        await asyncio.wait(waiters, timeout=lim.wall_s + 45, return_when=asyncio.FIRST_COMPLETED)
+        await asyncio.wait(
+            waiters, timeout=lim.wall_s + 45 if lim.wall_s else None, return_when=asyncio.FIRST_COMPLETED
+        )
     except asyncio.CancelledError:
         agent.cancel()
         raise
@@ -209,7 +223,21 @@ async def create_run(
     await session.refresh(run)
     await _audit_run(request, principal, run, "ai.run")
     await _maybe_open_case(request, principal, session, run, body.open_case)
+    await session.commit()  # the run must be saved before its lessons are written from it
+    _learn_later(request, provider, settings, principal, run.id)
     return run
+
+
+def _learn_later(
+    request: Request, provider: LLMProvider, settings: Settings, principal: Principal, run_id: uuid.UUID
+) -> None:
+    """Write the lessons of a saved run in the background: the analyst is not kept waiting, and a failure only means no lesson."""
+    if not settings.ai_learn_lessons:
+        return
+    tasks: set[asyncio.Task[Any]] = request.app.state.__dict__.setdefault("ai_tasks", set())
+    task = asyncio.create_task(lessons.learn(request.app.state.sessionmaker, provider, settings, principal.tid, run_id))
+    tasks.add(task)  # strong reference until it finishes
+    task.add_done_callback(tasks.discard)
 
 
 def _sse(event: str, data: Any) -> bytes:
@@ -255,6 +283,7 @@ async def _stream(
                     )  # fmt: skip
                     run = await persist(session, outcome)
                     await session.commit()
+                    _learn_later(request, provider, settings, principal, run.id)
                     queue.put_nowait(("done", RunOut.model_validate(run).model_dump(mode="json")))
                 except Exception:
                     await session.rollback()
@@ -521,7 +550,99 @@ async def resume_run(
     await session.refresh(run)
     await _audit_run(request, principal, run, "ai.resume")
     await _maybe_open_case(request, principal, session, run, body.open_case)
+    await session.commit()
+    _learn_later(request, provider, settings, principal, run.id)
     return run
+
+
+# ---- the experience library -------------------------------------------------------------------------------------------------------
+async def _lesson(session: AsyncSession, principal: Principal, lesson_id: uuid.UUID) -> AiLesson:
+    row = (
+        await session.execute(select(AiLesson).where(AiLesson.id == lesson_id, AiLesson.tenant_id == principal.tid))
+    ).scalar_one_or_none()
+    if row is None:
+        raise NotFound("Lesson not found")
+    return row
+
+
+async def _audit_lesson(request: Request, principal: Principal, action: str, row: AiLesson) -> None:
+    await audit.record(
+        request,
+        action,
+        principal=principal,
+        resource_type="ai_lesson",
+        resource_id=str(row.id),
+        details={"origin": row.origin, "status": row.status, "lesson": row.lesson[:120]},
+    )
+
+
+@router.get("/lessons", response_model=list[LessonOut])
+async def list_lessons(principal: Principal = USE, session: AsyncSession = Depends(get_session)) -> list[AiLesson]:
+    """What the agent has learned about searching this tenant's SIEMs; the active ones are shown to it at the start of a hunt."""
+    stmt = select(AiLesson).where(AiLesson.tenant_id == principal.tid).order_by(AiLesson.created_at.desc()).limit(200)
+    return list((await session.execute(stmt)).scalars())
+
+
+@router.post("/lessons", response_model=LessonOut, status_code=201)
+async def add_lesson(
+    body: LessonIn,
+    request: Request,
+    principal: Principal = USE,
+    session: AsyncSession = Depends(get_session),
+) -> AiLesson:
+    """A lesson written by an analyst."""
+    if await lessons.count(session, principal.tid) >= lessons.MAX_PER_TENANT:
+        raise Conflict("The library is full; delete lessons that no longer help before adding more")
+    fp = lessons.fingerprint(body.lesson)
+    taken = (
+        await session.execute(
+            select(AiLesson.id).where(AiLesson.tenant_id == principal.tid, AiLesson.fingerprint == fp)
+        )
+    ).first()
+    if taken:
+        raise Conflict("That lesson is already in the library")
+    row = AiLesson(
+        tenant_id=principal.tid,
+        cue=lessons.clean(body.cue, 200),
+        lesson=lessons.clean(body.lesson, 400),
+        evidence=lessons.clean(body.evidence, 300),
+        confidence="high",
+        origin="analyst",
+        fingerprint=fp,
+    )
+    session.add(row)
+    await session.flush()
+    await session.refresh(row)
+    await _audit_lesson(request, principal, "ai.lesson.create", row)
+    return row
+
+
+@router.patch("/lessons/{lesson_id}", response_model=LessonOut)
+async def set_lesson(
+    lesson_id: uuid.UUID,
+    body: LessonPatch,
+    request: Request,
+    principal: Principal = USE,
+    session: AsyncSession = Depends(get_session),
+) -> AiLesson:
+    row = await _lesson(session, principal, lesson_id)
+    row.status = body.status
+    await session.flush()
+    await session.refresh(row)
+    await _audit_lesson(request, principal, "ai.lesson.enable" if row.status == "active" else "ai.lesson.disable", row)
+    return row
+
+
+@router.delete("/lessons/{lesson_id}", status_code=204)
+async def delete_lesson(
+    lesson_id: uuid.UUID,
+    request: Request,
+    principal: Principal = USE,
+    session: AsyncSession = Depends(get_session),
+) -> None:
+    row = await _lesson(session, principal, lesson_id)
+    await _audit_lesson(request, principal, "ai.lesson.delete", row)
+    await session.delete(row)
 
 
 @router.get("/runs", response_model=list[RunOut])

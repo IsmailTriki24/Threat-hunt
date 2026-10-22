@@ -459,3 +459,22 @@ def test_held_results_are_packed_and_an_older_plain_list_is_still_readable():
     )  # compressed: ten thousand events do not sit in Redis as 35 MB
     assert sq._unpack(packed) == {"docs": docs, "origins": {"e1": "src"}}
     assert sq._unpack(json.dumps(docs)) == {"docs": docs, "origins": {}}  # a result held by the previous version
+
+
+async def test_the_logs_behind_an_alarm_are_fetched_once_for_many_searches(client, make, app, wire):
+    handler, seen = make_siem([])
+    handler.alarms = [_alarm(1, "AIE: port scan horizontal", originIP="45.148.10.188"), _alarm(2, "Heartbeat Missed")]
+    fetched = []
+
+    def counting(request):
+        if request.url.path.endswith("/events"):
+            fetched.append(request.url.path)
+        return handler(request)
+
+    counting.results = handler.results
+    t, h = await _env(client, make, app, wire, handler=counting)
+    for q in ("port scan", "45.148.10.188", "heartbeat"):  # three searches over the same window
+        await _q(client, h, q=q)
+    assert (
+        sorted(fetched) == sorted({*fetched}) and len(fetched) == 2
+    )  # one request per alarm, not one per alarm per search

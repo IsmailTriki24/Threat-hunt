@@ -18,8 +18,9 @@ export default {
   output: "standalone",
   poweredByHeader: false,
   compress: false, // gzip would buffer Server-Sent Events (the live AI hunt view) until the response ends
-  // AI hunts run synchronously for up to AI_RUN_TIMEOUT_S (540s); the default proxy timeout (~30s) turned finished runs into a 500.
-  experimental: { proxyTimeout: 600_000 },
+  // AI hunts (deep mode) have no time limit; the default proxy timeout (~30s) turned finished runs into a 500. A stopped stream does not
+  // lose the run (it is saved server-side), but the live view would end, so the proxy waits up to a week.
+  experimental: { proxyTimeout: 604_800_000 },
   async rewrites() {
     return [
       { source: "/api/:path*", destination: `${backend}/api/:path*` },

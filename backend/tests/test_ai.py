@@ -140,8 +140,15 @@ async def test_investigation_with_verified_evidence_and_save(client, make, llm):
     assert f["supported"] and len(f["event_ids"]) == 1 and f["rejected_event_ids"] == ["f" * 32]
     assert f["techniques"] == ["T1059.001"] and f["rejected_techniques"] == ["T9999"]
     assert c["confidence"] == "HIGH" and any("discarded" in n for n in c["validation_notes"])
-    assert run["steps"][0]["name"] == "data_coverage" and run["steps"][0]["auto"]  # scoping happens before the first model turn
-    assert [s["name"] for s in real_steps(run)] == ["update_notebook", "search_events", "search_events", "update_notebook"]
+    assert (
+        run["steps"][0]["name"] == "data_coverage" and run["steps"][0]["auto"]
+    )  # scoping happens before the first model turn
+    assert [s["name"] for s in real_steps(run)] == [
+        "update_notebook",
+        "search_events",
+        "search_events",
+        "update_notebook",
+    ]
     assert run["input_tokens"] > 0 and run["mode"] == "quick"
     assert c["hypotheses"][0]["status"] == "supported" and f["classification"] == "confirmed" and f["queries"]
     # results reached the model inside the untrusted-data envelope
@@ -159,7 +166,9 @@ async def test_fabricated_citations_are_unsupported(client, make, llm):
     hunt = (await client.post("/api/v1/hunts", headers=h, json={"title": "x"})).json()
     llm(Scripted(conclude(["a" * 32])))  # concludes without ever searching
     run = (
-        await client.post(f"{A}/runs", headers=h, json={"goal": "anything suspicious?", "hunt_id": hunt["id"], "mode": "quick"})
+        await client.post(
+            f"{A}/runs", headers=h, json={"goal": "anything suspicious?", "hunt_id": hunt["id"], "mode": "quick"}
+        )
     ).json()
     f = run["conclusion"]["findings"][0]
     assert not f["supported"] and f["event_ids"] == []
@@ -187,7 +196,9 @@ async def test_cannot_cite_another_tenants_events(client, make, llm, app):
     )
     # tool access is tenant scoped too
     llm(Scripted(tool("get_event", event_id=other), conclude([])))
-    run = (await client.post(f"{A}/runs", headers=ha, json={"goal": "fetch that foreign event", "mode": "quick"})).json()
+    run = (
+        await client.post(f"{A}/runs", headers=ha, json={"goal": "fetch that foreign event", "mode": "quick"})
+    ).json()
     assert real_steps(run)[0]["error"] == "event not found"
 
 
@@ -209,9 +220,24 @@ async def test_model_mistakes_are_tool_errors_not_crashes(client, make, llm):
     assert "not available" in errs[0] and "invalid query" in errs[1] and "invalid arguments" in errs[2]
     assert errs[3] is None and errs[4] is None and run["status"] == "COMPLETED"
     assert '"known": false' in real_steps(run)[4]["result_preview"].lower().replace('"known":false', '"known": false')
-    assert {"search_events", "aggregate_events", "get_event", "lookup_ioc", "mitre_technique", "pivot_entity",
-            "events_around", "process_lineage", "data_coverage", "update_notebook", "submit_conclusion",
-            "enrich_indicator", "hunt_playbook", "siem_search", "siem_findings"} == set(p.calls[0]["tools"])
+    assert {
+        "search_events",
+        "aggregate_events",
+        "get_event",
+        "lookup_ioc",
+        "mitre_technique",
+        "pivot_entity",
+        "events_around",
+        "process_lineage",
+        "data_coverage",
+        "update_notebook",
+        "submit_conclusion",
+        "enrich_indicator",
+        "hunt_playbook",
+        "siem_search",
+        "siem_findings",
+        "siem_map",
+    } == set(p.calls[0]["tools"])
     assert "did you mean" in errs[1] or "unknown field" in errs[1]  # the error tells the model how to repair the query
 
 
@@ -220,9 +246,71 @@ async def test_budget_exhaustion_is_incomplete(client, make, llm):
     p = llm(Scripted(tool("search_events", query="process.name:cmd.exe")))  # never concludes
     run = (await client.post(f"{A}/runs", headers=h, json={"goal": "loop forever please"})).json()
     assert run["status"] == "INCOMPLETE" and "budget" in run["error"]
-    assert run["conclusion"]["interim"] and run["conclusion"]["findings"] == []  # honest interim report, no invented findings
+    assert (
+        run["conclusion"]["interim"] and run["conclusion"]["findings"] == []
+    )  # honest interim report, no invented findings
     assert run["resumable"] and run["conclusion"]["stop_reason"] in ("low_value", "budget_steps")
     assert p.calls[-1]["tools"] == ["submit_conclusion"]  # final turn offers only the conclusion tool
+
+
+async def _empty_searches(client, make, llm, purpose):
+    _, h = await _setup(make)
+    llm(
+        Scripted(
+            *[
+                tool("search_events", query=f"process.name:nothing{i}.exe", purpose=purpose, hypothesis="H1")
+                for i in range(5)
+            ],
+            conclude([]),
+        )
+    )
+    run = (
+        await client.post(f"{A}/runs", headers=h, json={"goal": "look for things that are not there", "mode": "quick"})
+    ).json()
+    return [s for s in real_steps(run) if s["name"] == "search_events"]
+
+
+async def test_completed_empty_tests_are_progress_not_a_stall(client, make, llm):
+    steps = await _empty_searches(client, make, llm, "test")
+    assert [s["status"] for s in steps] == ["empty"] * 5  # every refuted question was allowed to be asked
+
+
+async def test_empty_scoping_searches_still_stall_the_hunt(client, make, llm):
+    steps = await _empty_searches(client, make, llm, "scope")
+    assert any(
+        s["error"] and "not available" in s["error"] for s in steps
+    )  # quick mode stops after two turns that learn nothing
+
+
+async def test_a_query_without_a_hypothesis_is_attributed_to_the_likeliest_one(client, make, llm):
+    _, h = await _setup(make)
+    llm(
+        Scripted(
+            nb(
+                {
+                    "op": "add_hypothesis",
+                    "statement": "Attacker ran powershell encoded commands",
+                    "test_plan": "search powershell",
+                    "priority": 3,
+                },
+                {
+                    "op": "add_hypothesis",
+                    "statement": "Persistence through scheduled tasks schtasks",
+                    "test_plan": "search schtasks",
+                    "priority": 4,
+                },
+            ),
+            tool(
+                "search_events", query="process.name:powershell.exe"
+            ),  # the model forgot to say which hypothesis, and why
+            conclude([]),
+        )
+    )
+    run = (await client.post(f"{A}/runs", headers=h, json={"goal": "look at powershell", "mode": "quick"})).json()
+    hyps = {x["statement"].split()[0]: x for x in run["conclusion"]["hypotheses"]}
+    assert (
+        len(hyps["Attacker"]["queries"]) == 1 and not hyps["Persistence"]["queries"]
+    )  # by shared words, not just priority
 
 
 async def test_provider_failure_is_recorded_safely(client, make, llm):
@@ -446,3 +534,38 @@ async def test_openrouter_turns_reasoning_off_for_plain_calls_and_survives_model
         "s", [{"role": "user", "content": "x"}], [{"name": "t", "input_schema": {"type": "object"}}], force_tool="t"
     )
     assert bodies[-1]["reasoning"] == {"effort": "low"} and bodies[-1]["tool_choice"]["function"]["name"] == "t"
+
+
+def test_deep_mode_has_no_limits_and_an_operator_ceiling_is_the_only_thing_that_can_add_one():
+    from app.ai import state as st
+
+    none = dict(steps=0, calls=0, tokens=0, wall_s=0)
+    assert st.Limits.resolve(st.MODES["deep"], **none) == st.Limits(0, 0, 0, 0)
+    capped = st.Limits.resolve(st.MODES["deep"], steps=30, calls=0, tokens=0, wall_s=900)
+    assert (capped.max_steps, capped.max_tool_calls, capped.wall_s) == (30, 0, 900)
+    quick = st.Limits.resolve(st.MODES["quick"], **none)
+    assert (quick.max_steps, quick.wall_s) == (
+        st.MODES["quick"].max_steps,
+        st.MODES["quick"].wall_s,
+    )  # quick stays quick
+    assert st.Clock(0).left == float("inf")
+    inv = st.Investigation.new("hunt", 24, "deep")
+    brief = inv.brief({"steps": None, "tool_calls": None, "tokens": None, "seconds": None}, st.MODES["deep"])
+    assert "unlimited" in brief and "no step, time or token limit" in brief
+
+
+async def test_a_model_that_only_ever_asks_new_empty_questions_is_still_ended(client, make, llm):
+    _, h = await _setup(make)
+    llm(
+        Scripted(
+            *[
+                tool("search_events", query=f"process.name:nothing{i}.exe", purpose="test", hypothesis="H1")
+                for i in range(40)
+            ],
+            conclude([]),
+        )
+    )
+    run = (await client.post(f"{A}/runs", headers=h, json={"goal": "endless empty questions", "mode": "deep"})).json()
+    searches = [s for s in real_steps(run) if s["name"] == "search_events"]
+    assert run["conclusion"]["stop_reason"] == "low_value" and len(searches) < 40
+    assert len(searches) > 12  # ruling things out was allowed to go on for a good while first
