@@ -68,6 +68,14 @@ def _database() -> None:
     subprocess.run([sys.executable, "-m", "alembic", "upgrade", "head"], cwd=ROOT / "backend", check=True)  # noqa: S603
 
 
+@pytest.fixture(autouse=True)
+def _no_leftover_rate_limit_cooldowns() -> None:
+    """A 429 one test provoked must not make the next test's connector refuse to send."""
+    from app.connectors import _http
+
+    _http.reset_cooldowns()
+
+
 @pytest_asyncio.fixture(scope="session")
 async def app() -> AsyncIterator[Any]:
     application = create_app()

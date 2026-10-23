@@ -10,6 +10,7 @@ from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.connectors import registry
+from app.connectors._http import RateLimited
 from app.connectors.base import Connector
 from app.core.config import Settings
 from app.core.crypto import decrypt_json, encrypt_json
@@ -150,11 +151,24 @@ async def collect_source(session: AsyncSession, backend: SearchBackend, settings
     try:
         connector = build_connector(ds, settings)
         since = datetime.fromisoformat(ds.cursor) if ds.cursor else None
-        raws = [r async for r in connector.collect(since=since, limit=connector.collect_limit)]
+        raws: list[dict[str, Any]] = []
+        throttled: RateLimited | None = None
+        try:
+            async for r in connector.collect(since=since, limit=connector.collect_limit):
+                raws.append(r)
+        except RateLimited as exc:
+            # Keep what was read when the connector can say how far it got (its watermark only passes windows it read in
+            # full): the next run resumes from there instead of repeating the same requests into the same rate limit.
+            throttled = exc
+            if connector.watermark is None:
+                raws = []
         if not raws:
             advance = connector.watermark.isoformat() if connector.watermark else ds.cursor
             await session.execute(update(DataSource).where(DataSource.id == ds.id).values(cursor=advance))
-            await _mark(session, ds, "ok", "no new records")
+            if throttled:
+                await _mark(session, ds, "degraded", f"{throttled}. Collection resumes on its own."[:300])
+            else:
+                await _mark(session, ds, "ok", "no new records")
             return 0
         events = [e for r in raws for e in _safe_normalize(connector, r)]
         from app.events.schema import Event
@@ -169,8 +183,11 @@ async def collect_source(session: AsyncSession, backend: SearchBackend, settings
                 events_total=DataSource.events_total + result.accepted,
                 last_ingest_at=datetime.now(UTC),
                 cursor=newest.isoformat() if newest else ds.cursor,
-                health_status="ok",
-                health_detail=f"collected {result.accepted} new, {result.duplicates} duplicate"[:300],
+                health_status="degraded" if throttled else "ok",
+                health_detail=(
+                    f"collected {result.accepted} new, {result.duplicates} duplicate"
+                    + (f". {throttled}. Collection resumes on its own." if throttled else "")
+                )[:300],
                 health_checked_at=datetime.now(UTC),
             )
         )

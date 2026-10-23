@@ -102,9 +102,12 @@ async def refresh_ioc_feeds(ctx: dict[str, Any]) -> None:
 
 async def process_ioc_hunts(ctx: dict[str, Any]) -> None:
     """Run validated-IOC hunts: search all data sources and open/update the case, automatically."""
+    from app.connectors._http import patience
     from app.iochunt import runner
 
-    done = await runner.process_pending(ctx["sessionmaker"], ctx["search"], get_settings())
+    # Nobody is waiting on a queued hunt, so it may sit out a source's rate limit; other jobs fail fast and retry later.
+    with patience(90):
+        done = await runner.process_pending(ctx["sessionmaker"], ctx["search"], get_settings())
     if done:
         log.info("ioc hunts processed", extra={"hunts": done})
 
