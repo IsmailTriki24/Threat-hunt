@@ -41,6 +41,7 @@ export default {
         cyan: remap(colors.cyan as Scale), violet: remap(colors.violet as Scale), purple: remap(colors.purple as Scale),
       },
       fontFamily: {
+        display: ['"Bricolage Grotesque Variable"', '"Inter Variable"', "ui-sans-serif", "system-ui", "sans-serif"],
         sans: ['"Inter Variable"', "Inter", "ui-sans-serif", "system-ui", "-apple-system", "Segoe UI", "sans-serif"],
         mono: ['"JetBrains Mono"', "ui-monospace", "SFMono-Regular", "Menlo", "Consolas", "monospace"],
       },
@@ -67,6 +68,9 @@ export default {
         floaty: { "0%,100%": { transform: "translateY(0)" }, "50%": { transform: "translateY(-3px)" } },
         growX: { from: { transform: "scaleX(0)" }, to: { transform: "scaleX(1)" } },
         windowIn: { from: { opacity: "0", transform: "translateY(8px) scale(.985)" }, to: { opacity: "1", transform: "none" } },
+        reveal: { from: { transform: "translateY(108%)" }, to: { transform: "none" } },
+        riseIn: { from: { opacity: "0", transform: "translateY(16px) scale(.985)" }, to: { opacity: "1", transform: "none" } },
+        shake: { "0%,100%": { transform: "none" }, "20%": { transform: "translateX(-7px)" }, "40%": { transform: "translateX(6px)" }, "60%": { transform: "translateX(-4px)" }, "80%": { transform: "translateX(2px)" } },
         flash: { "0%": { backgroundColor: "rgb(var(--accent) / .18)" }, "100%": { backgroundColor: "transparent" } },
       },
       animation: {
@@ -76,6 +80,8 @@ export default {
         shimmer: "shimmer 3s linear infinite", skeleton: "skeleton 1.4s ease-in-out infinite", "dot-in": "popIn .2s ease-out backwards",
         floaty: "floaty 3s ease-in-out infinite", flash: "flash 1.2s ease-out both", "grow-x": "growX .5s cubic-bezier(.2,.8,.2,1) backwards",
         "window-in": "windowIn .2s cubic-bezier(.2,.8,.2,1) both",
+        "scene-in": "fadeIn 1.8s ease-out both", reveal: "reveal .95s cubic-bezier(.2,.8,.2,1) both",
+        "rise-in": "riseIn .85s cubic-bezier(.2,.8,.2,1) .5s both", shake: "shake .38s cubic-bezier(.36,.07,.19,.97) both",
       },
     },
   },

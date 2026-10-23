@@ -102,6 +102,19 @@
   .tab[aria-selected="true"], .tab[aria-current="page"] { @apply border-accent text-accent; }
   .skeleton { @apply animate-skeleton rounded bg-line/80; }
 
+  /* ---- sign-in stage: the one dark surface in the product. The glow sits on the scene's horizon (HORIZON in login-scene.tsx). ---- */
+  .login-stage {
+    color-scheme: dark;
+    background:
+      radial-gradient(62% 24% at 50% 36%, rgb(150 130 255 / .30), transparent 72%),
+      radial-gradient(90% 60% at 16% 114%, rgb(117 104 233 / .50), transparent 70%),
+      linear-gradient(180deg, #120e36 0%, #1a1450 50%, #2a1f7a 100%);
+  }
+  @media (max-width: 639px) { .login-stage { background-position: 0 0; background-image:
+      radial-gradient(90% 16% at 50% 20%, rgb(150 130 255 / .30), transparent 72%),
+      radial-gradient(90% 60% at 16% 114%, rgb(117 104 233 / .50), transparent 70%),
+      linear-gradient(180deg, #120e36 0%, #1a1450 50%, #2a1f7a 100%); } }
+
   /* ---- AI surfaces: animated only while a run is active; switched off for reduced motion -------------------------------- */
   .ai-glow { @apply relative overflow-hidden rounded-lg; }
   .ai-glow > .ai-glow-spin { @apply pointer-events-none absolute left-1/2 top-1/2 h-[220%] w-[120%] -translate-x-1/2 -translate-y-1/2 opacity-0 transition-opacity duration-slow; background: conic-gradient(from 0deg, transparent 0 55%, rgb(var(--accent-brand) / .9), rgb(var(--accent-brand) / .35), transparent 90%); }

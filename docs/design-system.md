@@ -54,6 +54,15 @@ semantic tokens (`text-sev-high`, `bg-sev-high-bg`, `text-ink`) instead. A dark 
 * **Provenance.** External intelligence, observed activity and correlations keep distinct colours and wording; AI output is labelled as AI-stated
   (“supported” means the cited events back it, not that it is a verdict).
 
+## Sign-in page (the one dark surface)
+`/login` is deliberately not the light workspace theme: you arrive at night, on a field of hosts, and step into the light product through the white
+form panel. `components/login-scene.tsx` is a single `<canvas>` (no dependency): hosts in perspective drift toward the viewer, faint links join
+neighbours, and every few seconds one amber trace follows a chain of hosts to its target. Amber is used for the trace and nothing else.
+* The scene reacts to the form: the hunt quickens while signing in and the field stalls when a sign-in is refused (`SceneMode`).
+* The trace routes around the form card (`data-scene-avoid`) so it is never hidden under it; on a phone the card sits at the bottom and the horizon moves up.
+* `prefers-reduced-motion` renders one still frame and no loop; the canvas is `aria-hidden`; a browser without canvas keeps the gradient (`.login-stage`).
+* Display type is Bricolage Grotesque (`@fontsource-variable/bricolage-grotesque/opsz.css`, bundled, loaded by this route only); the form stays Inter.
+
 ## Shell
 `components/shell.tsx` + `lib/nav.ts` (single source of truth for navigation, breadcrumbs and the route test). Grouped sidebar (Investigate ·
 Intelligence · Detect & respond · Manage), collapsible with the choice remembered, off-canvas drawer below 1024 px, breadcrumb, a **working global
