@@ -105,6 +105,13 @@ by a different channel. Credentials are re-encrypted under the new server's own 
 The tenant's IOC feeds move with their keys and settings and run at once on the new server. Not moved: telemetry, cases, hunts, detections, indicators and
 provider keys, and per-source and per-feed runtime state (the worker re-collects). Push sources get a new ingest key, printed once. The new server must allow the SIEM networks (`OUTBOUND_ALLOWED_NETWORKS`).
 
+To move only the IOC feeds (with their keys) into a tenant that already exists on the new server, without touching anything else:
+```bash
+docker compose exec backend python -m app.cli export-feeds wifak-bank --out /tmp/feeds.tenant-bundle     # prompts for a passphrase
+docker compose exec backend python -m app.cli import-feeds /tmp/feeds.tenant-bundle                      # there; prompts for the passphrase
+```
+A feed whose name the tenant already has is skipped, never overwritten, so the import can be repeated. `import-feeds` also accepts a whole tenant bundle.
+
 ## SIEM / XDR sources (LogRhythm, Trend Vision One)
 Both are pull connectors collected by the worker every 5 minutes. The **platform administrator** attaches them to a tenant (*Tenants → Open*, then *Data Sources*; tenant users see them read-only), then use **Set credential** to add the
 token / API key (write-only, stored encrypted). Trend Vision One: pick a `region` and one `dataset` per source (`alerts`, `oat`, `detections`,

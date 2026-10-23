@@ -59,6 +59,35 @@ def unseal(blob: bytes, passphrase: str) -> dict[str, Any]:
     return payload
 
 
+def _feed_out(settings: Settings, f: IocFeed) -> dict[str, Any]:
+    return {
+        "name": f.name,
+        "feed_type": f.feed_type,
+        "config": f.config,
+        "secrets": {k: str(v) for k, v in decrypt_json(settings, f.secrets_enc).items()},
+        "enabled": f.enabled,
+        "interval_minutes": f.interval_minutes,
+        "max_age_days": f.max_age_days,
+        "min_confidence": f.min_confidence,
+        "max_items": f.max_items,
+    }
+
+
+def _feed_in(settings: Settings, tenant_id: Any, f: dict[str, Any]) -> IocFeed:
+    return IocFeed(
+        tenant_id=tenant_id,
+        name=f["name"],
+        feed_type=f["feed_type"],
+        config=f["config"],
+        secrets_enc=encrypt_json(settings, f["secrets"]) if f["secrets"] else None,
+        enabled=f["enabled"],
+        interval_minutes=f["interval_minutes"],
+        max_age_days=f["max_age_days"],
+        min_confidence=f["min_confidence"],
+        max_items=f["max_items"],
+    )
+
+
 async def export_tenant(session: AsyncSession, settings: Settings, slug: str) -> dict[str, Any]:
     tenant = (await session.execute(select(Tenant).where(Tenant.slug == slug))).scalar_one_or_none()
     if tenant is None:
@@ -104,20 +133,7 @@ async def export_tenant(session: AsyncSession, settings: Settings, slug: str) ->
             }
             for d in sources
         ],
-        "feeds": [
-            {
-                "name": f.name,
-                "feed_type": f.feed_type,
-                "config": f.config,
-                "secrets": {k: str(v) for k, v in decrypt_json(settings, f.secrets_enc).items()},
-                "enabled": f.enabled,
-                "interval_minutes": f.interval_minutes,
-                "max_age_days": f.max_age_days,
-                "min_confidence": f.min_confidence,
-                "max_items": f.max_items,
-            }
-            for f in feeds
-        ],
+        "feeds": [_feed_out(settings, f) for f in feeds],
     }
 
 
@@ -179,20 +195,7 @@ async def import_tenant(
         if not registry._REGISTRY[s["connector_type"]].supports_collect:  # noqa: SLF001  push sources need their new key
             new_keys[s["name"]] = raw_key
     for f in feeds:
-        session.add(
-            IocFeed(
-                tenant_id=tenant.id,
-                name=f["name"],
-                feed_type=f["feed_type"],
-                config=f["config"],
-                secrets_enc=encrypt_json(settings, f["secrets"]) if f["secrets"] else None,
-                enabled=f["enabled"],
-                interval_minutes=f["interval_minutes"],
-                max_age_days=f["max_age_days"],
-                min_confidence=f["min_confidence"],
-                max_items=f["max_items"],
-            )
-        )
+        session.add(_feed_in(settings, tenant.id, f))
     await session.flush()
     return {
         "slug": target_slug,
@@ -202,3 +205,41 @@ async def import_tenant(
         "feeds": len(feeds),
         "ingest_keys": new_keys,
     }
+
+
+async def export_feeds(session: AsyncSession, settings: Settings, slug: str) -> dict[str, Any]:
+    """Only the tenant's IOC feeds (with their keys): for adding them to a tenant that already exists elsewhere."""
+    tenant = (await session.execute(select(Tenant).where(Tenant.slug == slug))).scalar_one_or_none()
+    if tenant is None:
+        raise NotFound(f"No tenant with slug {slug!r}")
+    feeds = (
+        await session.execute(select(IocFeed).where(IocFeed.tenant_id == tenant.id).order_by(IocFeed.name))
+    ).scalars()
+    return {"kind": "feeds", "tenant_slug": tenant.slug, "feeds": [_feed_out(settings, f) for f in feeds]}
+
+
+async def import_feeds(
+    session: AsyncSession, settings: Settings, payload: dict[str, Any], slug: str | None = None
+) -> dict[str, Any]:
+    """Add the file's feeds to an EXISTING tenant. A feed whose name the tenant already has is left exactly as it is.
+    Reads a feeds file or a whole tenant bundle. All or nothing."""
+    try:
+        feeds = payload["feeds"]
+        target_slug = slug or payload.get("tenant_slug") or payload["tenant"]["slug"]
+        for f in feeds:  # validate everything before writing anything
+            feed_registry.build(f["feed_type"], f["config"])
+    except (KeyError, TypeError):
+        raise AppError("The file does not contain IOC feeds") from None
+    except (ValidationError, ValueError) as exc:
+        raise AppError(f"A feed in the file is not valid for this version: {str(exc)[:200]}") from None
+    tenant = (await session.execute(select(Tenant).where(Tenant.slug == target_slug))).scalar_one_or_none()
+    if tenant is None:
+        raise NotFound(f"No tenant with slug {target_slug!r} here; create or import it first")
+    have = set((await session.execute(select(IocFeed.name).where(IocFeed.tenant_id == tenant.id))).scalars())
+    added = [f["name"] for f in feeds if f["name"] not in have]
+    skipped = [f["name"] for f in feeds if f["name"] in have]
+    for f in feeds:
+        if f["name"] not in have:
+            session.add(_feed_in(settings, tenant.id, f))
+    await session.flush()
+    return {"slug": target_slug, "added": added, "skipped": skipped}

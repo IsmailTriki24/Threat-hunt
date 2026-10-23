@@ -1,6 +1,7 @@
 """Operational CLI: `python -m app.cli <command>`.
 
-Commands: init, migrate, mitre-load, create-superadmin, create-tenant, export-tenant, import-tenant.
+Commands: init, migrate, mitre-load, create-superadmin, create-tenant, export-tenant, import-tenant, export-feeds,
+import-feeds.
 """
 
 import argparse
@@ -149,6 +150,44 @@ async def _import_tenant(
         print(f"  push source {name!r}: ingest key {key} (shown once)")  # noqa: T201
 
 
+async def _export_feeds(
+    settings: Settings, sessionmaker: async_sessionmaker[AsyncSession], slug: str, out: str, passphrase: str
+) -> None:
+    from app.core.errors import AppError
+    from app.tenants import bundle
+
+    async with sessionmaker() as session:
+        try:
+            payload = await bundle.export_feeds(session, settings, slug)
+        except (AppError, ValueError) as exc:
+            raise SystemExit(str(exc)) from None
+    path = Path(out)
+    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)  # never overwrite, never world-readable
+    with os.fdopen(fd, "wb") as fh:
+        fh.write(bundle.seal(payload, passphrase))
+    print(f"Wrote {path}: {len(payload['feeds'])} IOC feed(s) of tenant {slug}. Keep it out of git.")  # noqa: T201
+
+
+async def _import_feeds(
+    settings: Settings, sessionmaker: async_sessionmaker[AsyncSession], file: str, passphrase: str, slug: str | None
+) -> None:
+    from app.core.errors import AppError
+    from app.tenants import bundle
+
+    try:
+        payload = bundle.unseal(await asyncio.to_thread(Path(file).read_bytes), passphrase)
+        async with sessionmaker() as session:
+            result = await bundle.import_feeds(session, settings, payload, slug)
+            await session.commit()
+    except AppError as exc:
+        raise SystemExit(exc.message) from None
+    print(f"Added {len(result['added'])} IOC feed(s) to tenant {result['slug']}.")  # noqa: T201
+    for name in result["added"]:
+        print(f"  added   {name}")  # noqa: T201
+    for name in result["skipped"]:
+        print(f"  skipped {name} (the tenant already has a feed with this name)")  # noqa: T201
+
+
 async def _mitre_load(sessionmaker: async_sessionmaker[AsyncSession], file: str | None) -> None:
     from app.mitre.loader import import_stix_bundle, load_builtin
 
@@ -184,6 +223,12 @@ def main() -> None:
     im = sub.add_parser("import-tenant", help="create a tenant from a sealed file written by export-tenant")
     im.add_argument("file")
     im.add_argument("--slug", help="import under a different slug")
+    ef = sub.add_parser("export-feeds", help="write a tenant's IOC feeds, with their keys, to a passphrase-sealed file")
+    ef.add_argument("slug")
+    ef.add_argument("--out", required=True, help="new file to write; refuses to overwrite")
+    imf = sub.add_parser("import-feeds", help="add the IOC feeds in a sealed file to an existing tenant")
+    imf.add_argument("file")
+    imf.add_argument("--slug", help="the tenant to add them to (default: the one they were exported from)")
     args = parser.parse_args()
 
     if args.cmd == "migrate":
@@ -205,6 +250,14 @@ def main() -> None:
     elif args.cmd == "import-tenant":
         asyncio.run(
             _with_backend(lambda s, sm, b: _import_tenant(s, sm, args.file, _passphrase(confirm=False), args.slug))
+        )
+    elif args.cmd == "export-feeds":
+        asyncio.run(
+            _with_backend(lambda s, sm, b: _export_feeds(s, sm, args.slug, args.out, _passphrase(confirm=True)))
+        )
+    elif args.cmd == "import-feeds":
+        asyncio.run(
+            _with_backend(lambda s, sm, b: _import_feeds(s, sm, args.file, _passphrase(confirm=False), args.slug))
         )
     elif args.cmd == "create-tenant":
         password = getpass.getpass("Tenant admin password (min 12 chars): ")

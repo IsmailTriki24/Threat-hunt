@@ -22,6 +22,7 @@ data/
 tenant-bundles/*
 # The one bundle deliberately kept in the repository, so the Wifak Bank tenant can be imported on the production server.
 !tenant-bundles/wifak-bank.tenant-bundle
+!tenant-bundles/wifak-bank-feeds.tenant-bundle
 
 # Site-local compose settings (host aliases, local ports)
 docker-compose.override.yml

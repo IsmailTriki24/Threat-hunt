@@ -8,7 +8,7 @@ import pytest
 import sqlalchemy as sa
 
 from app.auth.rbac import Role
-from app.cli import _export_tenant, _import_tenant
+from app.cli import _export_feeds, _export_tenant, _import_feeds, _import_tenant
 from app.core.config import get_settings
 from app.core.crypto import decrypt_json
 from app.core.errors import AppError, Conflict
@@ -235,3 +235,85 @@ async def test_cli_export_writes_a_private_file_and_never_overwrites_then_import
     assert (
         await db.execute(sa.select(sa.func.count()).select_from(User).where(User.email.like("u-%")))
     ).scalar_one() > 0
+
+
+# ---- only the IOC feeds -------------------------------------------------------------------------------
+async def _import_feeds_to(app, payload, slug=None):
+    async with app.state.sessionmaker() as s:
+        out = await bundle.import_feeds(s, get_settings(), payload, slug)
+        await s.commit()
+        return out
+
+
+async def _feeds_of(db, tenant):
+    return {f.name: f for f in (await db.execute(sa.select(IocFeed).where(IocFeed.tenant_id == tenant.id))).scalars()}
+
+
+async def test_feeds_alone_are_added_to_an_existing_tenant_with_their_keys(app, make, db):
+    t, *_ = await _seed(make, app)
+    other = await make.tenant("Other Bank")
+    async with app.state.sessionmaker() as s:
+        payload = await bundle.export_feeds(s, get_settings(), t.slug)
+    assert set(payload) == {"kind", "tenant_slug", "feeds"} and len(payload["feeds"]) == 2  # no sources, no members
+    payload = bundle.unseal(bundle.seal(payload, PASS), PASS)
+    out = await _import_feeds_to(app, payload, slug=other.slug)
+    assert sorted(out["added"]) == ["Feodo", "OTX"] and out["skipped"] == []
+    feeds = await _feeds_of(db, other)
+    assert decrypt_json(get_settings(), feeds["OTX"].secrets_enc) == {"api_key": FEED_SECRET}
+    assert feeds["OTX"].interval_minutes == 120 and feeds["OTX"].last_run_at is None and feeds["Feodo"].enabled is False
+    assert (
+        await db.execute(sa.select(sa.func.count()).select_from(DataSource).where(DataSource.tenant_id == other.id))
+    ).scalar_one() == 0
+
+
+async def test_a_feed_the_tenant_already_has_is_left_untouched(app, make, db):
+    t, *_ = await _seed(make, app)
+    other = await make.tenant("Other Bank")
+    async with app.state.sessionmaker() as s:
+        s.add(IocFeed(tenant_id=other.id, name="OTX", feed_type="otx", config={"max_pages": 1}, max_items=7))
+        await s.commit()
+        payload = await bundle.export_feeds(s, get_settings(), t.slug)
+    out = await _import_feeds_to(app, payload, slug=other.slug)
+    assert out["added"] == ["Feodo"] and out["skipped"] == ["OTX"]
+    kept = (await _feeds_of(db, other))["OTX"]
+    assert kept.config == {"max_pages": 1} and kept.max_items == 7 and kept.secrets_enc is None
+    again = await _import_feeds_to(app, payload, slug=other.slug)  # importing twice adds nothing
+    assert again["added"] == [] and sorted(again["skipped"]) == ["Feodo", "OTX"]
+
+
+async def test_feeds_import_needs_an_existing_tenant_and_valid_feeds_and_is_all_or_nothing(app, make, db):
+    t, *_ = await _seed(make, app)
+    other = await make.tenant("Other Bank")
+    async with app.state.sessionmaker() as s:
+        payload = await bundle.export_feeds(s, get_settings(), t.slug)
+    with pytest.raises(Exception, match="No tenant"):
+        await _import_feeds_to(app, payload, slug="nobody-here")
+    bad = {**payload, "feeds": [*payload["feeds"], {**payload["feeds"][0], "name": "bad", "feed_type": "no-such-feed"}]}
+    with pytest.raises(AppError):
+        await _import_feeds_to(app, bad, slug=other.slug)
+    assert await _feeds_of(db, other) == {}
+    with pytest.raises(AppError, match="does not contain IOC feeds"):
+        await _import_feeds_to(app, {"nonsense": True}, slug=other.slug)
+
+
+async def test_a_whole_tenant_bundle_also_works_as_a_source_of_feeds(app, make, db):
+    t, *_ = await _seed(make, app)
+    other = await make.tenant("Other Bank")
+    out = await _import_feeds_to(app, await _export(app, t.slug), slug=other.slug)
+    assert sorted(out["added"]) == ["Feodo", "OTX"]
+
+
+async def test_cli_feeds_round_trip_is_private_and_never_overwrites(app, make, db, tmp_path):
+    t, *_ = await _seed(make, app)
+    other = await make.tenant("Other Bank")
+    out = tmp_path / "feeds.tenant-bundle"
+    await _export_feeds(get_settings(), app.state.sessionmaker, t.slug, str(out), PASS)
+    assert stat.S_IMODE(out.stat().st_mode) == 0o600 and b"FEED-API-KEY-456" not in out.read_bytes()
+    with pytest.raises(FileExistsError):
+        await _export_feeds(get_settings(), app.state.sessionmaker, t.slug, str(out), PASS)
+    with pytest.raises(SystemExit, match="No tenant"):
+        await _export_feeds(get_settings(), app.state.sessionmaker, "nobody", str(tmp_path / "x"), PASS)
+    with pytest.raises(SystemExit, match="Wrong passphrase"):
+        await _import_feeds(get_settings(), app.state.sessionmaker, str(out), "wrong wrong wrong", other.slug)
+    await _import_feeds(get_settings(), app.state.sessionmaker, str(out), PASS, other.slug)
+    assert set(await _feeds_of(db, other)) == {"OTX", "Feodo"}
