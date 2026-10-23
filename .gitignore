@@ -16,3 +16,7 @@ tsconfig.tsbuildinfo
 
 # GeoIP databases (downloaded by scripts/fetch-geoip.sh; licensed separately)
 data/
+
+# Sealed tenant exports (python -m app.cli export-tenant): contain SIEM credentials even though encrypted
+*.tenant-bundle
+tenant-bundles/

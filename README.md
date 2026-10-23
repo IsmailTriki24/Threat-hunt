@@ -80,6 +80,23 @@ python -m app.cli create-tenant wifak-bank "Wifak Bank" admin@wifak.example   # 
 ```
 Then sign in as the platform administrator, open the tenant and add its LogRhythm and Trend Vision One sources. See ADR 0026.
 
+**Moving a tenant you already configured (for example dev to production).** Git carries code, not data. To have the tenant, its members and its log
+sources (credentials included) waiting on the new server, seal them into one file on the old one and import it on the new one:
+```
+# on the old deployment (prompts for a passphrase; writes a file only you can read, never overwrites)
+docker compose exec backend python -m app.cli export-tenant wifak-bank --out /tmp/wifak.tenant-bundle
+docker compose cp backend:/tmp/wifak.tenant-bundle ./wifak.tenant-bundle && docker compose exec backend rm /tmp/wifak.tenant-bundle
+
+# copy the file to the new server (scp), then there, after `make up` and `create-superadmin`
+docker compose cp ./wifak.tenant-bundle backend:/tmp/wifak.tenant-bundle
+docker compose exec backend python -m app.cli import-tenant /tmp/wifak.tenant-bundle     # prompts for the passphrase
+docker compose exec backend rm /tmp/wifak.tenant-bundle && rm ./wifak.tenant-bundle
+```
+The file is encrypted with the passphrase (even the tenant name and SIEM addresses are hidden) and `*.tenant-bundle` is gitignored; send the passphrase
+by a different channel. Credentials are re-encrypted under the new server's own key. Import refuses a slug that already exists and is all-or-nothing.
+Not moved: telemetry, cases, hunts, detections, feeds and provider keys, and per-source runtime state (the worker re-collects). Push sources get a new
+ingest key, printed once. The new server must allow the SIEM networks (`OUTBOUND_ALLOWED_NETWORKS`).
+
 ## SIEM / XDR sources (LogRhythm, Trend Vision One)
 Both are pull connectors collected by the worker every 5 minutes. The **platform administrator** attaches them to a tenant (*Tenants → Open*, then *Data Sources*; tenant users see them read-only), then use **Set credential** to add the
 token / API key (write-only, stored encrypted). Trend Vision One: pick a `region` and one `dataset` per source (`alerts`, `oat`, `detections`,

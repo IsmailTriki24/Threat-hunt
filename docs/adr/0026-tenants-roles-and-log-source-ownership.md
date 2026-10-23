@@ -27,7 +27,9 @@ sources or audit.
   tenant admin creating a user with a known e-mail still gets 409 (no cross-tenant enumeration or takeover).
 * A password reset by the operator revokes the user's refresh tokens everywhere; a deactivation revokes them for that tenant.
 * Production bootstrap needs no demo seed: `python -m app.cli create-superadmin <email>` then `python -m app.cli create-tenant <slug> <name> <admin-email>`
-  (the API uses the same `tenants.service.provision_tenant`).
+  (the API uses the same `tenants.service.provision_tenant`). A tenant that is already configured moves between deployments with
+  `export-tenant` / `import-tenant` (`tenants/bundle.py`): members and log sources with credentials in one passphrase-sealed file, credentials
+  re-encrypted under the target's key, import refuses an existing slug and is all-or-nothing.
 
 **Chosen on purpose.** The operator keeps full read access to a tenant's security data while acting inside it (decided with the owner), rather than a
 "platform only, no data" role. Every switch into a tenant and every member/tenant change is audited (`auth.switch_tenant`, `tenant.*`), and

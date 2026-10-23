@@ -1,9 +1,13 @@
-"""Operational CLI: `python -m app.cli init|migrate|mitre-load|create-superadmin|create-tenant`."""
+"""Operational CLI: `python -m app.cli <command>`.
+
+Commands: init, migrate, mitre-load, create-superadmin, create-tenant, export-tenant, import-tenant.
+"""
 
 import argparse
 import asyncio
 import getpass
 import logging
+import os
 import subprocess  # nosec B404
 import sys
 from collections.abc import Awaitable, Callable
@@ -91,6 +95,60 @@ async def _create_tenant(
         await session.commit()
 
 
+def _passphrase(confirm: bool) -> str:
+    """Interactive prompt; TENANT_BUNDLE_PASSPHRASE only for unattended use (it ends up in the process environment)."""
+    if env := os.environ.get("TENANT_BUNDLE_PASSPHRASE"):
+        return env
+    first = getpass.getpass("Bundle passphrase: ")
+    if len(first) < 12:
+        raise SystemExit("passphrase too short (min 12 chars)")
+    if confirm and getpass.getpass("Repeat passphrase: ") != first:
+        raise SystemExit("passphrases do not match")
+    return first
+
+
+async def _export_tenant(
+    settings: Settings, sessionmaker: async_sessionmaker[AsyncSession], slug: str, out: str, passphrase: str
+) -> None:
+    from app.core.errors import AppError
+    from app.tenants import bundle
+
+    async with sessionmaker() as session:
+        try:
+            payload = await bundle.export_tenant(session, settings, slug)
+        except (AppError, ValueError) as exc:
+            raise SystemExit(str(exc)) from None
+    path = Path(out)
+    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)  # never overwrite, never world-readable
+    with os.fdopen(fd, "wb") as fh:
+        fh.write(bundle.seal(payload, passphrase))
+    print(  # noqa: T201
+        f"Wrote {path}: tenant {slug}, {len(payload['members'])} member(s), "
+        f"{len(payload['data_sources'])} log source(s). Keep it out of git."
+    )
+
+
+async def _import_tenant(
+    settings: Settings, sessionmaker: async_sessionmaker[AsyncSession], file: str, passphrase: str, slug: str | None
+) -> None:
+    from app.core.errors import AppError
+    from app.tenants import bundle
+
+    try:
+        payload = bundle.unseal(await asyncio.to_thread(Path(file).read_bytes), passphrase)
+        async with sessionmaker() as session:
+            result = await bundle.import_tenant(session, settings, payload, slug)
+            await session.commit()
+    except AppError as exc:
+        raise SystemExit(exc.message) from None
+    print(  # noqa: T201
+        f"Imported tenant {result['slug']}: {result['data_sources']} log source(s), "
+        f"{result['members_created']} new member(s), {result['members_attached']} existing account(s) attached."
+    )
+    for name, key in result["ingest_keys"].items():
+        print(f"  push source {name!r}: ingest key {key} (shown once)")  # noqa: T201
+
+
 async def _mitre_load(sessionmaker: async_sessionmaker[AsyncSession], file: str | None) -> None:
     from app.mitre.loader import import_stix_bundle, load_builtin
 
@@ -117,6 +175,15 @@ def main() -> None:
     ct.add_argument("slug")
     ct.add_argument("name")
     ct.add_argument("admin_email")
+    ex = sub.add_parser(
+        "export-tenant",
+        help="write a tenant, its members and log sources (with credentials) to a passphrase-sealed file",
+    )
+    ex.add_argument("slug")
+    ex.add_argument("--out", required=True, help="new file to write; refuses to overwrite")
+    im = sub.add_parser("import-tenant", help="create a tenant from a sealed file written by export-tenant")
+    im.add_argument("file")
+    im.add_argument("--slug", help="import under a different slug")
     args = parser.parse_args()
 
     if args.cmd == "migrate":
@@ -131,6 +198,14 @@ def main() -> None:
         if len(password) < get_settings().password_min_length:
             raise SystemExit("password too short")
         asyncio.run(_with_backend(lambda s, sm, b: _create_superadmin(sm, args.email, password)))
+    elif args.cmd == "export-tenant":
+        asyncio.run(
+            _with_backend(lambda s, sm, b: _export_tenant(s, sm, args.slug, args.out, _passphrase(confirm=True)))
+        )
+    elif args.cmd == "import-tenant":
+        asyncio.run(
+            _with_backend(lambda s, sm, b: _import_tenant(s, sm, args.file, _passphrase(confirm=False), args.slug))
+        )
     elif args.cmd == "create-tenant":
         password = getpass.getpass("Tenant admin password (min 12 chars): ")
         if len(password) < get_settings().password_min_length:
