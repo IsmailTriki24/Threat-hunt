@@ -28,7 +28,7 @@ sources or audit.
 * A password reset by the operator revokes the user's refresh tokens everywhere; a deactivation revokes them for that tenant.
 * Production bootstrap needs no demo seed: `python -m app.cli create-superadmin <email>` then `python -m app.cli create-tenant <slug> <name> <admin-email>`
   (the API uses the same `tenants.service.provision_tenant`). A tenant that is already configured moves between deployments with
-  `export-tenant` / `import-tenant` (`tenants/bundle.py`): members and log sources with credentials in one passphrase-sealed file, credentials
+  `export-tenant` / `import-tenant` (`tenants/bundle.py`): members, log sources and IOC feeds with credentials in one passphrase-sealed file, credentials
   re-encrypted under the target's key, import refuses an existing slug and is all-or-nothing.
 
 **Chosen on purpose.** The operator keeps full read access to a tenant's security data while acting inside it (decided with the owner), rather than a

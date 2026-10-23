@@ -102,8 +102,8 @@ docker compose exec backend rm /tmp/wifak.tenant-bundle && rm ./wifak.tenant-bun
 ```
 The file is encrypted with the passphrase (even the tenant name and SIEM addresses are hidden) and `*.tenant-bundle` is gitignored; send the passphrase
 by a different channel. Credentials are re-encrypted under the new server's own key. Import refuses a slug that already exists and is all-or-nothing.
-Not moved: telemetry, cases, hunts, detections, feeds and provider keys, and per-source runtime state (the worker re-collects). Push sources get a new
-ingest key, printed once. The new server must allow the SIEM networks (`OUTBOUND_ALLOWED_NETWORKS`).
+The tenant's IOC feeds move with their keys and settings and run at once on the new server. Not moved: telemetry, cases, hunts, detections, indicators and
+provider keys, and per-source and per-feed runtime state (the worker re-collects). Push sources get a new ingest key, printed once. The new server must allow the SIEM networks (`OUTBOUND_ALLOWED_NETWORKS`).
 
 ## SIEM / XDR sources (LogRhythm, Trend Vision One)
 Both are pull connectors collected by the worker every 5 minutes. The **platform administrator** attaches them to a tenant (*Tenants → Open*, then *Data Sources*; tenant users see them read-only), then use **Set credential** to add the

@@ -1,9 +1,9 @@
-"""Move one tenant between deployments: settings, members and log sources (with credentials) in one sealed file.
+"""Move one tenant between deployments: settings, members, log sources and IOC feeds (with credentials), sealed.
 
 The file is opaque without the passphrase (scrypt -> Fernet over the whole payload, so even the tenant name and the SIEM
 addresses are hidden). Credentials are decrypted with the source deployment's key on export and re-encrypted with the
-target's key on import. NOT moved: telemetry, cases, hunts, detections, feeds, provider keys, and per-source runtime
-state (cursors, health, counters), which rebuild themselves.
+target's key on import. NOT moved: telemetry, cases, hunts, detections, indicators, provider keys, and per-source and
+per-feed runtime state (cursors, health, counters, last run), which rebuild themselves: an imported feed runs at once.
 """
 
 import base64
@@ -19,10 +19,12 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.connectors import registry
 from app.core.config import Settings
-from app.core.crypto import decrypt_json
+from app.core.crypto import decrypt_json, encrypt_json
 from app.core.errors import AppError, Conflict, NotFound
 from app.datasources import service as ds_service
 from app.datasources.models import DataSource
+from app.iochunt.feeds import registry as feed_registry
+from app.iochunt.models import IocFeed
 from app.tenants.models import Tenant
 from app.users.models import Membership, User
 
@@ -64,6 +66,9 @@ async def export_tenant(session: AsyncSession, settings: Settings, slug: str) ->
     sources = (
         await session.execute(select(DataSource).where(DataSource.tenant_id == tenant.id).order_by(DataSource.name))
     ).scalars()
+    feeds = (
+        await session.execute(select(IocFeed).where(IocFeed.tenant_id == tenant.id).order_by(IocFeed.name))
+    ).scalars()
     members = await session.execute(
         select(User, Membership)
         .join(Membership, Membership.user_id == User.id)
@@ -99,6 +104,20 @@ async def export_tenant(session: AsyncSession, settings: Settings, slug: str) ->
             }
             for d in sources
         ],
+        "feeds": [
+            {
+                "name": f.name,
+                "feed_type": f.feed_type,
+                "config": f.config,
+                "secrets": {k: str(v) for k, v in decrypt_json(settings, f.secrets_enc).items()},
+                "enabled": f.enabled,
+                "interval_minutes": f.interval_minutes,
+                "max_age_days": f.max_age_days,
+                "min_confidence": f.min_confidence,
+                "max_items": f.max_items,
+            }
+            for f in feeds
+        ],
     }
 
 
@@ -109,15 +128,18 @@ async def import_tenant(
     try:
         t = payload["tenant"]
         members, sources = payload["members"], payload["data_sources"]
+        feeds = payload.get("feeds", [])  # bundles written before feeds were moved have none
         target_slug = slug or t["slug"]
         if (await session.execute(select(Tenant.id).where(Tenant.slug == target_slug))).first():
             raise Conflict(f"A tenant with slug {target_slug!r} already exists here; nothing was imported")
         for s in sources:  # validate everything before writing anything
             registry.build(s["connector_type"], s["config"])
+        for f in feeds:
+            feed_registry.build(f["feed_type"], f["config"])
     except (KeyError, TypeError):
         raise AppError("The file is not a tenant bundle") from None
     except (ValidationError, ValueError) as exc:
-        raise AppError(f"A log source in the bundle is not valid for this version: {str(exc)[:200]}") from None
+        raise AppError(f"A log source or feed in the bundle is not valid for this version: {str(exc)[:200]}") from None
 
     tenant = Tenant(slug=target_slug, name=t["name"], retention_days=t["retention_days"], is_active=t["is_active"])
     session.add(tenant)
@@ -156,11 +178,27 @@ async def import_tenant(
         )
         if not registry._REGISTRY[s["connector_type"]].supports_collect:  # noqa: SLF001  push sources need their new key
             new_keys[s["name"]] = raw_key
+    for f in feeds:
+        session.add(
+            IocFeed(
+                tenant_id=tenant.id,
+                name=f["name"],
+                feed_type=f["feed_type"],
+                config=f["config"],
+                secrets_enc=encrypt_json(settings, f["secrets"]) if f["secrets"] else None,
+                enabled=f["enabled"],
+                interval_minutes=f["interval_minutes"],
+                max_age_days=f["max_age_days"],
+                min_confidence=f["min_confidence"],
+                max_items=f["max_items"],
+            )
+        )
     await session.flush()
     return {
         "slug": target_slug,
         "members_created": created,
         "members_attached": attached,
         "data_sources": len(sources),
+        "feeds": len(feeds),
         "ingest_keys": new_keys,
     }

@@ -124,7 +124,7 @@ async def _export_tenant(
         fh.write(bundle.seal(payload, passphrase))
     print(  # noqa: T201
         f"Wrote {path}: tenant {slug}, {len(payload['members'])} member(s), "
-        f"{len(payload['data_sources'])} log source(s). Keep it out of git."
+        f"{len(payload['data_sources'])} log source(s), {len(payload['feeds'])} IOC feed(s). Keep it out of git."
     )
 
 
@@ -142,7 +142,7 @@ async def _import_tenant(
     except AppError as exc:
         raise SystemExit(exc.message) from None
     print(  # noqa: T201
-        f"Imported tenant {result['slug']}: {result['data_sources']} log source(s), "
+        f"Imported tenant {result['slug']}: {result['data_sources']} log source(s), {result['feeds']} IOC feed(s), "
         f"{result['members_created']} new member(s), {result['members_attached']} existing account(s) attached."
     )
     for name, key in result["ingest_keys"].items():

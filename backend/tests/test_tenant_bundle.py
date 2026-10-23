@@ -1,7 +1,8 @@
-"""Moving a tenant (settings, members, log sources with credentials) between deployments."""
+"""Moving a tenant (settings, members, log sources and IOC feeds with credentials) between deployments."""
 
 import json
 import stat
+from datetime import UTC, datetime
 
 import pytest
 import sqlalchemy as sa
@@ -13,6 +14,7 @@ from app.core.crypto import decrypt_json
 from app.core.errors import AppError, Conflict
 from app.datasources import service as ds_service
 from app.datasources.models import DataSource
+from app.iochunt.models import IocFeed
 from app.tenants import bundle
 from app.tenants.models import Tenant
 from app.users.models import Membership, User
@@ -20,10 +22,11 @@ from tests.conftest import PASSWORD
 
 PASS = "correct horse battery staple"
 SECRET = "SUPER-SECRET-TOKEN-123"
+FEED_SECRET = "FEED-API-KEY-456"
 
 
 async def _seed(make, app):
-    """A tenant with an admin, an analyst, one pull source with a credential and one push source."""
+    """A tenant with an admin, an analyst, one pull source with a credential, one push source and two IOC feeds."""
     t = await make.tenant("Bank Of Test")
     admin, _ = await make.login_as(t, Role.TENANT_ADMIN)
     analyst, _ = await make.login_as(t, Role.SOC_ANALYST)
@@ -38,6 +41,23 @@ async def _seed(make, app):
             )
         )
         s.add(DataSource(tenant_id=t.id, name="push", connector_type="sysmon", config={}, enabled=False))
+        s.add(
+            IocFeed(
+                tenant_id=t.id,
+                name="OTX",
+                feed_type="otx",
+                config={"max_pages": 5},
+                secrets_enc=ds_service.encrypt_secrets(get_settings(), {"api_key": FEED_SECRET}),
+                interval_minutes=120,
+                max_age_days=30,
+                min_confidence=40,
+                max_items=900,
+                last_run_at=datetime.now(UTC),
+                last_status="error",
+                last_detail="old failure",
+            )
+        )
+        s.add(IocFeed(tenant_id=t.id, name="Feodo", feed_type="feodo", config={}, enabled=False))
         await s.commit()
     return t, admin, analyst
 
@@ -60,7 +80,9 @@ async def test_round_trip_recreates_the_tenant_its_sources_and_credentials(app, 
     # through the file format, as a real move would
     payload = bundle.unseal(bundle.seal(payload, PASS), PASS)
     out = await _import(app, payload, slug="bank-copy")
-    assert out["data_sources"] == 2 and out["members_attached"] == 2 and out["members_created"] == 0
+    assert (
+        out["data_sources"] == 2 and out["feeds"] == 2 and out["members_attached"] == 2 and out["members_created"] == 0
+    )
 
     copy = (await db.execute(sa.select(Tenant).where(Tenant.slug == "bank-copy"))).scalar_one()
     assert copy.name == "Bank Of Test" and copy.id != t.id
@@ -80,6 +102,39 @@ async def test_round_trip_recreates_the_tenant_its_sources_and_credentials(app, 
         await db.execute(sa.select(DataSource).where(DataSource.tenant_id == t.id, DataSource.name == "push"))
     ).scalar_one()
     assert original.ingest_key_hash != sources["push"].ingest_key_hash
+
+
+async def test_feeds_arrive_with_their_settings_and_credentials_but_not_their_run_history(app, make, db):
+    t, *_ = await _seed(make, app)
+    payload = bundle.unseal(bundle.seal(await _export(app, t.slug), PASS), PASS)
+    await _import(app, payload, slug="bank-feeds")
+    copy = (await db.execute(sa.select(Tenant).where(Tenant.slug == "bank-feeds"))).scalar_one()
+    feeds = {f.name: f for f in (await db.execute(sa.select(IocFeed).where(IocFeed.tenant_id == copy.id))).scalars()}
+    otx = feeds["OTX"]
+    assert (otx.feed_type, otx.config, otx.interval_minutes, otx.max_age_days) == ("otx", {"max_pages": 5}, 120, 30)
+    assert (otx.min_confidence, otx.max_items, otx.enabled) == (40, 900, True)
+    assert decrypt_json(get_settings(), otx.secrets_enc) == {"api_key": FEED_SECRET}
+    assert feeds["Feodo"].enabled is False and feeds["Feodo"].secrets_enc is None
+    # runs at the next refresh, with no history carried over from the other deployment
+    assert otx.last_run_at is None and otx.last_status == "" and otx.last_detail == ""
+    assert "FEED-API-KEY-456" not in json.dumps(bundle.seal(payload, PASS).decode())
+
+
+async def test_a_bundle_written_before_feeds_were_moved_still_imports(app, make, db):
+    t, *_ = await _seed(make, app)
+    payload = await _export(app, t.slug)
+    del payload["feeds"]
+    out = await _import(app, payload, slug="bank-old-bundle")
+    assert out["feeds"] == 0 and out["data_sources"] == 2
+
+
+async def test_an_unknown_feed_type_stops_the_whole_import(app, make, db):
+    t, *_ = await _seed(make, app)
+    payload = await _export(app, t.slug)
+    payload["feeds"].append({**payload["feeds"][0], "name": "bad", "feed_type": "no-such-feed"})
+    with pytest.raises(AppError):
+        await _import(app, payload, slug="bank-bad-feed")
+    assert (await db.execute(sa.select(Tenant).where(Tenant.slug == "bank-bad-feed"))).first() is None
 
 
 async def test_only_push_sources_get_an_ingest_key_printed(app, make):
