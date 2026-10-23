@@ -19,7 +19,9 @@ data/
 
 # Sealed tenant exports (python -m app.cli export-tenant): contain SIEM credentials even though encrypted
 *.tenant-bundle
-tenant-bundles/
+tenant-bundles/*
+# The one bundle deliberately kept in the repository, so the Wifak Bank tenant can be imported on the production server.
+!tenant-bundles/wifak-bank.tenant-bundle
 
 # Site-local compose settings (host aliases, local ports)
 docker-compose.override.yml
