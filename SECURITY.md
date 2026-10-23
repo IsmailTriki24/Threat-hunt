@@ -8,7 +8,7 @@ Report vulnerabilities privately to the maintainers; do not open public issues f
 |---|---|
 | Tenant isolation | derived server-side from DB-validated membership; mandatory tenant filter in the search layer; 404 for foreign objects; dedicated test suite (`tests/test_tenant_isolation.py`) |
 | Authn | Argon2id; uniform login errors; per-IP and per-email rate limits; 15-min access JWT (alg pinned, aud/iss required); rotating single-use refresh tokens with reuse detection; HttpOnly+SameSite=Strict cookie + CSRF header |
-| Authz | server-side `require(Permission)` on every route; roles re-read from DB each request; denied attempts audited |
+| Authz | server-side `require(Permission)` on every route; roles re-read from DB each request; denied attempts audited; platform permissions (tenants, cross-tenant audit, log-source management) held by `SUPER_ADMIN` only, enforced by a test (ADR 0026) |
 | Query injection | no raw DSL; field/operator/sort/agg allow-lists from the field registry; typed value coercion; free text via `simple_query_string` with a restricted flag set; `dynamic: strict` mapping |
 | SQL injection | SQLAlchemy parameterised queries only |
 | Input limits | body-size cap (incl. chunked), batch caps, field length caps, `raw` ≤ 64 KiB, window/size caps |
@@ -32,7 +32,8 @@ Report vulnerabilities privately to the maintainers; do not open public issues f
 * The rate limiter trusts the socket peer address; behind a proxy configure trusted proxy headers (`--forwarded-allow-ips`).
 * No MFA/SSO, password reset or account lockout (only rate limiting) yet. Connector auth uses per-source ingest keys (rotatable).
 * HS256 signing key is shared by anything that verifies tokens; move to asymmetric keys when more services verify.
-* Creating a user with an e-mail that exists in another tenant returns 409 (limited enumeration by tenant admins).
+* Creating a user with an e-mail that exists in another tenant returns 409 (limited enumeration by tenant admins). Only the platform operator can attach an existing account to another tenant.
+* The platform operator can read any tenant's data while acting inside it (audited; ADR 0026). Treat `SUPER_ADMIN` accounts as break-glass: few, individually named, strong passwords.
 * Outbound fetches (pull connectors today, enrichment adapters in M4) must go through `core/ssrf.py`. Network-level egress policy
   (firewall / proxy allow-list) is still recommended as a second layer.
 * Any future tool execution (response actions, AI tools) must go through an explicit, audited boundary; nothing in this

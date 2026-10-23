@@ -22,7 +22,7 @@ and, later, the AI planner use), and **connectors** (all integrations behind one
 |---|---|
 | `core/` | settings (fail-closed secret validation), JSON logging with request context, DB engine/session (UoW per request), error model, rate limiting, security middleware, metrics, password/JWT primitives |
 | `auth/` | RBAC (`rbac.py`: roles→permissions), `Principal` + `require(permission)` dependency, login/refresh/logout/switch-tenant |
-| `tenants/`, `users/` | tenant lifecycle (platform admin), tenant membership & user management (tenant admin) |
+| `tenants/`, `users/` | tenant lifecycle and any tenant's members (platform operator), a tenant's own users (tenant admin); one provisioning path shared by API and CLI |
 | `audit/` | append-only audit trail (DB trigger rejects UPDATE/DELETE), written in its own transaction |
 | `events/` | canonical schema, **field registry**, engine-neutral `EventQuery`, `SearchBackend` protocol + OpenSearch implementation, ingestion service, pivots, HTTP API |
 | `hunts/` | hunts, hypotheses, saved queries, per-user history, findings (evidence snapshots), notes, CSV/JSON export |
@@ -48,7 +48,10 @@ and, later, the AI planner use), and **connectors** (all integrations behind one
 4. Handlers receive `principal.tid`; services never read a tenant id from the request.
 
 Roles (`SUPER_ADMIN`, `TENANT_ADMIN`, `SOC_ANALYST`, `THREAT_HUNTER`, `INCIDENT_RESPONDER`, `VIEWER`) map to permissions in one table
-(`auth/rbac.py`). Today the analyst-type roles share read access; they diverge as hunts/cases/detections land.
+(`auth/rbac.py`). `SUPER_ADMIN` is the platform operator: the only holder of the platform permissions (`tenants:manage`, `audit:platform`,
+`datasources:manage`), so log sources and their credentials are assigned to a tenant by the operator, never by the tenant (ADR 0026). Tenant roles
+see them read-only. A tenant always keeps one active `TENANT_ADMIN`. Today the analyst-type roles share read access; they diverge as
+hunts/cases/detections land.
 
 ## 5. Telemetry pipeline
 `raw record → Connector.normalize → EventIn → Event.from_input(tenant_id from principal) → bulk create into <family>-YYYY.MM.DD`.

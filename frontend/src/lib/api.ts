@@ -12,6 +12,7 @@ import type {
   CaseEvidence, CaseIoc, CaseOut, CaseReport, CaseUpdate, ConnectorInfo, DataSource, SiemHitsPage, SiemQueryResult, SiemScopes, SiemSourceInfo, DataSourceCreate, IocType,
   BatchVerdict, EnrichCaseResult, EntityUpdate, IntelDetail, IntelEntity, IntelProvider, LookupBody, Sightings, StixImportResult,
   MappingCreate, MatrixColumn, MitreMapping, MitreTactic, MitreTechnique, SuggestResponse, TechniqueSummary,
+  PlatformMemberCreate, PlatformMemberUpdate, TenantCreate, TenantSummary,
 } from "./api-types";
 
 const CSRF = { "X-Requested-With": "threat-hunt" };
@@ -313,6 +314,14 @@ export const api = {
   listUsers: () => request<MemberOut[]>("/api/v1/users"),
   createUser: (u: UserCreate) => request<MemberOut>("/api/v1/users", { method: "POST", body: u }),
   currentTenant: () => request<TenantOut>("/api/v1/tenants/current"),
+  // platform operator (super admin)
+  platformAudit: (qs = "") => request<AuditRow[]>(`/api/v1/audit/platform${qs}`),
+  tenants: () => request<TenantSummary[]>("/api/v1/tenants"),
+  createTenant: (b: TenantCreate) => request<TenantOut>("/api/v1/tenants", J(b)),
+  updateTenant: (id: string, b: { name?: string; is_active?: boolean; retention_days?: number }) => request<TenantOut>(`/api/v1/tenants/${enc(id)}`, { method: "PATCH", body: b }),
+  tenantMembers: (id: string) => request<MemberOut[]>(`/api/v1/tenants/${enc(id)}/members`),
+  addTenantMember: (id: string, b: PlatformMemberCreate) => request<MemberOut>(`/api/v1/tenants/${enc(id)}/members`, J(b)),
+  updateTenantMember: (id: string, userId: string, b: PlatformMemberUpdate) => request<MemberOut>(`/api/v1/tenants/${enc(id)}/members/${enc(userId)}`, { method: "PATCH", body: b }),
   ready: async (): Promise<ReadyResponse> => {
     const res = await fetch("/backend-health/ready", { headers: { Accept: "application/json" } });
     // 503 still carries a useful body

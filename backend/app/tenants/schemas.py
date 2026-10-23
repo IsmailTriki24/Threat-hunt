@@ -25,3 +25,10 @@ class TenantOut(BaseModel):
     is_active: bool
     retention_days: int
     created_at: datetime
+
+
+class TenantSummary(TenantOut):
+    member_count: int
+    admin_count: int
+    data_source_count: int
+    data_sources_down: int

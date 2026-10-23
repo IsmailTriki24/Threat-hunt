@@ -9,13 +9,14 @@ import { Loading } from "./ui/skeleton";
 
 const PAGE = 50;
 
-export function AuditView() {
+/** `platform` reads the trail of every tenant (operator only) and adds a Tenant column; otherwise it is the caller's own tenant. */
+export function AuditView({ platform = false, tenantNames = {} }: { platform?: boolean; tenantNames?: Record<string, string> }) {
   const [draft, setDraft] = useState<AuditFilters>(defaultAuditFilters());
   const [applied, setApplied] = useState<AuditFilters>(defaultAuditFilters());
   const [offset, setOffset] = useState(0);
   const [open, setOpen] = useState<string | null>(null);
   const qs = auditQuery(applied, offset, PAGE);
-  const rows = useQuery({ queryKey: ["audit", qs], queryFn: () => api.audit(qs) });
+  const rows = useQuery({ queryKey: [platform ? "audit-platform" : "audit", qs], queryFn: () => (platform ? api.platformAudit(qs) : api.audit(qs)) });
   const set = <K extends keyof AuditFilters>(k: K, v: string) => setDraft((d) => ({ ...d, [k]: v }));
   const apply = () => { setOffset(0); setApplied(draft); };
 
@@ -37,12 +38,13 @@ export function AuditView() {
       {rows.isLoading && <Loading />}
       {rows.data && (rows.data.length === 0 ? <p className="panel p-4 text-muted">No audit records match.</p> : (
         <table className="w-full">
-          <thead><tr>{["Time (UTC)", "Action", "Outcome", "Actor", "Resource", "IP", ""].map((h) => <th key={h} className="th" scope="col">{h}</th>)}</tr></thead>
+          <thead><tr>{["Time (UTC)", ...(platform ? ["Tenant"] : []), "Action", "Outcome", "Actor", "Resource", "IP", ""].map((h) => <th key={h} className="th" scope="col">{h}</th>)}</tr></thead>
           <tbody>
             {rows.data.map((r) => (
               <Fragment key={r.id}>
                 <tr className="hover:bg-bg">
                   <td className="td font-mono whitespace-nowrap">{fmtTime(r.created_at)}</td>
+                  {platform && <td className="td">{r.tenant_id ? (tenantNames[r.tenant_id] ?? r.tenant_id) : <span className="text-muted">platform</span>}</td>}
                   <td className="td">{r.action}</td>
                   <td className={`td ${r.outcome === "success" ? "" : "text-orange-300"}`}>{r.outcome}</td>
                   <td className="td">{r.actor}</td>
@@ -51,7 +53,7 @@ export function AuditView() {
                   <td className="td"><button className="btn btn-sm" aria-expanded={open === r.id} onClick={() => setOpen(open === r.id ? null : r.id)}>Details</button></td>
                 </tr>
                 {open === r.id && (
-                  <tr><td colSpan={7} className="td bg-bg"><pre className="text-xs whitespace-pre-wrap break-all">{JSON.stringify({ ...r.details, request_id: r.request_id, resource_id: r.resource_id }, null, 2)}</pre></td></tr>
+                  <tr><td colSpan={platform ? 8 : 7} className="td bg-bg"><pre className="text-xs whitespace-pre-wrap break-all">{JSON.stringify({ ...r.details, request_id: r.request_id, resource_id: r.resource_id }, null, 2)}</pre></td></tr>
                 )}
               </Fragment>
             ))}

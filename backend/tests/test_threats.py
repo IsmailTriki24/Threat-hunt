@@ -624,9 +624,10 @@ async def test_trend_upstream_runs_precise_behaviour_queries_and_verifies_result
         return httpx.Response(200, json={"items": [good, loose], "progressRate": 100})
 
     wire(handler)
+    _, operator = await make.login_as(t, Role.SUPER_ADMIN)  # log sources are assigned by the platform operator
     await client.post(
         "/api/v1/data-sources",
-        headers=h,
+        headers=operator,
         json={
             "name": "tm-ep",
             "connector_type": "trend_vision_one",

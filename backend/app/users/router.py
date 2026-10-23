@@ -12,21 +12,11 @@ from app.auth.rbac import TENANT_ROLES, Permission, Role
 from app.core.db import get_session
 from app.core.errors import AppError, Conflict, NotFound
 from app.core.security import hash_password
+from app.users import service as users
 from app.users.models import Membership, User
 from app.users.schemas import MemberOut, MemberUpdate, UserCreate
 
 router = APIRouter(prefix="/users", tags=["users"])
-
-
-def _out(user: User, membership: Membership) -> MemberOut:
-    return MemberOut(
-        user_id=user.id,
-        email=user.email,
-        full_name=user.full_name,
-        role=membership.role,
-        is_active=membership.is_active and user.is_active,
-        last_login_at=user.last_login_at,
-    )
 
 
 @router.get("", response_model=list[MemberOut])
@@ -39,7 +29,7 @@ async def list_members(
         .where(Membership.tenant_id == principal.tid)
         .order_by(User.email)
     )
-    return [_out(u, m) for u, m in rows.all()]
+    return [users.member_out(u, m) for u, m in rows.all()]
 
 
 @router.post("", response_model=MemberOut, status_code=201)
@@ -68,7 +58,7 @@ async def create_member(
         resource_id=str(user.id),
         details={"role": body.role.value},
     )
-    return _out(user, membership)
+    return users.member_out(user, membership)
 
 
 @router.patch("/{user_id}", response_model=MemberOut)
@@ -92,9 +82,11 @@ async def update_member(
     user, membership = row
     if user.id == principal.user_id:
         raise AppError("You cannot change your own role or status")
+    if body.role is not None and body.role not in TENANT_ROLES:
+        raise AppError("Role cannot be assigned to a tenant member")
+    if users.removes_admin(membership, new_role=body.role, new_active=body.is_active):
+        await users.ensure_tenant_keeps_an_admin(session, principal.tid, user.id)
     if body.role is not None:
-        if body.role not in TENANT_ROLES:
-            raise AppError("Role cannot be assigned to a tenant member")
         membership.role = body.role.value
     if body.is_active is not None:
         membership.is_active = body.is_active
@@ -108,7 +100,7 @@ async def update_member(
         resource_id=str(user.id),
         details=body.model_dump(mode="json", exclude_none=True),
     )
-    return _out(user, membership)
+    return users.member_out(user, membership)
 
 
 __all__ = ["Role", "router"]

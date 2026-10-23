@@ -18,6 +18,19 @@ class MemberUpdate(BaseModel):
     is_active: bool | None = None
 
 
+class PlatformMemberCreate(BaseModel):
+    """Super-admin add of a member to any tenant. An existing e-mail is attached as-is (no password needed)."""
+
+    email: EmailStr
+    full_name: str = Field(default="", max_length=200)
+    password: str | None = Field(default=None, min_length=12, max_length=256)
+    role: Role
+
+
+class PlatformMemberUpdate(MemberUpdate):
+    new_password: str | None = Field(default=None, min_length=12, max_length=256)
+
+
 class MemberOut(BaseModel):
     user_id: uuid.UUID
     email: str

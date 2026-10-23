@@ -7,7 +7,7 @@ import { useCallback, useEffect, useRef, useState, type ReactNode } from "react"
 import { api } from "@/lib/api";
 import { useAuth } from "@/lib/auth";
 import { targets } from "@/lib/global-search";
-import { breadcrumbs, isActive, NAV, NAV_GROUPS } from "@/lib/nav";
+import { breadcrumbs, isActive, NAV, visibleGroups } from "@/lib/nav";
 import { Tooltip } from "./ui/tooltip";
 
 export { NAV };
@@ -25,9 +25,10 @@ function Brand({ collapsed }: { collapsed?: boolean }) {
 function NavList({ path, collapsed, onNavigate }: { path: string; collapsed: boolean; onNavigate?: () => void }) {
   // A SIEM search keeps running (and its result is kept) while another module is open: say so on its entry.
   const siemBusy = useIsFetching({ queryKey: ["siem-query"] }) + useIsMutating({ mutationKey: ["siem-more"] }) > 0;
+  const { can } = useAuth();
   return (
     <nav aria-label="Primary" className="min-h-0 flex-1 overflow-y-auto px-2 py-3">
-      {NAV_GROUPS.map((g, gi) => (
+      {visibleGroups(can).map((g, gi) => (
         <div key={g.label} className={gi ? "mt-4" : ""}>
           {collapsed ? (gi ? <hr className="mx-2 mb-2 border-line" /> : null) : <div className="eyebrow px-2.5 pb-1">{g.label}</div>}
           <ul className="space-y-0.5">
@@ -154,6 +155,9 @@ export function Shell({ children }: { children: ReactNode }) {
   const [mobile, setMobile] = useState(false);
 
   useEffect(() => { if (status === "anon") router.replace("/login"); }, [status, router]);
+  // A platform operator has no tenant until they open one; every other module needs it, so start where they can pick.
+  const noTenantOperator = status === "authed" && !!session && session.role === "SUPER_ADMIN" && !session.tenant;
+  useEffect(() => { if (noTenantOperator && !path.startsWith("/tenants")) router.replace("/tenants"); }, [noTenantOperator, path, router]);
   useEffect(() => { try { setCollapsed(localStorage.getItem(COLLAPSE_KEY) === "1"); } catch { /* storage blocked: default expanded */ } }, []);
   useEffect(() => { setMobile(false); }, [path]);
   const toggle = useCallback(() => setCollapsed((c) => { try { localStorage.setItem(COLLAPSE_KEY, c ? "0" : "1"); } catch { /* ignore */ } return !c; }), []);

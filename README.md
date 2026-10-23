@@ -71,8 +71,17 @@ The UI is a light, enterprise-grade theme (purple identity `#7568E9`) built on t
 ## Threat intelligence
 Lookups work with **no API keys** (local heuristics + your own watch-list). Add ThreatFox/URLhaus (abuse.ch Auth-Key), OTX, VirusTotal or MISP credentials under *Threat Intelligence → Providers* (tenant admin). Import STIX bundles or pull a TAXII 2.1 collection into the watch-list. Load the full ATT&CK matrix with `python -m app.cli mitre-load --file enterprise-attack.json` (the curated subset loads on `init`).
 
+## Access model (tenants and roles)
+A **platform administrator** (`SUPER_ADMIN`) sees every tenant, creates tenants and their **tenant admin**, manages members, and assigns each tenant's
+log sources; tenant users never configure or see source credentials. Production bootstrap, no demo data needed:
+```
+python -m app.cli create-superadmin ops@example.com                    # prompts for a password
+python -m app.cli create-tenant wifak-bank "Wifak Bank" admin@wifak.example   # prompts for the admin password
+```
+Then sign in as the platform administrator, open the tenant and add its LogRhythm and Trend Vision One sources. See ADR 0026.
+
 ## SIEM / XDR sources (LogRhythm, Trend Vision One)
-Both are pull connectors collected by the worker every 5 minutes. Create them under *Data Sources*, then use **Set credential** to add the
+Both are pull connectors collected by the worker every 5 minutes. The **platform administrator** attaches them to a tenant (*Tenants → Open*, then *Data Sources*; tenant users see them read-only), then use **Set credential** to add the
 token / API key (write-only, stored encrypted). Trend Vision One: pick a `region` and one `dataset` per source (`alerts`, `oat`, `detections`,
 `endpoint_activity`, `identity_activity`, `email_activity`, `mobile_activity`, `network_activity`, `cloud_activity`, `container_activity`, `audit_logs`, `response_tasks`); `oat` and `endpoint_activity` can be very high volume (a mid-size tenant produced ~50 endpoint events/s, several GB/day), so use the `filter` / `query` options to ingest only what you hunt on.
 **Whole-SIEM search:** the connector collects only what its `hostname`/`query_filter` selects, but every search in *Events*, the hunt workspace and the threat map also asks the **whole** LogRhythm SIEM live for the indicators in it (IP, domain, hash, e-mail, host name) and imports the matching logs, so nothing stays invisible because of the collection scope (ADR 0018; switch off with `siem_search: false`). LogRhythm: set `base_url` (the :8501 gateway). Private hosts must be allow-listed on the server: `OUTBOUND_ALLOWED_NETWORKS=10.0.0.5/32` and add the

@@ -1,9 +1,9 @@
 import {
-  Bot, Boxes, Briefcase, Crosshair, Database, FileText, Globe, Grid3x3, LayoutDashboard, Radar, ScrollText, Search, Settings, ShieldCheck, Telescope,
+  Bot, Boxes, Briefcase, Building2, Crosshair, Database, FileText, Globe, Grid3x3, LayoutDashboard, Radar, ScrollText, Search, Settings, ShieldCheck, Telescope,
   type LucideIcon,
 } from "lucide-react";
 
-export interface NavItem { href: string; label: string; icon: LucideIcon; hint: string }
+export interface NavItem { href: string; label: string; icon: LucideIcon; hint: string; /** Hidden from people whose role lacks this permission. The server enforces it regardless. */ perm?: string }
 export interface NavGroup { label: string; items: NavItem[] }
 
 /** The single source of truth for navigation, breadcrumbs and page titles. Grouped by what an analyst is doing, not by how the code is organised. */
@@ -27,11 +27,16 @@ export const NAV_GROUPS: NavGroup[] = [
   ] },
   { label: "Manage", items: [
     { href: "/assets", label: "Assets", icon: Boxes, hint: "Hosts, users and relationships" },
+    { href: "/tenants", label: "Tenants", icon: Building2, hint: "Organisations, their admins and assigned log sources", perm: "tenants:manage" },
     { href: "/data-sources", label: "Data Sources", icon: Database, hint: "Connectors and ingestion" },
     { href: "/reports", label: "Reports", icon: FileText, hint: "Case reports" },
     { href: "/settings", label: "Settings", icon: Settings, hint: "Users, tenants and preferences" },
   ] },
 ];
+
+/** The groups a person may use; groups left empty are dropped. */
+export const visibleGroups = (can: (permission: string) => boolean): NavGroup[] =>
+  NAV_GROUPS.map((g) => ({ ...g, items: g.items.filter((i) => !i.perm || can(i.perm)) })).filter((g) => g.items.length > 0);
 
 export const NAV: NavItem[] = NAV_GROUPS.flatMap((g) => g.items);
 

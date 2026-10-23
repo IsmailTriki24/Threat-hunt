@@ -111,7 +111,7 @@ def test_trend_queries_are_chunked_and_url_iocs_search_by_host():
 # ---- helpers ----------------------------------------------------------------------------------------
 async def _admin(client, make):
     t = await make.tenant()
-    user, h = await make.login_as(t, Role.TENANT_ADMIN)
+    user, h = await make.login_as(t, Role.SUPER_ADMIN)
     return t, user, h
 
 
@@ -597,7 +597,7 @@ async def test_validation_rules_and_isolation(client, make, app):
     ).json() == {"rejected": 1}
     ov = (await client.get(f"{API}/overview", headers=h)).json()
     assert ov["iocs_by_status"] == {"REJECTED": 1} and ov["hunts_by_status"] == {}
-    _, hb = await make.login_as(await make.tenant(), Role.TENANT_ADMIN)
+    _, hb = await make.login_as(await make.tenant(), Role.SUPER_ADMIN)
     assert (await client.get(f"{API}/hunts", headers=hb)).json() == []
     _ = Settings
 

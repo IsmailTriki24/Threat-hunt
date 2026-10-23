@@ -65,7 +65,7 @@ async def _setup(
 ):
     """A tenant with a SIEM source and validated, already-hunted (so they own a case) indicators."""
     t = await make.tenant()
-    _, h = await make.login_as(t, Role.TENANT_ADMIN)
+    _, h = await make.login_as(t, Role.SUPER_ADMIN)
     wire(empty_siem)
     r = await client.post(
         "/api/v1/data-sources",

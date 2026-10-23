@@ -2,7 +2,7 @@ import { existsSync } from "node:fs";
 import { join } from "node:path";
 import { eventsHref, scopesFor, targets } from "@/lib/global-search";
 import { detectType } from "@/lib/indicator";
-import { breadcrumbs, isActive, NAV, NAV_GROUPS } from "@/lib/nav";
+import { breadcrumbs, isActive, NAV, NAV_GROUPS, visibleGroups } from "@/lib/nav";
 
 describe("navigation model", () => {
   it("every item points at a real route and appears once", () => {
@@ -16,6 +16,13 @@ describe("navigation model", () => {
   it("every group has a label and items; every item has an icon and a hint", () => {
     for (const g of NAV_GROUPS) { expect(g.label).toBeTruthy(); expect(g.items.length).toBeGreaterThan(0); }
     for (const n of NAV) { expect(n.icon).toBeTruthy(); expect(n.hint.length).toBeGreaterThan(5); }
+  });
+  it("shows platform-only entries to the platform administrator alone", () => {
+    const hrefs = (can: (p: string) => boolean) => visibleGroups(can).flatMap((g) => g.items.map((i) => i.href));
+    expect(hrefs(() => true)).toContain("/tenants");
+    expect(hrefs((p) => p !== "tenants:manage")).not.toContain("/tenants");
+    expect(hrefs((p) => p !== "tenants:manage")).toContain("/data-sources");
+    expect(visibleGroups(() => false).every((g) => g.items.length > 0)).toBe(true); // empty groups are dropped
   });
   it("matches by prefix at a path boundary, never by substring", () => {
     expect(isActive("/hunts", "/hunts/123")).toBe(true);

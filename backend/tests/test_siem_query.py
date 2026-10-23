@@ -21,7 +21,7 @@ STORED = {"start": (NOW - timedelta(days=1)).isoformat(), "end": (NOW + timedelt
 
 async def _env(client, make, app, wire, *, handler=None, trend=None, lr=True):
     t = await make.tenant()
-    _, h = await make.login_as(t, Role.TENANT_ADMIN)
+    _, h = await make.login_as(t, Role.SUPER_ADMIN)
     wire(handler or empty_siem)
     if lr:
         r = await client.post(
@@ -322,7 +322,7 @@ async def test_another_tenant_cannot_import_a_held_result(client, make, app, wir
     t, h = await _env(client, make, app, wire, handler=handler)
     out = await _q(client, h, q="203.0.113.5")
     other = await make.tenant()
-    _, h2 = await make.login_as(other, Role.TENANT_ADMIN)
+    _, h2 = await make.login_as(other, Role.SUPER_ADMIN)
     r = await client.post(
         f"{API}/siem-import", headers=h2, json={"search_id": out["search_id"], "ids": [out["hits"][0]["id"]]}
     )
@@ -426,7 +426,7 @@ async def test_a_held_result_expires_and_is_never_readable_by_another_tenant(cli
     sid = (await _q(client, h, q="203.0.113.5"))["search_id"]
     assert (await _hits(client, h, sid, 0))["expired"] is False
     other = await make.tenant()
-    _, h2 = await make.login_as(other, Role.TENANT_ADMIN)
+    _, h2 = await make.login_as(other, Role.SUPER_ADMIN)
     stolen = await _hits(client, h2, sid, 0)
     assert stolen["expired"] is True and stolen["hits"] == []  # the key carries the tenant: another tenant sees nothing
     assert (await _hits(client, h, "0" * 32, 0))["expired"] is True  # unknown / expired id

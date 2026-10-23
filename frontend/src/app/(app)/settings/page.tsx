@@ -14,7 +14,7 @@ import { useAuth } from "@/lib/auth";
 
 const ROLES = ["TENANT_ADMIN", "SOC_ANALYST", "THREAT_HUNTER", "INCIDENT_RESPONDER", "VIEWER"];
 const ROLE_NOTE: Record<string, string> = {
-  TENANT_ADMIN: "Manages users, feeds, data sources and validates IOCs", SOC_ANALYST: "Hunts, investigates and works cases", THREAT_HUNTER: "Hunts and authors detections",
+  TENANT_ADMIN: "Manages users and feeds, and validates IOCs", SOC_ANALYST: "Hunts, investigates and works cases", THREAT_HUNTER: "Hunts and authors detections",
   INCIDENT_RESPONDER: "Works and closes cases", VIEWER: "Read-only access",
 };
 const err = (e: unknown, fallback: string) => (e instanceof ApiError ? e.friendly : fallback);

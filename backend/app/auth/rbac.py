@@ -29,7 +29,9 @@ class Permission(StrEnum):
     ASSETS_READ = "assets:read"
     ASSETS_WRITE = "assets:write"
     DATASOURCES_READ = "datasources:read"
-    DATASOURCES_MANAGE = "datasources:manage"
+    DATASOURCES_MANAGE = (
+        "datasources:manage"  # platform-owned: log sources and their credentials are assigned per tenant
+    )
     INTEL_READ = "intel:read"
     INTEL_WRITE = "intel:write"
     INTEL_MANAGE = "intel:manage"
@@ -42,8 +44,15 @@ class Permission(StrEnum):
     IOCHUNT_READ = "iochunt:read"
     IOCHUNT_VALIDATE = "iochunt:validate"  # approve/reject IOCs -> launches the automatic hunt
     IOCHUNT_MANAGE = "iochunt:manage"  # feeds and allow-list
-    TENANTS_MANAGE = "tenants:manage"  # platform-wide: create/disable tenants
+    # Platform-level: only SUPER_ADMIN holds these (see PLATFORM_PERMISSIONS).
+    TENANTS_MANAGE = "tenants:manage"  # create/disable tenants, manage any tenant's members
+    AUDIT_PLATFORM = "audit:platform"  # read the audit trail across every tenant
 
+
+# Granted to SUPER_ADMIN only; tests/test_rbac.py fails if any tenant role ever receives one.
+PLATFORM_PERMISSIONS: frozenset[Permission] = frozenset(
+    {Permission.TENANTS_MANAGE, Permission.AUDIT_PLATFORM, Permission.DATASOURCES_MANAGE}
+)
 
 _ANALYST = {
     Permission.EVENTS_READ,
@@ -95,7 +104,6 @@ ROLE_PERMISSIONS: dict[Role, frozenset[Permission]] = {
             Permission.ASSETS_READ,
             Permission.ASSETS_WRITE,
             Permission.DATASOURCES_READ,
-            Permission.DATASOURCES_MANAGE,
             Permission.INTEL_READ,
             Permission.INTEL_WRITE,
             Permission.INTEL_MANAGE,

@@ -102,6 +102,11 @@ export interface TenantOut {
   id: string; slug: string; name: string; is_active: boolean; retention_days: number; created_at: string;
 }
 export interface UserCreate { email: string; full_name: string; password: string; role: string }
+export interface TenantSummary extends TenantOut { member_count: number; admin_count: number; data_source_count: number; data_sources_down: number }
+export interface TenantCreate { slug: string; name: string; retention_days?: number; admin_email?: string; admin_password?: string }
+/** Platform operator adding a member to any tenant. Omit `password` to attach an account that already exists. */
+export interface PlatformMemberCreate { email: string; full_name?: string; password?: string; role: string }
+export interface PlatformMemberUpdate { role?: string; is_active?: boolean; new_password?: string }
 
 export interface ReadyResponse {
   status: string;
@@ -185,7 +190,7 @@ export interface CaseActivity {
 export interface CaseReport { id: string; version: number; kind?: "case" | "hunt"; data?: Record<string, unknown> | null; content: string; created_by: string | null; created_at: string }
 export interface CaseAssetRef { id: string; type: string; key: string; display_name: string; criticality: string; last_seen: string | null }
 export interface AuditRow {
-  id: string; created_at: string; action: string; outcome: string; actor: string | null; actor_id?: string | null;
+  id: string; tenant_id?: string | null; created_at: string; action: string; outcome: string; actor: string | null; actor_id?: string | null;
   resource_type?: string | null; resource_id?: string | null; ip: string | null; request_id?: string | null; details: Record<string, unknown>;
 }
 

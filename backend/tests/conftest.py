@@ -123,6 +123,9 @@ class Factory:
         return {"authorization": f"Bearer {token}"}
 
     async def login_as(self, tenant: Tenant, role: Role) -> tuple[User, dict[str, str]]:
+        if role is Role.SUPER_ADMIN:  # the platform operator acting inside a tenant: owns its log sources
+            u = await self.user(None, None, super_admin=True)
+            return u, self.headers(u, tenant)
         u = await self.user(tenant, role)
         return u, self.headers(u, tenant)
 

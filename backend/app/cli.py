@@ -1,4 +1,4 @@
-"""Operational CLI: `python -m app.cli init|seed|create-superadmin`."""
+"""Operational CLI: `python -m app.cli init|migrate|mitre-load|create-superadmin|create-tenant`."""
 
 import argparse
 import asyncio
@@ -68,6 +68,29 @@ async def _create_superadmin(sessionmaker: async_sessionmaker[AsyncSession], ema
         await session.commit()
 
 
+async def _create_tenant(
+    sessionmaker: async_sessionmaker[AsyncSession], slug: str, name: str, admin_email: str, password: str
+) -> None:
+    from app.core.errors import AppError
+    from app.tenants.schemas import TenantCreate
+    from app.tenants.service import provision_tenant
+
+    body = TenantCreate(slug=slug, name=name, admin_email=admin_email, admin_password=password)  # validates slug/e-mail
+    async with sessionmaker() as session:
+        try:
+            await provision_tenant(
+                session,
+                slug=body.slug,
+                name=body.name,
+                retention_days=body.retention_days,
+                admin_email=body.admin_email,
+                admin_password=body.admin_password,
+            )
+        except AppError as exc:
+            raise SystemExit(exc.message) from None
+        await session.commit()
+
+
 async def _mitre_load(sessionmaker: async_sessionmaker[AsyncSession], file: str | None) -> None:
     from app.mitre.loader import import_stix_bundle, load_builtin
 
@@ -90,6 +113,10 @@ def main() -> None:
     ml.add_argument("--file", help="path to an official enterprise-attack STIX bundle (JSON)")
     sa = sub.add_parser("create-superadmin", help="create a platform super admin")
     sa.add_argument("email")
+    ct = sub.add_parser("create-tenant", help="create a tenant and its first tenant admin")
+    ct.add_argument("slug")
+    ct.add_argument("name")
+    ct.add_argument("admin_email")
     args = parser.parse_args()
 
     if args.cmd == "migrate":
@@ -104,6 +131,13 @@ def main() -> None:
         if len(password) < get_settings().password_min_length:
             raise SystemExit("password too short")
         asyncio.run(_with_backend(lambda s, sm, b: _create_superadmin(sm, args.email, password)))
+    elif args.cmd == "create-tenant":
+        password = getpass.getpass("Tenant admin password (min 12 chars): ")
+        if len(password) < get_settings().password_min_length:
+            raise SystemExit("password too short")
+        asyncio.run(
+            _with_backend(lambda s, sm, b: _create_tenant(sm, args.slug, args.name, args.admin_email, password))
+        )
 
 
 if __name__ == "__main__":

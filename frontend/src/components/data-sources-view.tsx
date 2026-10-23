@@ -188,7 +188,7 @@ export function DataSourcesView() {
   const rotate = useMutation({ mutationFn: (d: DataSource) => api.rotateKey(d.id), onSuccess: (d) => { if (d.ingest_key) setReveal({ id: d.id, key: d.ingest_key }); void refresh(); } });
   const remove = useMutation({ mutationFn: (d: DataSource) => api.deleteDataSource(d.id), onSuccess: refresh });
 
-  const hint = manage ? "" : "Requires datasources:manage";
+  const hint = manage ? "" : "Managed by the platform administrator";
   const { confirm, node: confirmNode } = useConfirm();
   return (
     <div className="space-y-3">
@@ -196,7 +196,7 @@ export function DataSourcesView() {
         <p className="text-sm text-muted">Push sources send events to their ingest endpoint with a per-source key; pull sources are collected by the worker every 5 minutes. LogRhythm and Trend sources are also swept every 5 minutes for the validated indicators; only logs that contain one are kept.</p>
         <button className="btn btn-primary ml-auto" disabled={!manage || !connectors.data} title={hint} onClick={() => setShowNew((s) => !s)}><Plus aria-hidden className="h-4 w-4" />New data source</button>
       </div>
-      {!manage && <p className="text-sm text-muted">Read-only: managing data sources requires the tenant admin role.</p>}
+      {!manage && <p className="text-sm text-muted">Read-only: log sources are assigned and configured by the platform administrator.</p>}
       {notice && <p role="status" className="flex items-start gap-2 rounded-lg border border-line bg-panel px-4 py-2.5 text-sm shadow-xs"><Info aria-hidden className="mt-0.5 h-4 w-4 shrink-0 text-accent" />{notice}</p>}
       <ErrorLine error={test.error ?? collect.error ?? rotate.error ?? remove.error ?? toggle.error} fallback="Action failed" />
       {showNew && manage && connectors.data && (

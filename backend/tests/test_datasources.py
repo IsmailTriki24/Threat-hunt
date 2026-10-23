@@ -50,7 +50,7 @@ async def test_catalog_lists_connectors_with_schemas(client, make):
 
 async def test_crud_validation_and_permissions(client, make):
     t = await make.tenant()
-    _, admin = await make.login_as(t, Role.TENANT_ADMIN)
+    _, admin = await make.login_as(t, Role.SUPER_ADMIN)
     _, analyst = await make.login_as(t, Role.SOC_ANALYST)
     ds = await _create(client, admin)
     assert ds["ingest_key"].startswith("hk_") and ds["health_status"] == "unknown"
@@ -75,7 +75,7 @@ async def test_crud_validation_and_permissions(client, make):
 
 async def test_secrets_are_encrypted_at_rest_and_never_returned(client, make, db):
     t = await make.tenant()
-    _, h = await make.login_as(t, Role.TENANT_ADMIN)
+    _, h = await make.login_as(t, Role.SUPER_ADMIN)
     ds = await _create(
         client,
         h,
@@ -96,7 +96,7 @@ async def test_secrets_are_encrypted_at_rest_and_never_returned(client, make, db
 
 async def test_ingest_with_key_stamps_tenant_from_the_source_and_updates_health(client, make):
     a, b = await make.tenant(), await make.tenant()
-    _, ha = await make.login_as(a, Role.TENANT_ADMIN)
+    _, ha = await make.login_as(a, Role.SUPER_ADMIN)
     _, hb = await make.login_as(b, Role.SOC_ANALYST)
     ds = await _create(client, ha)
     url, key = f"/api/v1/ingest/{ds['id']}", {"authorization": f"Bearer {ds['ingest_key']}"}
@@ -127,7 +127,7 @@ async def test_ingest_with_key_stamps_tenant_from_the_source_and_updates_health(
 )
 async def test_ingest_requires_valid_key(client, make, hdr):
     t = await make.tenant()
-    _, h = await make.login_as(t, Role.TENANT_ADMIN)
+    _, h = await make.login_as(t, Role.SUPER_ADMIN)
     ds = await _create(client, h)
     r = await client.post(f"/api/v1/ingest/{ds['id']}", headers=hdr, json={"events": [SYSMON]})
     assert r.status_code == 401
@@ -135,8 +135,8 @@ async def test_ingest_requires_valid_key(client, make, hdr):
 
 async def test_key_is_bound_to_its_source_tenant_and_rotation_revokes(client, make):
     a, b = await make.tenant(), await make.tenant()
-    _, ha = await make.login_as(a, Role.TENANT_ADMIN)
-    _, hb = await make.login_as(b, Role.TENANT_ADMIN)
+    _, ha = await make.login_as(a, Role.SUPER_ADMIN)
+    _, hb = await make.login_as(b, Role.SUPER_ADMIN)
     da, db_ = await _create(client, ha), await _create(client, hb)
     # A's key against B's source id (cross-tenant write attempt) and a user JWT as ingest key
     assert (
@@ -169,7 +169,7 @@ async def test_ingest_batch_limits_and_audit(client, make, db):
     from app.audit.models import AuditLog
 
     t = await make.tenant()
-    _, h = await make.login_as(t, Role.TENANT_ADMIN)
+    _, h = await make.login_as(t, Role.SUPER_ADMIN)
     ds = await _create(client, h)
     key = {"authorization": f"Bearer {ds['ingest_key']}"}
     url = f"/api/v1/ingest/{ds['id']}"
@@ -220,7 +220,7 @@ REST_CFG = {
 
 async def test_pull_connector_collects_with_secret_header_and_cursor(client, make, rest_mock, app):
     t = await make.tenant()
-    _, h = await make.login_as(t, Role.TENANT_ADMIN)
+    _, h = await make.login_as(t, Role.SUPER_ADMIN)
     ds = await _create(
         client,
         h,
@@ -251,7 +251,7 @@ async def test_pull_connector_collects_with_secret_header_and_cursor(client, mak
 
 async def test_pull_failure_marks_health_and_ssrf_targets_are_blocked(client, make, rest_mock):
     t = await make.tenant()
-    _, h = await make.login_as(t, Role.TENANT_ADMIN)
+    _, h = await make.login_as(t, Role.SUPER_ADMIN)
     bad_token = await _create(
         client,
         h,
@@ -296,7 +296,7 @@ def test_encryption_key_required_in_production():
 
 async def test_set_one_secret_keeps_the_others_and_never_echoes(client, make, db):
     t = await make.tenant()
-    _, h = await make.login_as(t, Role.TENANT_ADMIN)
+    _, h = await make.login_as(t, Role.SUPER_ADMIN)
     r = await client.post(
         "/api/v1/data-sources",
         headers=h,
@@ -331,7 +331,7 @@ async def test_set_one_secret_keeps_the_others_and_never_echoes(client, make, db
     assert (
         await client.put(f"/api/v1/data-sources/{ds['id']}/secrets/a", headers=analyst, json={"value": "v"})
     ).status_code == 403
-    _, other = await make.login_as(await make.tenant(), Role.TENANT_ADMIN)
+    _, other = await make.login_as(await make.tenant(), Role.SUPER_ADMIN)
     assert (
         await client.put(f"/api/v1/data-sources/{ds['id']}/secrets/a", headers=other, json={"value": "v"})
     ).status_code == 404
@@ -339,7 +339,7 @@ async def test_set_one_secret_keeps_the_others_and_never_echoes(client, make, db
 
 async def test_collect_now_reports_failure_instead_of_a_silent_zero(client, make, monkeypatch):
     t = await make.tenant()
-    _, h = await make.login_as(t, Role.TENANT_ADMIN)
+    _, h = await make.login_as(t, Role.SUPER_ADMIN)
     ds = (
         await client.post(
             "/api/v1/data-sources",

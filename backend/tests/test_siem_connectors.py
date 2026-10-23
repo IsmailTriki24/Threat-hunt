@@ -447,7 +447,7 @@ async def test_tm_auth_error_does_not_leak_key(wire):
 # ---- end to end through the data-source service ----------------------------------------------------
 async def test_collect_source_end_to_end_for_both_sources(client, make, wire, app, monkeypatch):
     t = await make.tenant()
-    _, h = await make.login_as(t, Role.TENANT_ADMIN)
+    _, h = await make.login_as(t, Role.SUPER_ADMIN)
     logs = [lr_log(messageId=f"m{i}", login=f"user{i}") for i in range(3)]
 
     def handler(request):
