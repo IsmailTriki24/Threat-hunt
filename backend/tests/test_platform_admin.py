@@ -114,7 +114,7 @@ async def test_operator_adds_members_and_reuses_an_account_across_tenants(client
     in_b = (await _login(client, "shared@example.com", tenant_id=b["id"])).json()["session"]
     assert in_b["role"] == "VIEWER" and "datasources:manage" not in in_b["permissions"]
     members = (await client.get(f"{T}/{a['id']}/members", headers=h)).json()
-    assert {m["email"] for m in members} == {"admin@mem-a.example", "shared@example.com"}
+    assert {m["email"] for m in members if m["role"] != "SUPER_ADMIN"} == {"admin@mem-a.example", "shared@example.com"}
 
 
 async def test_member_creation_rules(client, make, db):
@@ -279,3 +279,28 @@ async def test_cli_create_tenant_provisions_tenant_and_admin(app, db):
         await _create_tenant(app.state.sessionmaker, "cli-bank", "Again", "other@cli-bank.example", PASSWORD)
     with pytest.raises(SystemExit, match="already registered"):
         await _create_tenant(app.state.sessionmaker, "cli-bank-2", "Two", "admin@cli-bank.example", PASSWORD)
+
+
+# ---- super admins inside tenants ----------------------------------------------------------------------
+async def test_super_admins_are_listed_in_every_tenants_members_read_only(client, make):
+    sa_user, h = await _operator(make)
+    t = await make.tenant()
+    _, ha = await make.login_as(t, Role.TENANT_ADMIN)
+    for listing in (
+        (await client.get(f"{T}/{t.id}/members", headers=h)).json(),
+        (await client.get("/api/v1/users", headers=ha)).json(),
+    ):
+        row = next(m for m in listing if m["user_id"] == str(sa_user.id))
+        assert row["role"] == "SUPER_ADMIN"
+    # Listed, but not a membership: the tenant admin cannot change or deactivate them.
+    assert (await client.patch(f"/api/v1/users/{sa_user.id}", headers=ha, json={"is_active": False})).status_code == 404
+
+
+async def test_super_admin_signs_in_inside_a_tenant_and_can_take_cases(client, make):
+    sa_user = await make.user(None, None, super_admin=True)
+    t = await make.tenant()
+    r = await _login(client, sa_user.email, PASSWORD)
+    assert r.status_code == 200 and r.json()["session"]["tenant"] is not None
+    _, h = await make.login_as(t, Role.SOC_ANALYST)
+    case = await client.post("/api/v1/cases", headers=h, json={"title": "x", "assignee_id": str(sa_user.id)})
+    assert case.status_code == 201, case.text

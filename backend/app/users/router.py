@@ -29,7 +29,7 @@ async def list_members(
         .where(Membership.tenant_id == principal.tid)
         .order_by(User.email)
     )
-    return [users.member_out(u, m) for u, m in rows.all()]
+    return await users.with_platform_admins(session, [users.member_out(u, m) for u, m in rows.all()])
 
 
 @router.post("", response_model=MemberOut, status_code=201)

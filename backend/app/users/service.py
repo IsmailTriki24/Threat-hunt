@@ -20,6 +20,23 @@ def member_out(user: User, membership: Membership) -> MemberOut:
     )
 
 
+async def with_platform_admins(session: AsyncSession, members: list[MemberOut]) -> list[MemberOut]:
+    """Platform super admins act in every tenant, so each tenant's member list shows them after its They are not
+    own members. They are not memberships (role SUPER_ADMIN): the lists' edit actions do not apply to them."""
+    admins = (await session.execute(select(User).where(User.is_super_admin.is_(True)).order_by(User.email))).scalars()
+    return members + [
+        MemberOut(
+            user_id=u.id,
+            email=u.email,
+            full_name=u.full_name,
+            role=Role.SUPER_ADMIN.value,
+            is_active=u.is_active,
+            last_login_at=u.last_login_at,
+        )
+        for u in admins
+    ]
+
+
 async def ensure_tenant_keeps_an_admin(session: AsyncSession, tenant_id: uuid.UUID, leaving: uuid.UUID) -> None:
     """A tenant must always have someone who can manage it. Call before demoting or deactivating `leaving`."""
     remaining = (

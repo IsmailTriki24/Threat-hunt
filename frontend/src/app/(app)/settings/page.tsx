@@ -16,6 +16,7 @@ const ROLES = ["TENANT_ADMIN", "SOC_ANALYST", "THREAT_HUNTER", "INCIDENT_RESPOND
 const ROLE_NOTE: Record<string, string> = {
   TENANT_ADMIN: "Manages users and feeds, and validates IOCs", SOC_ANALYST: "Hunts, investigates and works cases", THREAT_HUNTER: "Hunts and authors detections",
   INCIDENT_RESPONDER: "Works and closes cases", VIEWER: "Read-only access",
+  SUPER_ADMIN: "Platform super admin: full access to every tenant (managed by the platform, not here)",
 };
 const err = (e: unknown, fallback: string) => (e instanceof ApiError ? e.friendly : fallback);
 

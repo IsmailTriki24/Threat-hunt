@@ -1,4 +1,4 @@
-const backend = process.env.BACKEND_INTERNAL_URL || "http://localhost:8000";
+const backend = process.env.BACKEND_INTERNAL_URL || "http://localhost:8100";
 const dev = process.env.NODE_ENV !== "production";
 
 const csp = [

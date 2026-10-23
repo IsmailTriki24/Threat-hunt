@@ -1,0 +1,8 @@
+# Keep LF everywhere so a Windows checkout still runs: shell scripts break under CRLF ("set: illegal option -"),
+# and files copied into the Linux images should match what CI sees.
+* text=auto eol=lf
+*.png binary
+*.jpg binary
+*.ico binary
+*.woff2 binary
+*.mmdb binary

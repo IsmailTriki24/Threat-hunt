@@ -22,10 +22,18 @@ docker compose logs init     # shows the generated demo password if SEED_PASSWOR
 ```
 | Service | URL |
 |---|---|
-| UI | http://localhost:3000 |
-| API + docs | http://localhost:8000/docs (`/health`, `/ready`, `/metrics`) |
-| OpenSearch | http://localhost:9200 (dev: security plugin off, loopback only) |
-| MinIO console | http://localhost:9001 |
+| UI | http://localhost:3100 |
+| API + docs | http://localhost:8100/docs (`/health`, `/ready`, `/metrics`) |
+| OpenSearch | http://localhost:9210 (dev: security plugin off, loopback only) |
+| MinIO console | http://localhost:9011 |
+
+**On your own PC.** Needs Docker (Docker Desktop on Windows/macOS) with about 4 GB of memory for it; nothing else.
+- Windows: run `./scripts/init-env.sh` from Git Bash or WSL, or in PowerShell just `copy .env.example .env` (the
+  `dev-only-` placeholders are accepted because `APP_ENV=development`; demo users then use `SEED_PASSWORD` from the file).
+- A port already taken on your machine: change it in `.env` (`FRONTEND_PORT`, `BACKEND_PORT`, …) and `docker compose up -d` again.
+- Sign-in is by password with the demo users below. Single sign-on stays off locally unless you fill in the `OIDC_*`
+  settings with a client whose redirect URI is `http://localhost:3100/api/auth/callback/authentik`.
+- Start over with empty data: `docker compose down -v`.
 
 `init` (one-shot) runs Alembic migrations, installs the OpenSearch index template, and — when `SEED_DEMO_DATA=true` — seeds two demo
 tenants with synthetic telemetry (the *Acme Bank* tenant contains a phishing → PowerShell → C2 → persistence → LSASS-dump → lateral-movement chain).
@@ -39,9 +47,9 @@ Log in as `analyst@globex.example` to confirm none of Acme's events are visible.
 
 ## Ingesting your own data
 ```bash
-TOKEN=$(curl -s localhost:8000/api/v1/auth/login -H 'content-type: application/json' \
+TOKEN=$(curl -s localhost:8100/api/v1/auth/login -H 'content-type: application/json' \
   -d '{"email":"admin@acme.example","password":"…"}' | jq -r .access_token)
-curl -s localhost:8000/api/v1/events/ingest -H "authorization: Bearer $TOKEN" -H 'content-type: application/json' -d '{
+curl -s localhost:8100/api/v1/events/ingest -H "authorization: Bearer $TOKEN" -H 'content-type: application/json' -d '{
   "source_type":"generic_json",
   "config":{"source":"myapp","default_event_type":"authentication",
             "field_map":{"timestamp":"ts","user.name":"who","auth.source_ip":"ip","outcome":"result"}},

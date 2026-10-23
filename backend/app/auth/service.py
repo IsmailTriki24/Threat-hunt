@@ -1,3 +1,4 @@
+import secrets
 import uuid
 from datetime import UTC, datetime, timedelta
 
@@ -63,14 +64,47 @@ async def authenticate(session: AsyncSession, email: str, password: str) -> User
     return user
 
 
-async def pick_tenant(session: AsyncSession, user: User, requested: uuid.UUID | None) -> uuid.UUID | None:
+async def sso_user(session: AsyncSession, settings: Settings, *, email: str, name: str) -> tuple[User | None, bool]:
+    """The platform user behind a verified SSO identity, created on first sign-in when OIDC_AUTO_PROVISION is on.
+    Returns (user or None, created). The random password is never shown: these users sign in through SSO."""
+    user = (await session.execute(select(User).where(User.email == email))).scalar_one_or_none()
+    created = False
+    if user is None:
+        if not settings.oidc_auto_provision:
+            return None, False
+        user = User(email=email, full_name=name[:200], password_hash=hash_password(secrets.token_urlsafe(32)))
+        session.add(user)
+        await session.flush()
+        created = True
+    if not user.is_active:
+        return user, created
+    if email in settings.oidc_super_admin_list:
+        user.is_super_admin = True
+    if settings.oidc_auto_provision and settings.oidc_default_tenant and not user.is_super_admin:
+        has_any = (await session.execute(select(Membership.id).where(Membership.user_id == user.id))).first()
+        tenant = (
+            await session.execute(
+                select(Tenant).where(Tenant.slug == settings.oidc_default_tenant, Tenant.is_active.is_(True))
+            )
+        ).scalar_one_or_none()
+        if has_any is None and tenant is not None:
+            session.add(Membership(user_id=user.id, tenant_id=tenant.id, role=settings.oidc_default_role))
+            await session.flush()
+    return user, created
+
+
+async def pick_tenant(
+    session: AsyncSession, user: User, requested: uuid.UUID | None, *, prefer_slug: str = ""
+) -> uuid.UUID | None:
+    """The tenant a sign-in opens in: the requested one, else `prefer_slug` if the user may use it, else the first.
+    Super admins open inside a tenant too (they can switch to any); with no tenant at all, the platform view."""
     tenants = await available_tenants(session, user)
     if requested is not None:
         if requested not in {t.id for t in tenants}:
             raise Forbidden("No active membership in the requested tenant")
         return requested
     if tenants:
-        return tenants[0].id if not user.is_super_admin else None
+        return next((t.id for t in tenants if prefer_slug and t.slug == prefer_slug), tenants[0].id)
     if user.is_super_admin:
         return None
     raise Forbidden("No active tenant membership")

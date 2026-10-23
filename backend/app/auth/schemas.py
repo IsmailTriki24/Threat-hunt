@@ -9,6 +9,11 @@ class LoginRequest(BaseModel):
     tenant_id: uuid.UUID | None = None  # optional tenant to log into; membership is verified server-side
 
 
+class OidcInfo(BaseModel):
+    enabled: bool
+    name: str
+
+
 class SwitchTenantRequest(BaseModel):
     tenant_id: uuid.UUID
 

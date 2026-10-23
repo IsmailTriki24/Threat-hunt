@@ -138,7 +138,7 @@ async def list_tenant_members(
         .where(Membership.tenant_id == tenant_id)
         .order_by(User.email)
     )
-    return [users.member_out(u, m) for u, m in rows.all()]
+    return await users.with_platform_admins(session, [users.member_out(u, m) for u, m in rows.all()])
 
 
 @router.post("/{tenant_id}/members", response_model=MemberOut, status_code=201)

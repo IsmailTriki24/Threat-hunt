@@ -15,6 +15,13 @@ interface AuthState {
 
 const Ctx = createContext<AuthState | null>(null);
 
+/** Set when the sign-in went through the SSO provider, so signing out also ends the provider session. */
+export const SSO_FLAG = "th-sso";
+
+function takeSsoFlag(): boolean {
+  try { const v = localStorage.getItem(SSO_FLAG) === "1"; localStorage.removeItem(SSO_FLAG); return v; } catch { return false; }
+}
+
 export function AuthProvider({ children }: { children: ReactNode }) {
   const [status, setStatus] = useState<AuthState["status"]>("loading");
   const [session, setSession] = useState<SessionInfo | null>(null);
@@ -35,7 +42,12 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const value = useMemo<AuthState>(() => ({
     status, session,
     login: async (email, password) => { apply(await api.login(email, password)); },
-    logout: async () => { try { await api.logout(); } finally { qc.clear(); apply(null); } },
+    logout: async () => {
+      try { await api.logout(); } finally {
+        qc.clear(); apply(null);
+        if (takeSsoFlag()) window.location.assign("/api/v1/auth/oidc/logout");
+      }
+    },
     switchTenant: async (id) => { const tr = await api.switchTenant(id); qc.clear(); apply(tr); },
     can: (p) => session?.permissions.includes(p) ?? false,
   }), [status, session, apply, qc]);

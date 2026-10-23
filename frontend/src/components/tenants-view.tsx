@@ -151,7 +151,14 @@ function MembersDrawer({ tenant, onClose }: { tenant: TenantSummary; onClose: ()
             <table>
               <thead><tr><th>Member</th><th>Role</th><th>Status</th><th><span className="sr-only">Actions</span></th></tr></thead>
               <tbody>
-                {members.data.map((m) => (
+                {members.data.map((m) => m.role === "SUPER_ADMIN" ? (
+                  <tr key={m.user_id}>
+                    <td><div>{m.email}</div>{m.full_name && <div className="text-xs text-muted">{m.full_name}</div>}</td>
+                    <td><span className="badge border-line-strong bg-subtle text-ink-2" title="Full access to every tenant">Super admin (all tenants)</span></td>
+                    <td>{m.is_active ? <SeverityBadge level="ok" label="Active" /> : <SeverityBadge level="info" label="Inactive" />}</td>
+                    <td />
+                  </tr>
+                ) : (
                   <tr key={m.user_id}>
                     <td><div>{m.email}</div>{m.full_name && <div className="text-xs text-muted">{m.full_name}</div>}</td>
                     <td><select className="input" aria-label={`Role for ${m.email}`} value={m.role} disabled={update.isPending} onChange={(e) => update.mutate({ id: m.user_id, role: e.target.value })}>{ROLES.map((r) => <option key={r}>{r}</option>)}</select></td>
@@ -164,7 +171,7 @@ function MembersDrawer({ tenant, onClose }: { tenant: TenantSummary; onClose: ()
                 ))}
               </tbody>
             </table>
-            {members.data.length === 0 && <EmptyState compact title="No members">Add the first administrator below.</EmptyState>}
+            {members.data.every((m) => m.role === "SUPER_ADMIN") && <EmptyState compact title="No members">Add the first administrator below.</EmptyState>}
           </div>
         )}
         <form onSubmit={submit} aria-label="Add member" className="panel space-y-3 p-4">

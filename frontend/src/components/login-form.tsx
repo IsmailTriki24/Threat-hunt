@@ -1,10 +1,20 @@
 "use client";
-import { CircleAlert, Eye, EyeOff, Loader2 } from "lucide-react";
+import { CircleAlert, Eye, EyeOff, Loader2, ShieldCheck } from "lucide-react";
 import { useEffect, useRef, useState, type FormEvent } from "react";
 import { useRouter } from "next/navigation";
-import { ApiError } from "@/lib/api";
-import { useAuth } from "@/lib/auth";
+import { ApiError, api } from "@/lib/api";
+import type { OidcInfo } from "@/lib/api-types";
+import { SSO_FLAG, useAuth } from "@/lib/auth";
 import type { SceneMode } from "./login-scene";
+
+/** Why a single sign-on came back to this page (the backend's `sso_error` codes). */
+const SSO_ERRORS: Record<string, string> = {
+  unknown_user: "Your account is not on this platform yet. Ask your platform administrator to add you.",
+  no_access: "Your account has no active organisation. Ask your platform administrator for access.",
+  expired: "The sign-in took too long or was started in another tab. Try again.",
+  no_email: "The identity provider did not share your e-mail address.",
+  provider_unavailable: "The identity provider could not be reached. Try again shortly.",
+};
 
 /** `onStatus` lets the scene behind the form react: it quickens while signing in and stalls when the sign-in is refused. */
 export function LoginForm({ onStatus }: { onStatus?: (mode: SceneMode) => void }) {
@@ -18,7 +28,20 @@ export function LoginForm({ onStatus }: { onStatus?: (mode: SceneMode) => void }
   const [busy, setBusy] = useState(false);
   const [shake, setShake] = useState(false);
   const settle = useRef<ReturnType<typeof setTimeout>>(undefined);
+  const [sso, setSso] = useState<OidcInfo | null>(null);
+  const [redirecting, setRedirecting] = useState(false);
   useEffect(() => () => clearTimeout(settle.current), []);
+  useEffect(() => {
+    api.oidcInfo().then((info) => setSso(info.enabled ? info : null)).catch(() => setSso(null));
+    const code = new URLSearchParams(window.location.search).get("sso_error");
+    if (code) { setError(SSO_ERRORS[code] ?? "Single sign-on failed. Try again or contact your administrator."); onStatus?.("denied"); }
+  }, [onStatus]);
+
+  function signInWithSso() {
+    setRedirecting(true); onStatus?.("busy");
+    try { localStorage.setItem(SSO_FLAG, "1"); } catch { /* the provider session then simply outlives sign-out */ }
+    window.location.assign("/api/v1/auth/oidc/login");
+  }
 
   async function submit(e: FormEvent) {
     e.preventDefault();
@@ -41,9 +64,18 @@ export function LoginForm({ onStatus }: { onStatus?: (mode: SceneMode) => void }
           <h1 className="font-display text-[28px] font-semibold leading-[34px] tracking-tight text-ink">Sign in</h1>
           <p className="mt-1 text-sm text-muted">Pick up your investigations where you left them.</p>
         </div>
+        {sso && (
+          <>
+            <button type="button" className="btn btn-primary w-full py-2.5 text-base" disabled={redirecting} onClick={signInWithSso}>
+              {redirecting ? <Loader2 aria-hidden className="h-4 w-4 animate-spin" /> : <ShieldCheck aria-hidden className="h-4 w-4" />}
+              {redirecting ? "Redirecting…" : `Sign in with ${sso.name}`}
+            </button>
+            <div className="flex items-center gap-3 text-xs text-muted" aria-hidden><span className="h-px flex-1 bg-current opacity-25" />or with a password<span className="h-px flex-1 bg-current opacity-25" /></div>
+          </>
+        )}
         <div>
           <label htmlFor="login-email" className="block text-sm font-medium text-ink-2">Email</label>
-          <input id="login-email" className="input mt-1.5 w-full py-2.5 text-base" type="email" autoComplete="username" required autoFocus value={email} onChange={(e) => setEmail(e.target.value)} />
+          <input id="login-email" className="input mt-1.5 w-full py-2.5 text-base" type="email" autoComplete="username" required autoFocus={!sso} value={email} onChange={(e) => setEmail(e.target.value)} />
         </div>
         <div>
           <label htmlFor="login-password" className="block text-sm font-medium text-ink-2">Password</label>
@@ -58,7 +90,7 @@ export function LoginForm({ onStatus }: { onStatus?: (mode: SceneMode) => void }
           {caps && <p role="status" className="mt-1.5 text-xs text-sev-medium">Caps Lock is on.</p>}
         </div>
         {error && <p role="alert" className="flex items-start gap-1.5 rounded-md border border-sev-critical/30 bg-sev-critical-bg px-3 py-2 text-sm text-sev-critical"><CircleAlert aria-hidden className="mt-0.5 h-4 w-4 shrink-0" />{error}</p>}
-        <button className="btn btn-primary w-full py-2.5 text-base" disabled={busy}>
+        <button className={`btn ${sso ? "" : "btn-primary"} w-full py-2.5 text-base`} disabled={busy}>
           {busy && <Loader2 aria-hidden className="h-4 w-4 animate-spin" />}{busy ? "Signing in…" : "Sign in"}
         </button>
         <p className="text-xs text-muted">No account yet? Ask your platform administrator to add you to your organisation.</p>

@@ -55,6 +55,10 @@ async def log(
 
 
 async def validate_assignee(session: AsyncSession, tenant_id: uuid.UUID, user_id: uuid.UUID) -> User:
+    # Platform super admins act in every tenant (and are listed among its members), so they can take cases anywhere.
+    admin = await session.get(User, user_id)
+    if admin is not None and admin.is_super_admin and admin.is_active:
+        return admin
     row = (
         await session.execute(
             select(User, Membership.role)

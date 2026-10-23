@@ -42,6 +42,24 @@ class Settings(BaseSettings):
     # "10.0.0.5/32"). Narrow by design: unlike OUTBOUND_ALLOW_PRIVATE it is permitted in production.
     outbound_allowed_networks: str = ""
 
+    # Single sign-on through an OpenID Connect provider (e.g. Authentik). On when issuer, client id and secret are set.
+    # The redirect URI must be registered with the provider exactly; its path is served by the backend.
+    oidc_issuer: str = ""  # e.g. https://sso.example/application/o/threat-hunt/
+    oidc_client_id: str = ""
+    oidc_client_secret: str = Field(default="", repr=False)
+    oidc_redirect_uri: str = ""  # e.g. https://hunt.example/api/auth/callback/authentik
+    oidc_provider_name: str = "Authentik"  # shown on the sign-in button
+    oidc_scopes: str = "openid email profile"
+    # First SSO sign-in creates the platform user. A user with no membership at all joins OIDC_DEFAULT_TENANT (a slug)
+    # with OIDC_DEFAULT_ROLE; admins change roles afterwards, and a deactivated membership is never re-granted.
+    oidc_auto_provision: bool = False
+    oidc_default_tenant: str = ""
+    oidc_default_role: Literal["TENANT_ADMIN", "SOC_ANALYST", "THREAT_HUNTER", "INCIDENT_RESPONDER", "VIEWER"] = (
+        "VIEWER"
+    )
+    # Comma-separated e-mails made platform super admins when they sign in through SSO (never demoted automatically).
+    oidc_super_admins: str = ""
+
     password_min_length: int = 12
     cors_origins: str = ""
     metrics_token: str | None = Field(default=None, repr=False)
@@ -110,6 +128,14 @@ class Settings(BaseSettings):
         return [o.strip() for o in self.cors_origins.split(",") if o.strip()]
 
     @property
+    def oidc_enabled(self) -> bool:
+        return bool(self.oidc_issuer and self.oidc_client_id and self.oidc_client_secret)
+
+    @property
+    def oidc_super_admin_list(self) -> set[str]:
+        return {e.strip().lower() for e in self.oidc_super_admins.split(",") if e.strip()}
+
+    @property
     def cookie_secure(self) -> bool:
         return self.app_env == "production"
 
@@ -156,6 +182,8 @@ class Settings(BaseSettings):
     def _validate_secrets(self) -> "Settings":
         if len(self.jwt_secret) < 32:
             raise ValueError("JWT_SECRET must be set and at least 32 characters long")
+        if self.oidc_enabled and not self.oidc_redirect_uri.startswith(("https://", "http://")):
+            raise ValueError("OIDC_REDIRECT_URI must be set to the absolute callback URL registered with the provider")
         if self.app_env == "production":
             if self.jwt_secret.startswith(DEV_PLACEHOLDER_PREFIX):
                 raise ValueError("JWT_SECRET is a development placeholder; refusing to start in production")

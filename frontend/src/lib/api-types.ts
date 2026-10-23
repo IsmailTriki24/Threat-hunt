@@ -27,6 +27,9 @@ export interface TokenResponse {
   session: SessionInfo;
 }
 
+/** Single sign-on through the organisation's OpenID Connect provider (Authentik). */
+export interface OidcInfo { enabled: boolean; name: string }
+
 export interface TimeRangeBody { start: string; end: string }
 
 export interface Aggregation {

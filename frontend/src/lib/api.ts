@@ -5,7 +5,7 @@ import type { Correlation, FlowsResponse, IndicatorDetail, MapData, MapStatus } 
 import type { EvPoint } from "./ai-stream";
 import type { Alert, AlertStatus, Backtest, DetectionOverview, Rule, RuleStatus, TestCase, TestResult } from "./detections";
 import type {
-  EventDetail, EventQueryBody, FieldInfo, MemberOut, ReadyResponse, SearchResult, TenantOut, TokenResponse,
+  EventDetail, EventQueryBody, FieldInfo, MemberOut, OidcInfo, ReadyResponse, SearchResult, TenantOut, TokenResponse,
   UserCreate, ApiErrorBody, Finding, FindingCreate, HistoryEntry, Hunt, HuntCreate, HuntUpdate, Note, ParsedQuery,
   SavedQuery, Timeline, TimelineScope,
   Asset, AssetCaseRef, AssetCreate, AssetEvents, AssetRelated, AssetUpdate, AuditRow, CaseActivity, CaseAssetRef, CaseCreate,
@@ -137,6 +137,7 @@ export const api = {
   logout: async (): Promise<void> => {
     try { await request<void>("/api/v1/auth/logout", { method: "POST", csrf: true, auth: false }); } finally { accessToken = null; }
   },
+  oidcInfo: () => request<OidcInfo>("/api/v1/auth/oidc", { auth: false }),
   switchTenant: async (tenantId: string): Promise<TokenResponse> => {
     const tr = await request<TokenResponse>("/api/v1/auth/switch-tenant", { method: "POST", csrf: true, body: { tenant_id: tenantId } });
     accessToken = tr.access_token;

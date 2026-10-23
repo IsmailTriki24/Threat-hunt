@@ -10,7 +10,17 @@ x-backend-env: &backend-env
   DATA_ENCRYPTION_KEY: ${DATA_ENCRYPTION_KEY:-}
   SEED_DEMO_DATA: ${SEED_DEMO_DATA:-false}
   SEED_PASSWORD: ${SEED_PASSWORD:-}
-  CORS_ORIGINS: http://localhost:${FRONTEND_PORT:-3000}
+  CORS_ORIGINS: ${CORS_ORIGINS:-http://localhost:${FRONTEND_PORT:-3100}}
+  # Single sign-on (OpenID Connect, e.g. Authentik). Off unless issuer, client id and secret are all set.
+  OIDC_ISSUER: ${OIDC_ISSUER:-}
+  OIDC_CLIENT_ID: ${OIDC_CLIENT_ID:-}
+  OIDC_CLIENT_SECRET: ${OIDC_CLIENT_SECRET:-}
+  OIDC_REDIRECT_URI: ${OIDC_REDIRECT_URI:-}
+  OIDC_PROVIDER_NAME: ${OIDC_PROVIDER_NAME:-Authentik}
+  OIDC_AUTO_PROVISION: ${OIDC_AUTO_PROVISION:-false}
+  OIDC_DEFAULT_TENANT: ${OIDC_DEFAULT_TENANT:-}
+  OIDC_DEFAULT_ROLE: ${OIDC_DEFAULT_ROLE:-VIEWER}
+  OIDC_SUPER_ADMINS: ${OIDC_SUPER_ADMINS:-}
   # Outbound policy for pull connectors: public hosts are always allowed; private ones only when listed here.
   OUTBOUND_ALLOWED_NETWORKS: ${OUTBOUND_ALLOWED_NETWORKS:-}
   OUTBOUND_ALLOWED_PORTS: ${OUTBOUND_ALLOWED_PORTS:-80,443,8080,8443,9200}
@@ -77,7 +87,7 @@ services:
     volumes:
       - osdata:/usr/share/opensearch/data
     ports:
-      - "127.0.0.1:${OPENSEARCH_PORT:-9200}:9200"
+      - "127.0.0.1:${OPENSEARCH_PORT:-9210}:9200"
     healthcheck:
       test: ["CMD-SHELL", "curl -fs http://localhost:9200/_cluster/health || exit 1"]
       interval: 10s
@@ -95,8 +105,8 @@ services:
     volumes:
       - miniodata:/data
     ports:
-      - "127.0.0.1:${MINIO_PORT:-9000}:9000"
-      - "127.0.0.1:${MINIO_CONSOLE_PORT:-9001}:9001"
+      - "127.0.0.1:${MINIO_PORT:-9010}:9000"
+      - "127.0.0.1:${MINIO_CONSOLE_PORT:-9011}:9001"
 
   # One-shot: run migrations, provision OpenSearch templates, optionally seed demo data.
   init:
@@ -118,7 +128,7 @@ services:
     depends_on:
       init: {condition: service_completed_successfully}
     ports:
-      - "127.0.0.1:${BACKEND_PORT:-8000}:8000"
+      - "127.0.0.1:${BACKEND_PORT:-8100}:8000"
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request;urllib.request.urlopen('http://localhost:8000/health')"]
       interval: 10s
@@ -139,7 +149,7 @@ services:
     depends_on:
       backend: {condition: service_healthy}
     ports:
-      - "${FRONTEND_BIND:-127.0.0.1}:${FRONTEND_PORT:-3000}:3000"
+      - "${FRONTEND_BIND:-127.0.0.1}:${FRONTEND_PORT:-3100}:3000"
 
 volumes:
   pgdata:

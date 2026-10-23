@@ -34,7 +34,7 @@ os.environ.update(
     APP_ENV="test",
     DATABASE_URL=f"postgresql+asyncpg://{_pg}@{_env.get('PG_HOST', 'localhost')}:{_env.get('POSTGRES_PORT', '5432')}/{TEST_DB}",
     REDIS_URL=f"redis://:{_env.get('REDIS_PASSWORD', '')}@localhost:{_env.get('REDIS_PORT', '6379')}/{_env.get('TEST_REDIS_DB', '15')}",
-    OPENSEARCH_URL=f"http://localhost:{_env.get('OPENSEARCH_PORT', '9200')}",
+    OPENSEARCH_URL=f"http://localhost:{_env.get('OPENSEARCH_PORT', '9210')}",
     INDEX_PREFIX=_env.get("TEST_INDEX_PREFIX", "test-"),
     JWT_SECRET="test-secret-test-secret-test-secret-0123456789",
     LOG_LEVEL="WARNING",
